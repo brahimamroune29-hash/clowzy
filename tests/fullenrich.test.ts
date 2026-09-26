@@ -7,7 +7,8 @@ import { join } from 'node:path';
 import { FullEnrichClient,FullEnrichError,searchBody,safeWebsite } from '../src/lib/fullenrich';
 import { LiveSearch } from '../src/lib/live-search';
 import { Store } from '../src/lib/store';
-import type { SearchInput } from '../src/lib/contracts';
+import { searchSchema,type SearchInput } from '../src/lib/contracts';
+import { suggestFilters } from '../src/lib/demo-provider';
 const input=(count=2):SearchInput=>({sector:'التقنية والبرمجيات',country:'السعودية',city:'',title:'',size:'all',count,confirmed:true,requestId:randomUUID()});
 const enrichmentId='2db5ea61-1752-42cf-8ea1-ab1da060cd0a';
 const person=(id:string)=>({id,full_name:'Person '+id,first_name:'Person',last_name:id,location:{country:'Saudi Arabia',city:'Riyadh'},social_profiles:{professional_network:{url:'https://www.linkedin.com/in/'+id}},employment:{current:{title:'CEO',company:{name:'Test Company',domain:'company.example',website:'https://company.example',headcount:4,industry:{main_industry:'Software Development'}}}}});
@@ -122,4 +123,9 @@ test('interrupted submission remains uncertain after restart and cannot be blind
     const current=await new LiveSearch(store,client).start(user.id,request);
     assert.equal(current.status,'unknown');assert.equal(calls.length,2);assert.equal(store.reserved(user.id),0);assert.equal(store.user(user.id).balance,10);
   }finally{store.close();}
+});
+test('assistant suggestion from its own placeholder example passes the live search mapping',()=>{
+  const suggested=suggestFilters('أقدم خدمات تسويق وأبحث عن شركات عقارية في دبي');
+  assert.equal(suggested.title,'Marketing Director');
+  assert.doesNotThrow(()=>searchBody(searchSchema.parse({...suggested,confirmed:true,requestId:randomUUID()})));
 });

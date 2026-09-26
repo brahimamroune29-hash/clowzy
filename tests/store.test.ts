@@ -76,6 +76,12 @@ test('export ownership enforced and repeated export never debits',async()=>{
   assert.ok(csv.startsWith('\uFEFF'));assert.ok(csv.includes("'=HYPERLINK"));assert.ok(csv.includes('""Test""'));
   assert.equal(cell('+cmd'),'"\' +cmd"'.replace("' ","'"));store.close();
 });
+test('CSV keeps each contact stored email status; only demo rows carry the demo label',()=>{
+  const row={id:'c',user_id:'u',search_id:'s',created_at:''};
+  const [,real,demo]=contactsCsv([{...demoCatalog[0],...row,source:'FullEnrich',email_status:'DELIVERABLE'},{...demoCatalog[1],...row}]).split('\r\n');
+  assert.ok(real.endsWith(',"DELIVERABLE"'),real);
+  assert.ok(demo.endsWith(',"DEMO — not real contact data"'),demo);
+});
 test('invitations accepted once, preserve assigned credits, reject expired token',()=>{
   const {store,admin}=setup();const invite=store.invite(admin.id,'New member','new@example.com',35);
   const token=store.acceptInvite(invite.token,'a-strong-password-123'),user=store.session(token);

@@ -40,5 +40,5 @@ export function suggestFilters(description: string) {
   const sectorIndex = groups.findIndex(words => words.some(word => text.includes(word)));
   const country = countries.find(c => text.includes(c)) || (text.includes('دبي') ? 'الإمارات' : text.includes('الرياض') || text.includes('جدة') ? 'السعودية' : text.includes('وهران') ? 'الجزائر' : text.includes('القاهرة') ? 'مصر' : 'السعودية');
   const city = cities[country].find(c => text.includes(c)) || '';
-  return { sector: sectors[Math.max(0, sectorIndex)], country, city, title: text.includes('تسويق') ? 'مدير التسويق' : '', size: 'all', count: 10, mode: 'demo' };
+  return { sector: sectors[Math.max(0, sectorIndex)], country, city, title: text.includes('تسويق') ? 'Marketing Director' : '', size: 'all', count: 10, mode: 'demo' };
 }
