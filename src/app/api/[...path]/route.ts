@@ -7,6 +7,7 @@ import { FullEnrichClient, FullEnrichError, providerInfo } from '@/lib/fullenric
 import { LiveSearch } from '@/lib/live-search';
 import { contactsCsv } from '@/lib/csv';
 import { weekBoundariesSchema } from '@/lib/overview';
+import { accessError, bodyLimit, clientIp, isHttps } from '@/lib/access';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -21,28 +22,29 @@ function rateLimit(key: string, max: number) {
   attempts.set(key, current);
   if (current.count > max) throw new AppError('طلبات كثيرة. انتظر دقيقة وحاول مجددًا.', 429);
 }
-function guard(request: NextRequest) {
-  const host = request.headers.get('host')?.split(':')[0];
-  if (process.env.APP_MODE !== 'demo' || !['127.0.0.1', 'localhost'].includes(host || '')) {
-    throw new AppError('المعاينة المحلية فقط. إعداد الإنتاج غير مفعّل.', 503);
-  }
-  if (request.method !== 'GET') {
-    const origin = request.headers.get('origin');
-    if (!origin || new URL(origin).host !== request.headers.get('host')) throw new AppError('مصدر الطلب غير مسموح.', 403);
-    if (!request.headers.get('content-type')?.includes('application/json')) throw new AppError('صيغة الطلب غير صحيحة.', 415);
-  }
+function guard(req: NextRequest) {
+  const h = req.headers, denied = accessError({ method: req.method, host: h.get('host'), origin: h.get('origin'), contentType: h.get('content-type'), contentLength: h.get('content-length') }, process.env.APP_URL);
+  if (denied) throw new AppError(denied.message, denied.status);
 }
+// Reads with a hard cap: a chunked body without Content-Length must not be buffered unbounded.
 async function body(req: NextRequest) {
-  const raw = await req.text();
-  if (raw.length > 16000) throw new AppError('الطلب أكبر من الحد المسموح.', 413);
-  try { return JSON.parse(raw); } catch { throw new AppError('تعذّر قراءة الطلب.'); }
+  const reader = req.body?.getReader(), chunks: Uint8Array[] = [];
+  let size = 0;
+  while (reader) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > bodyLimit) { await reader.cancel(); throw new AppError('الطلب أكبر من الحد المسموح.', 413); }
+    chunks.push(value);
+  }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new AppError('تعذّر قراءة الطلب.'); }
 }
 function json(data: unknown, status = 200) {
   return NextResponse.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
 }
 function authenticated(token: string) {
   const response = json({ ok: true });
-  response.cookies.set('wasl_session', token, { httpOnly: true, sameSite: 'strict', secure: false, path: '/', maxAge: 7 * 86400 });
+  response.cookies.set('wasl_session', token, { httpOnly: true, sameSite: 'strict', secure: isHttps(process.env.APP_URL), path: '/', maxAge: 7 * 86400 });
   return response;
 }
 async function handle(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
@@ -53,12 +55,11 @@ async function handle(req: NextRequest, { params }: { params: Promise<{ path: st
     const session = req.cookies.get('wasl_session')?.value;
     if (req.method === 'GET' && path === 'invitation') return json(store.invitation(tokenField.parse(req.nextUrl.searchParams.get('token'))));
     if (req.method === 'POST' && path.startsWith('auth/')) {
-      rateLimit('auth:' + (req.headers.get('host') || ''), 30);
+      // ponytail: in-memory limits suit the single-process deployment; move to the database if we run several instances.
+      const ip = clientIp(req.headers.get('x-forwarded-for'));
+      if (ip === 'unknown' && process.env.APP_URL) console.warn('No X-Forwarded-For: every client shares one login limit. Check the reverse proxy.');
+      rateLimit('auth:' + ip, 30); // per IP only: a per-email limit would let anyone lock the owner out
       const b = await body(req);
-      if (path === 'auth/demo') {
-        const { role } = z.object({ role: z.enum(['member','admin']) }).parse(b);
-        return authenticated(store.demoSession(role));
-      }
       if (path === 'auth/login') {
         const data = z.object({email:z.email(),password:z.string().min(1).max(128)}).parse(b);
         return authenticated(store.login(data.email, data.password));
@@ -151,7 +152,11 @@ async function handle(req: NextRequest, { params }: { params: Promise<{ path: st
   } catch (error) {
     if (error instanceof z.ZodError) return json({error:'راجع البيانات المدخلة، وتأكد من تأكيد معايير البحث.'},400);
     if (error instanceof FullEnrichError) return json({error:error.message},502);
-    if (error instanceof AppError) return json({error:error.message},error.status);
+    if (error instanceof AppError) {
+      // Denials must be visible in the server log: a wrong APP_URL would otherwise reject every user silently.
+      if ([403,413,415,429,503].includes(error.status)) console.warn('API denied', error.status, req.method, req.nextUrl.pathname, error.message);
+      return json({error:error.message},error.status);
+    }
     console.error('Local API failure:', error instanceof Error ? error.message : 'unknown');
     return json({error:'حدث خطأ غير متوقع. حاول مجددًا.'},500);
   }

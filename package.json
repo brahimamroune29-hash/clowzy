@@ -8,7 +8,8 @@
     "start": "next start --hostname 127.0.0.1 --port 3100",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "tsx --test tests/*.test.ts"
+    "test": "tsx --test tests/*.test.ts",
+    "create-owner": "tsx scripts/create-owner.ts"
   },
   "dependencies": {
     "next": "16.3.6",

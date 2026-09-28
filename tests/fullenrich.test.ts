@@ -31,7 +31,7 @@ function mockTransport(options:{people?:unknown[];data?:unknown[];status?:string
   return {calls,client:new FullEnrichClient('unit-test-secret',transport)};
 }
 function setup(filename=':memory:'){
-  const store=new Store(filename,false),user=store.addUser('Alice','alice@example.com','secure-password','member',10),bob=store.addUser('Bob','bob@example.com','secure-password','member',10);
+  const store=new Store(filename),user=store.addUser('Alice','alice@example.com','secure-password','member',10),bob=store.addUser('Bob','bob@example.com','secure-password','member',10);
   return {store,user,bob};
 }
 function eligible(store:Store){store.db.prepare('UPDATE fullenrich_runs SET updated_at=0').run();}
@@ -73,7 +73,7 @@ test('completed enrichment resumes after database reopen without replaying paid 
   const dir=mkdtempSync(join(tmpdir(),'clowzy-live-')),file=join(dir,'test.sqlite');
   const {store,user}=setup(file),{client,calls}=mockTransport();
   const first=await new LiveSearch(store,client).start(user.id,input());store.close();
-  const reopened=new Store(file,false);
+  const reopened=new Store(file);
   try{eligible(reopened);const done=await new LiveSearch(reopened,client).poll(user.id,first.id);assert.equal(done.delivered,1);assert.equal(calls.length,3);}finally{reopened.close();rmSync(dir,{recursive:true,force:true});}
 });
 test('uncertain submission is not retried and does not debit platform balance or disclose the secret',async()=>{

@@ -14,7 +14,7 @@ async function main() {
   const mode=process.argv[2];
   if(mode==='seed') {
     const dir=mkdtempSync(join(tmpdir(),'wasl-p1-')),db=join(dir,'synthetic.sqlite');
-    const store=new Store(db,false),fixture=seedPerformanceFixture(store);store.close();
+    const store=new Store(db),fixture=seedPerformanceFixture(store);store.close();
     writeFileSync(join(dir,'fixture.json'),JSON.stringify({db,...fixture},null,2));
     console.log(JSON.stringify({fixtureFile:join(dir,'fixture.json'),...fixture}));return;
   }

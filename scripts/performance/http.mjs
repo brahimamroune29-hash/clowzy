@@ -5,7 +5,8 @@ if(!['http://127.0.0.1:3131','http://127.0.0.1:3132'].includes(origin)) throw Er
 const days=Array.from({length:8},(_,i)=>new Date(Date.UTC(2026,8,18+i)).toISOString());
 const results={measuredAt:new Date().toISOString(),origin,node:process.version,warmups:5,samples:20,note:'Sequential warm HTTP requests; application body after decompression; no concurrent load or page-render timing.'};
 for(const role of ['member','admin']) {
-  const login=await fetch(origin+'/api/auth/demo',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({role})});
+  const email=role==='admin'?'owner@wasl.example':'member@wasl.example';
+  const login=await fetch(origin+'/api/auth/login',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({email,password:'benchmark-only-password'})});
   if(!login.ok) throw Error('Synthetic login failed: '+login.status);
   const cookie=login.headers.get('set-cookie').split(';')[0];
   const times=[];let text='',data;

@@ -6,7 +6,7 @@ import { weekBoundaries,weekBoundariesSchema,overviewOnly } from '../src/lib/ove
 import { seedPerformanceFixture } from '../scripts/performance/fixture';
 
 test('dashboard stays bounded with 1000 members and 100000 contacts, without losing totals',async t=>{
-  const s=new Store(':memory:',false),f=seedPerformanceFixture(s);
+  const s=new Store(':memory:'),f=seedPerformanceFixture(s);
   const days=weekBoundaries(new Date(f.created));
   try {
     await t.test('member totals use the entire history while recent rows are limited',()=>{
@@ -49,7 +49,7 @@ test('dashboard stays bounded with 1000 members and 100000 contacts, without los
 });
 
 test('overview empty state and exact day boundaries',()=>{
-  const s=new Store(':memory:',false),u=s.addUser('Empty','empty@example.com','test-password-123');
+  const s=new Store(':memory:'),u=s.addUser('Empty','empty@example.com','test-password-123');
   try {
     const days=weekBoundaries(new Date('2026-09-24T12:00:00Z')),view=s.overview(u.id,days);
     assert.equal(view.summary!.contacts,0);assert.equal(view.summary!.exports,0);

@@ -2,7 +2,7 @@
 import { useCallback,useEffect,useRef,useState } from 'react';
 import Link from 'next/link';
 import { usePathname,useRouter,useSearchParams } from 'next/navigation';
-import { ArrowSquareOut, ChartPieSlice, ClockCounterClockwise, Coins, GearSix, House, List, MagnifyingGlass, SignOut, SquaresFour, UsersThree, X, CheckCircle, WarningCircle, ShieldCheck, ArrowLeft } from '@phosphor-icons/react';
+import { ChartPieSlice, ClockCounterClockwise, Coins, GearSix, House, List, MagnifyingGlass, SignOut, SquaresFour, UsersThree, X, CheckCircle, WarningCircle, ShieldCheck, ArrowLeft } from '@phosphor-icons/react';
 import type { Snapshot } from '@/lib/contracts';
 import { api,number } from '@/lib/client';
 import { overviewOnly,weekBoundaries } from '@/lib/overview';
@@ -37,7 +37,6 @@ export default function Platform(){
   const notify=(message:string,error=false)=>setToast({message,error});
   async function onLogin(){await refresh();router.replace('/dashboard');}
   async function logout(){requestVersion.current++;await api('auth/logout',{});setData(null);router.replace('/');}
-  async function switchRole(){try{await api('auth/demo',{role:data?.user.role==='admin'?'member':'admin'});await refresh();router.push(data?.user.role==='admin'?'/dashboard':'/admin');setMenu(false);}catch(e){notify((e as Error).message,true);}}
   const token=query.get('token')||undefined;
   if(loading||loadedPath!==requestPath)return <div className="boot"><Brand/><p>نجهّز مساحة عملك…</p><span className="loading-line"/></div>;
   if((pathname==='/invite'||pathname==='/reset')&&token)return <Auth onLogin={onLogin} token={token} reset={pathname==='/reset'}/>;
@@ -60,7 +59,6 @@ export default function Platform(){
       <div className="nav-caption">مساحة العمل</div><nav>{nav.map(({href,label,icon:Icon})=><Link key={href} href={href} onClick={()=>setMenu(false)} className={'nav-item '+((pathname===href||href===(admin?'/admin':'/dashboard')&&pathname==='/')?'active':'')}><Icon size={21} weight="light"/><span>{label}</span>{href==='/leads'&&<span className="nav-count">{(data.summary?.contacts??data.contacts.length)}</span>}</Link>)}</nav>
       <div className="sidebar-bottom">{!admin&&<div className="credit-card"><div><span>رصيدك المتاح</span><Coins size={19}/></div><strong>{number(data.user.balance)} <small>كريدت</small></strong><div className="credit-track"><span style={{width:Math.max(0,Math.min(100,data.user.balance/Math.max(data.user.balance+(data.summary?.contacts??data.contacts.length),1)*100))+'%'}}/></div><p>كريدت واحد لكل بريد جديد.</p><Link href="/credits">عرض سجل الرصيد <ArrowLeft size={15}/></Link></div>}
       <Link href="/settings" className={'nav-item '+(pathname==='/settings'?'active':'')} onClick={()=>setMenu(false)}><GearSix size={21} weight="light"/><span>إعدادات الحساب</span></Link>
-      <button className="nav-item role-switch" onClick={switchRole}><ArrowSquareOut size={20} weight="light"/><span>{admin?'جرّب حساب المشترك':'جرّب لوحة الأونر'}</span></button>
       <div className="profile"><span className="avatar">{data.user.name.split(' ').map(x=>x[0]).slice(0,2).join('')}</span><div><strong>{data.user.name}</strong><small>{admin?'مالك المنصة':'مشترك'}</small></div><button className="icon-button" aria-label="تسجيل الخروج" onClick={logout}><SignOut size={20}/></button></div></div>
     </aside>
     <div className="main-area"><header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-only" aria-label="فتح القائمة" onClick={()=>setMenu(true)}><List size={24}/></button><span>{admin?'إدارة المنصة':'مساحة العمل'}</span><span className="slash">/</span><strong>{label}</strong></div><div className="topbar-tools"><span className="local-badge"><span/>معاينة محلية</span><span className="topbar-avatar">{data.user.name[0]}</span></div></header>

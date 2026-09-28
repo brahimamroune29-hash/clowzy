@@ -27,7 +27,7 @@ const normalizeEmail = (value: string) => value.trim().toLowerCase();
 
 export class Store {
   db: DatabaseSync;
-  constructor(filename: string, seed = true) {
+  constructor(filename: string) {
     if (filename !== ':memory:') mkdirSync(dirname(filename), { recursive: true });
     this.db = new DatabaseSync(filename);
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
@@ -91,7 +91,6 @@ export class Store {
       CREATE INDEX IF NOT EXISTS searches_owner ON searches(user_id,created_at);
       CREATE INDEX IF NOT EXISTS ledger_owner ON ledger(user_id,created_at);
     `);
-    if (seed && !this.db.prepare('SELECT 1 FROM users LIMIT 1').get()) this.seed();
   }
   close() { this.db.close(); }
   transaction<T>(fn: () => T): T {
@@ -144,11 +143,6 @@ export class Store {
     return this.user(row.user_id);
   }
   logout(token: string) { this.db.prepare('DELETE FROM sessions WHERE token_hash=?').run(hash(token)); }
-  demoSession(role: string) {
-    const email = role === 'admin' ? 'owner@wasl.example' : 'member@wasl.example';
-    const row = this.db.prepare('SELECT id FROM users WHERE email=?').get(email) as { id: string };
-    return this.createSession(row.id);
-  }
   snapshot(id: string): Snapshot {
     const user = this.user(id);
     const snapshot: Snapshot = {
@@ -410,12 +404,25 @@ export class Store {
     });
     return this.createSession(id);
   }
+  private resetToken(userId: string, ttlMs: number) {
+    const token = randomBytes(24).toString('hex');
+    this.db.prepare('INSERT INTO reset_tokens VALUES(?,?,?,NULL)').run(hash(token), userId, new Date(Date.now() + ttlMs).toISOString());
+    return token;
+  }
   createReset(adminId: string, userId: string) {
     this.admin(adminId); this.user(userId);
-    const token = randomBytes(24).toString('hex');
-    this.db.prepare('INSERT INTO reset_tokens VALUES(?,?,?,NULL)').run(hash(token), userId, new Date(Date.now() + 3600000).toISOString());
+    const token = this.resetToken(userId, 3600000);
     this.audit(adminId, 'رابط استعادة الوصول', this.user(userId).name);
     return token;
+  }
+  // Server-side setup only (scripts/create-owner.ts): the owner picks a password through a 24h one-time link.
+  createOwner(name: string, email: string) {
+    return this.transaction(() => {
+      if (this.db.prepare('SELECT 1 FROM users WHERE email=?').get(normalizeEmail(email))) throw new AppError('يوجد حساب بهذا البريد بالفعل.');
+      const owner = this.addUser(name, email, randomBytes(32).toString('hex'), 'admin');
+      this.audit(owner.id, 'إنشاء حساب المالك', name);
+      return this.resetToken(owner.id, 86400000);
+    });
   }
   resetPassword(token: string, password: string) {
     return this.transaction(() => {
@@ -428,28 +435,8 @@ export class Store {
       return this.createSession(row.user_id);
     });
   }
-  private seed() {
-    const password = randomBytes(24).toString('hex');
-    const owner = this.addUser('مدير المنصة', 'owner@wasl.example', password, 'admin');
-    const member = this.addUser('أحمد منصور', 'member@wasl.example', password, 'member', 500);
-    this.addUser('سارة خالد', 'sara@wasl.example', password, 'member', 250);
-    this.addUser('يوسف أمين', 'yousef@wasl.example', password, 'member', 100);
-    const input: SearchInput = { sector: 'التقنية والبرمجيات', country: 'السعودية', city: '', title: '', size: 'all', count: 8, confirmed: true, requestId: randomUUID() };
-    const sid = randomUUID(), time = new Date(Date.now() - 86400000).toISOString();
-    this.transaction(() => {
-      this.db.prepare('INSERT INTO searches(id,user_id,request_id,filters,title,requested,delivered,status,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
-        .run(sid, member.id, input.requestId, JSON.stringify(input), 'التقنية والبرمجيات · السعودية', 8, 8, 'completed', time);
-      for (const c of demoProvider.search(input).slice(0,8)) {
-        const cid = randomUUID();
-        this.db.prepare('INSERT INTO contacts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(cid, member.id, sid, c.name, c.email, c.company, c.title, c.sector, c.country, c.city, c.website, c.size, c.source, c.email_status, time);
-        this.credit(member.id, -1, 'debit', 'عينة نتائج تجريبية', 'delivery:' + cid);
-      }
-      this.audit(owner.id, 'تجهيز مساحة العرض', 'حسابات ونتائج تجريبية لمراجعة المنصة');
-    });
-  }
 }
 const globalStore = globalThis as unknown as { waslStore?: Store };
 export function getStore() {
-  if (process.env.APP_MODE !== 'demo') throw new AppError('هذه النسخة مخصصة للمعاينة المحلية. لم يُضبط ربط الإنتاج بعد.', 503);
   return globalStore.waslStore ??= new Store(process.env.WASL_DB_PATH || join(process.cwd(), '.data', 'wasl.sqlite'));
 }

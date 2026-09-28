@@ -1,6 +1,6 @@
 'use client';
 import { useEffect,useState } from 'react';
-import { ArrowLeft, Check, LockKey, Sparkle, UsersThree, EnvelopeSimple } from '@phosphor-icons/react';
+import { Check, LockKey, Sparkle, UsersThree, EnvelopeSimple } from '@phosphor-icons/react';
 import { api } from '@/lib/client';
 import { Brand, Button, Field, Notice } from './ui';
 export default function Auth({onLogin,token,reset=false}:{onLogin:()=>Promise<void>;token?:string;reset?:boolean}) {
@@ -11,10 +11,6 @@ export default function Auth({onLogin,token,reset=false}:{onLogin:()=>Promise<vo
     e.preventDefault(); setBusy(true); setError('');
     try { await api(token?(reset?'auth/reset':'auth/accept'):'auth/login', token?{token,password}:{email,password}); await onLogin(); }
     catch(e){setError((e as Error).message);} finally {setBusy(false);}
-  }
-  async function demo(role:string) {
-    setBusy(true);setError('');
-    try{await api('auth/demo',{role});await onLogin();}catch(e){setError((e as Error).message);}finally{setBusy(false);}
   }
   return <main className="auth-layout">
     <section className="auth-form-side"><Brand/><div className="auth-content">
@@ -30,7 +26,6 @@ export default function Auth({onLogin,token,reset=false}:{onLogin:()=>Promise<vo
         {help&&<Notice>اطلب من مالك المنصة رابط استعادة الوصول من صفحة المشتركين. إرسال البريد الآلي غير متصل في هذه المعاينة.</Notice>}
         <Button loading={busy} type="submit" arrow disabled={!!token&&!reset&&!invitation}>{token?'تفعيل الوصول':'تسجيل الدخول'}</Button>
       </form>
-      {!token&&<div className="demo-access"><div className="divider-label"><span/>جرّب النسخة المحلية<span/></div><div className="demo-buttons"><Button variant="secondary" loading={busy} onClick={()=>demo('member')}>دخول كمشترك <ArrowLeft size={16}/></Button><Button variant="ghost" loading={busy} onClick={()=>demo('admin')}>لوحة الأونر <ArrowLeft size={16}/></Button></div><small>حسابات محلية للتجربة. البحث الحقيقي يتاح عند إضافة مفتاح FullEnrich، وقد يستهلك رصيد المزود.</small></div>}
     </div><div className="auth-footer"><LockKey size={16}/><span>مساحة خاصة. الدخول متاح بالدعوة.</span><span className="version">clowzy / 01</span></div></section>
     <section className="auth-art"><div className="art-top"><span>ابدأ بالعميل المناسب</span><span>clowzy / WORKSPACE</span></div>
       <div className="connection-art"><div className="orbit orbit-one"/><div className="orbit orbit-two"/><div className="orbit orbit-three"/><div className="art-core"><CirclesLogo/></div>

@@ -10,7 +10,7 @@ import { contactsCsv,cell } from '../src/lib/csv';
 import { Candidate,LeadProvider,SearchInput,searchSchema } from '../src/lib/contracts';
 const input=(count=2):SearchInput=>({sector:'التقنية والبرمجيات',country:'السعودية',city:'',title:'',size:'all',count,confirmed:true,requestId:randomUUID()});
 function setup(){
-  const store=new Store(':memory:',false);
+  const store=new Store(':memory:');
   const admin=store.addUser('Owner','owner@example.com','secure-password-123','admin');
   const alice=store.addUser('Alice','alice@example.com','secure-password-123','member',10);
   const bob=store.addUser('Bob','bob@example.com','secure-password-123','member',10);
@@ -18,13 +18,17 @@ function setup(){
 }
 const provider:LeadProvider={name:'test',search:()=>demoCatalog.slice(0,2)};
 
-test('seeded demo has internally consistent balance and delivery counts',()=>{
+test('a fresh production store has no demo accounts; the owner is created once and sets a password via a one-time link',()=>{
   const s=new Store(':memory:');
-  const member=s.session(s.demoSession('member'));
-  const data=s.snapshot(member.id);
-  assert.equal(data.contacts.length,8);assert.equal(member.balance,492);
-  assert.equal(data.ledger.reduce((n,l)=>n+l.amount,0),492);
-  assert.ok(data.contacts.every(c=>c.email.endsWith('@example.com')));
+  assert.equal(s.db.prepare('SELECT count(*) n FROM users').get()?.n,0);
+  assert.equal(s.db.prepare('SELECT count(*) n FROM contacts').get()?.n,0);
+  const token=s.createOwner('Client Owner','Owner@Company.com');
+  assert.throws(()=>s.login('owner@company.com',''));
+  const owner=s.session(s.resetPassword(token,'owner-strong-password-1'));
+  assert.equal(owner.role,'admin');assert.equal(owner.email,'owner@company.com');
+  assert.throws(()=>s.resetPassword(token,'another-password-123'));
+  assert.throws(()=>s.createOwner('Twice','owner@company.com'));
+  assert.equal(s.session(s.login('owner@company.com','owner-strong-password-1')).id,owner.id);
   s.close();
 });
 test('concurrent searches dedupe per member and charge once per normalized email',async()=>{
@@ -122,9 +126,9 @@ test('search contract requires confirmation and bounded integer count',()=>{
 });
 test('contacts and balance survive reopening local database',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'wasl-test-')),file=join(dir,'app.sqlite');
-  const s=new Store(file,false),u=s.addUser('Persistent','persist@example.com','secure-password-123','member',5);
+  const s=new Store(file),u=s.addUser('Persistent','persist@example.com','secure-password-123','member',5);
   await s.search(u.id,input(),provider);s.close();
-  const reopened=new Store(file,false);
+  const reopened=new Store(file);
   assert.equal(reopened.user(u.id).balance,3);assert.equal(reopened.snapshot(u.id).contacts.length,2);
   reopened.close();rmSync(dir,{recursive:true,force:true});
 });
