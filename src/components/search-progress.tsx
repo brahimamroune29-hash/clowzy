@@ -4,7 +4,7 @@ import type { Search } from '@/lib/contracts';
 import { api } from '@/lib/client';
 import { Button, Notice } from './ui';
 export function SearchProgress({search,reload}:{search:Search;reload:()=>Promise<void>}) {
-  const [message,setMessage]=useState(search.message || 'جارٍ جلب الإيميلات والتحقق منها لدى FullEnrich…');
+  const [message,setMessage]=useState(search.message || 'جارٍ جلب الإيميلات والتحقق منها…');
   const [retry,setRetry]=useState(0);
   useEffect(()=>{
     let active=true,timer:ReturnType<typeof setTimeout>;

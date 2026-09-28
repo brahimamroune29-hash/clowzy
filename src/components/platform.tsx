@@ -2,12 +2,13 @@
 import { useCallback,useEffect,useRef,useState } from 'react';
 import Link from 'next/link';
 import { usePathname,useRouter,useSearchParams } from 'next/navigation';
-import { ChartPieSlice, ClockCounterClockwise, Coins, GearSix, House, List, MagnifyingGlass, SignOut, SquaresFour, UsersThree, X, CheckCircle, WarningCircle, ShieldCheck, ArrowLeft } from '@phosphor-icons/react';
+import { ChartPieSlice, ClockCounterClockwise, Coins, GearSix, House, List, MagnifyingGlass, SignOut, SquaresFour, UsersThree, X, CheckCircle, WarningCircle, ArrowLeft } from '@phosphor-icons/react';
 import type { Snapshot } from '@/lib/contracts';
 import { api,number } from '@/lib/client';
 import { overviewOnly,weekBoundaries } from '@/lib/overview';
 import { Brand } from './ui';
 import Auth from './auth';
+import { TermsGate, TermsPage } from './terms';
 import { Dashboard, SearchView, LeadsView, HistoryView, CreditsView, SettingsView } from './member-views';
 import { AdminDashboard, MembersView, ActivityView } from './admin-views';
 export type ViewProps = {data:Snapshot;reload:()=>Promise<void>;notify:(message:string,error?:boolean)=>void};
@@ -38,9 +39,11 @@ export default function Platform(){
   async function onLogin(){await refresh();router.replace('/dashboard');}
   async function logout(){requestVersion.current++;await api('auth/logout',{});setData(null);router.replace('/');}
   const token=query.get('token')||undefined;
+  if(pathname==='/terms')return <TermsPage/>;
   if(loading||loadedPath!==requestPath)return <div className="boot"><Brand/><p>نجهّز مساحة عملك…</p><span className="loading-line"/></div>;
   if((pathname==='/invite'||pathname==='/reset')&&token)return <Auth onLogin={onLogin} token={token} reset={pathname==='/reset'}/>;
   if(!data)return <Auth onLogin={onLogin}/>;
+  if(data.user.role==='member'&&!data.user.terms_accepted_at)return <TermsGate onAccepted={refresh} onLogout={logout}/>;
   const admin=data.user.role==='admin',nav=admin?adminNav:memberNav,viewProps={data,reload:refresh,notify};
   let page:React.ReactNode;
   if(pathname==='/settings')page=<SettingsView {...viewProps}/>;
@@ -61,9 +64,8 @@ export default function Platform(){
       <Link href="/settings" className={'nav-item '+(pathname==='/settings'?'active':'')} onClick={()=>setMenu(false)}><GearSix size={21} weight="light"/><span>إعدادات الحساب</span></Link>
       <div className="profile"><span className="avatar">{data.user.name.split(' ').map(x=>x[0]).slice(0,2).join('')}</span><div><strong>{data.user.name}</strong><small>{admin?'مالك المنصة':'مشترك'}</small></div><button className="icon-button" aria-label="تسجيل الخروج" onClick={logout}><SignOut size={20}/></button></div></div>
     </aside>
-    <div className="main-area"><header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-only" aria-label="فتح القائمة" onClick={()=>setMenu(true)}><List size={24}/></button><span>{admin?'إدارة المنصة':'مساحة العمل'}</span><span className="slash">/</span><strong>{label}</strong></div><div className="topbar-tools"><span className="local-badge"><span/>معاينة محلية</span><span className="topbar-avatar">{data.user.name[0]}</span></div></header>
-    <div className="demo-banner"><ShieldCheck size={17}/><span>{data.provider?.configured?'تجربة محلية مع FullEnrich. البحث يستهلك رصيد المزود؛ النتائج القديمة المعلّمة تجريبية ما زالت محفوظة. مساعد الاستهداف محاكاة.':'تجربة محلية. أضف مفتاح FullEnrich لتفعيل البحث الحقيقي. النتائج القديمة والمساعد تجريبيان.'}</span></div>
-    <main className="page-content" key={pathname}>{page}</main><footer className="app-footer"><span>clowzy — مساحة الفرص</span><span>نسخة معاينة · 0.1</span></footer></div>
+    <div className="main-area"><header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-only" aria-label="فتح القائمة" onClick={()=>setMenu(true)}><List size={24}/></button><span>{admin?'إدارة المنصة':'مساحة العمل'}</span><span className="slash">/</span><strong>{label}</strong></div><div className="topbar-tools"><span className="topbar-avatar">{data.user.name[0]}</span></div></header>
+    <main className="page-content" key={pathname}>{page}</main><footer className="app-footer"><span>clowzy — مساحة الفرص</span><Link href="/terms">شروط الاستخدام</Link></footer></div>
     {toast&&<div className={'toast '+(toast.error?'toast-error':'')} role="status">{toast.error?<WarningCircle size={22}/>:<CheckCircle size={22}/>}<span>{toast.message}</span><button className="icon-button" aria-label="إغلاق التنبيه" onClick={()=>setToast(null)}><X size={17}/></button></div>}
   </div>;
 }

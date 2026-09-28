@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { AppError, getStore } from '@/lib/store';
 import { searchSchema } from '@/lib/contracts';
-import { suggestFilters } from '@/lib/demo-provider';
 import { IcypeasClient, IcypeasError, providerInfo } from '@/lib/icypeas';
 import { LiveSearch } from '@/lib/live-search';
 import { contactsCsv } from '@/lib/csv';
@@ -81,6 +80,8 @@ async function handle(req: NextRequest, { params }: { params: Promise<{ path: st
     }
     const user = store.session(session);
     rateLimit(user.id, 120);
+    // Members see no data and spend no credits before accepting the terms (the UI gate alone is not enough).
+    if (user.role === 'member' && !user.terms_accepted_at && path !== 'bootstrap' && path !== 'terms') throw new AppError('وافق على شروط الاستخدام أولًا.', 403);
     if (req.method === 'GET' && path === 'bootstrap') {
       const view=z.enum(['overview','full']).parse(req.nextUrl.searchParams.get('view')||'overview');
       if(view==='full') return json({...store.snapshot(user.id),provider:providerInfo()});
@@ -110,15 +111,14 @@ async function handle(req: NextRequest, { params }: { params: Promise<{ path: st
       store.admin(user.id);
       return json(await new IcypeasClient().verify());
     }
-    if (path === 'assistant') {
-      rateLimit('assistant:' + user.id, 15);
-      const { description } = z.object({ description:z.string().trim().min(8).max(2000) }).parse(b);
-      return json(suggestFilters(description));
-    }
     if (path === 'export') {
       const options = z.object({ ids:z.array(z.string().uuid()).min(1).max(1000).optional(), searchId:z.string().uuid().optional() }).parse(b);
       const contacts = store.contactsForExport(user.id, options.ids, options.searchId);
       return new NextResponse(contactsCsv(contacts), {headers:{ 'Content-Type':'text/csv; charset=utf-8', 'Content-Disposition':'attachment; filename="clowzy-contacts.csv"', 'Cache-Control':'no-store' }});
+    }
+    if (path === 'terms') {
+      store.acceptTerms(user.id);
+      return json({ok:true});
     }
     if (path === 'profile') {
       const data = z.object({name:z.string().trim().min(2).max(60)}).parse(b);

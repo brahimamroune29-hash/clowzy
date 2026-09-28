@@ -9,7 +9,7 @@ export function seedPerformanceFixture(store: Store) {
   const owner=store.addUser('مالك الاختبار','owner@wasl.example','benchmark-only-password','admin');
   const heavy=store.addUser('مشترك الاختبار الكبير','member@wasl.example','benchmark-only-password','member',20000);
   const encoded=(store.db.prepare('SELECT password_hash FROM users WHERE id=?').get(heavy.id) as {password_hash:string}).password_hash;
-  const insertUser=store.db.prepare('INSERT INTO users VALUES(?,?,?,?,?,?,?,?)');
+  const insertUser=store.db.prepare('INSERT INTO users(id,name,email,password_hash,role,active,balance,created_at) VALUES(?,?,?,?,?,?,?,?)');
   const insertSearch=store.db.prepare('INSERT INTO searches(id,user_id,request_id,filters,title,requested,delivered,status,created_at) VALUES(?,?,?,?,?,?,?,?,?)');
   const insertContact=store.db.prepare('INSERT INTO contacts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
   const insertLedger=store.db.prepare('INSERT INTO ledger VALUES(?,?,?,?,?,?,?,?)');

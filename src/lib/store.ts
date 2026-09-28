@@ -22,7 +22,7 @@ const checkPassword = (password: string, encoded: string) => {
   const actual = scryptSync(password, salt, 64), expected = Buffer.from(stored, 'hex');
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 };
-const userFields = 'id,name,email,role,active,balance,created_at';
+const userFields = 'id,name,email,role,active,balance,created_at,terms_accepted_at';
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
 
 export class Store {
@@ -35,7 +35,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
         role TEXT NOT NULL CHECK(role IN ('admin','member')), active INTEGER NOT NULL DEFAULT 1,
-        balance INTEGER NOT NULL DEFAULT 0 CHECK(balance >= 0), created_at TEXT NOT NULL
+        balance INTEGER NOT NULL DEFAULT 0 CHECK(balance >= 0), created_at TEXT NOT NULL, terms_accepted_at TEXT
       );
       CREATE TABLE IF NOT EXISTS sessions (
         token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires_at TEXT NOT NULL
@@ -103,6 +103,8 @@ export class Store {
       CREATE INDEX IF NOT EXISTS searches_owner ON searches(user_id,created_at);
       CREATE INDEX IF NOT EXISTS ledger_owner ON ledger(user_id,created_at);
     `);
+    // Databases created before the terms page get the column added in place.
+    if (!(this.db.prepare('PRAGMA table_info(users)').all() as {name:string}[]).some(c => c.name === 'terms_accepted_at')) this.db.exec('ALTER TABLE users ADD COLUMN terms_accepted_at TEXT');
   }
   close() { this.db.close(); }
   transaction<T>(fn: () => T): T {
@@ -441,6 +443,10 @@ export class Store {
       }
       this.audit(adminId, active ? 'تفعيل الحساب' : 'تعطيل الحساب', target.name);
     });
+  }
+  acceptTerms(id: string) {
+    this.user(id);
+    this.db.prepare('UPDATE users SET terms_accepted_at=? WHERE id=? AND terms_accepted_at IS NULL').run(now(), id);
   }
   updateProfile(id: string, name: string) {
     this.user(id);

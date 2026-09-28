@@ -7,8 +7,7 @@ import { join } from 'node:path';
 import { IcypeasClient, IcypeasError, peopleQuery, safeWebsite } from '../src/lib/icypeas';
 import { LiveSearch } from '../src/lib/live-search';
 import { Store } from '../src/lib/store';
-import { searchSchema, type SearchInput } from '../src/lib/contracts';
-import { suggestFilters } from '../src/lib/demo-provider';
+import type { SearchInput } from '../src/lib/contracts';
 
 const input = (count = 2): SearchInput => ({ sector: 'التقنية والبرمجيات', country: 'السعودية', city: '', title: '', size: 'all', count, confirmed: true, requestId: randomUUID() });
 const lead = (id: string) => ({ firstname: 'Person', lastname: id, profileUrl: 'https://www.linkedin.com/in/' + id, lastJobTitle: 'CEO', address: 'Riyadh, Riyadh, Saudi Arabia', lastCompanyName: 'Company ' + id, lastCompanyWebsite: 'https://www.company-' + id + '.example/about', lastCompanyIndustry: 'Software Development', lastCompanySize: 12 });
@@ -181,11 +180,6 @@ test('missing key never calls the provider; provider errors are clear', async ()
   await assert.rejects(mockTransport({ http: 401 }).client.verify(), /غير صالح/);
 });
 
-test('assistant suggestion from its own placeholder example passes the live search mapping', () => {
-  const suggested = suggestFilters('أقدم خدمات تسويق وأبحث عن شركات عقارية في دبي');
-  assert.equal(suggested.title, 'Marketing Director');
-  assert.doesNotThrow(() => peopleQuery(searchSchema.parse({ ...suggested, confirmed: true, requestId: randomUUID() })));
-});
 
 test('two overlapping polls deliver once and submit the next batch once (no paid-but-lost batch)', async () => {
   const pages = [{ leads: ['a', 'b', 'c', 'd'].map(lead), token: 't1' }, { leads: [lead('e')] }];

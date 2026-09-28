@@ -1,5 +1,6 @@
 'use client';
 import { useEffect,useState } from 'react';
+import Link from 'next/link';
 import { Check, LockKey, Sparkle, UsersThree, EnvelopeSimple } from '@phosphor-icons/react';
 import { api } from '@/lib/client';
 import { Brand, Button, Field, Notice } from './ui';
@@ -23,10 +24,10 @@ export default function Auth({onLogin,token,reset=false}:{onLogin:()=>Promise<vo
         {invitation&&<div className="invited-email"><EnvelopeSimple size={20}/><span dir="ltr">{invitation.email}</span></div>}
         <Field label={token?'كلمة مرور جديدة':'كلمة المرور'} hint={token?'10 أحرف على الأقل.':''}><input autoComplete={token?'new-password':'current-password'} type="password" minLength={token?10:undefined} maxLength={128} placeholder="••••••••••" value={password} onChange={e=>setPassword(e.target.value)} required/></Field>
         {!token&&<button type="button" className="text-button forget" onClick={()=>setHelp(!help)}>نسيت كلمة المرور؟</button>}
-        {help&&<Notice>اطلب من مالك المنصة رابط استعادة الوصول من صفحة المشتركين. إرسال البريد الآلي غير متصل في هذه المعاينة.</Notice>}
+        {help&&<Notice>اطلب من مالك المنصة رابط استعادة الوصول من صفحة المشتركين. </Notice>}
         <Button loading={busy} type="submit" arrow disabled={!!token&&!reset&&!invitation}>{token?'تفعيل الوصول':'تسجيل الدخول'}</Button>
       </form>
-    </div><div className="auth-footer"><LockKey size={16}/><span>مساحة خاصة. الدخول متاح بالدعوة.</span><span className="version">clowzy / 01</span></div></section>
+    </div><div className="auth-footer"><LockKey size={16}/><span>مساحة خاصة. الدخول متاح بالدعوة.</span><Link href="/terms">شروط الاستخدام</Link><span className="version">clowzy / 01</span></div></section>
     <section className="auth-art"><div className="art-top"><span>ابدأ بالعميل المناسب</span><span>clowzy / WORKSPACE</span></div>
       <div className="connection-art"><div className="orbit orbit-one"/><div className="orbit orbit-two"/><div className="orbit orbit-three"/><div className="art-core"><CirclesLogo/></div>
         <div className="floating-card float-one"><span className="small-icon"><UsersThree size={23}/></span><div><strong>جمهور يناسب خدمتك</strong><small>استهداف واضح، من البداية</small></div><span className="card-check"><Check size={14}/></span></div>

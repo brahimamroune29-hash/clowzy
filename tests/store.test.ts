@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync,rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/lib/store';
 import { demoCatalog } from '../src/lib/demo-provider';
 import { contactsCsv,cell } from '../src/lib/csv';
@@ -131,4 +132,16 @@ test('contacts and balance survive reopening local database',async()=>{
   const reopened=new Store(file);
   assert.equal(reopened.user(u.id).balance,3);assert.equal(reopened.snapshot(u.id).contacts.length,2);
   reopened.close();rmSync(dir,{recursive:true,force:true});
+});
+test('terms: a new account has not accepted; acceptance is recorded once and survives a reopen of an older database', () => {
+  const dir=mkdtempSync(join(tmpdir(),'wasl-terms-')),file=join(dir,'app.sqlite');
+  const old=new DatabaseSync(file);
+  old.exec("CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('admin','member')), active INTEGER NOT NULL DEFAULT 1, balance INTEGER NOT NULL DEFAULT 0 CHECK(balance >= 0), created_at TEXT NOT NULL)");
+  old.close();
+  const s=new Store(file),u=s.addUser('Member','terms@example.com','secure-password-123');
+  try {
+    assert.equal(s.user(u.id).terms_accepted_at,null);
+    s.acceptTerms(u.id);const first=s.user(u.id).terms_accepted_at;
+    assert.ok(first);s.acceptTerms(u.id);assert.equal(s.user(u.id).terms_accepted_at,first,'first acceptance time is kept');
+  } finally {s.close();rmSync(dir,{recursive:true,force:true});}
 });

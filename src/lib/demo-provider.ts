@@ -30,16 +30,3 @@ export const demoProvider = {
       && (f.size === 'all' || c.size === f.size));
   },
 } satisfies LeadProvider;
-
-export function suggestFilters(description: string) {
-  const text = description.toLowerCase();
-  const groups = [
-    ['تقني', 'برمج', 'saas', 'software'], ['عقار', 'real estate'], ['عياد', 'أسنان', 'اسنان', 'صح', 'clinic'],
-    ['تجار', 'متجر', 'ecommerce'], ['تعليم', 'تدريب', 'مدرس', 'training'], ['فندق', 'سياح', 'ضياف', 'hotel'],
-    ['محام', 'استشار', 'محاسب', 'consult'], ['صناع', 'مصنع', 'factory'],
-  ];
-  const sectorIndex = groups.findIndex(words => words.some(word => text.includes(word)));
-  const country = countries.find(c => text.includes(c)) || (text.includes('دبي') ? 'الإمارات' : text.includes('الرياض') || text.includes('جدة') ? 'السعودية' : text.includes('وهران') ? 'الجزائر' : text.includes('القاهرة') ? 'مصر' : 'السعودية');
-  const city = cities[country].find(c => text.includes(c)) || '';
-  return { sector: sectors[Math.max(0, sectorIndex)], country, city, title: text.includes('تسويق') ? 'Marketing Director' : '', size: 'all', count: 10, mode: 'demo' };
-}
