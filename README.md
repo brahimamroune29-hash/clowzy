@@ -8,7 +8,7 @@
 
 1. شغّل npm install.
 2. انسخ .env.example إلى .env.local إذا لم يكن الملف موجودًا.
-3. أضف FULLENRICH_API_KEY إلى .env.local للتجربة الحقيقية، ثم شغّل npm run dev. لا تضع المفتاح في متغير NEXT_PUBLIC.
+3. أضف ICYPEAS_API_KEY إلى .env.local، ثم شغّل npm run dev. لا تضع المفتاح في متغير NEXT_PUBLIC.
 4. أنشئ حساب المالك: npm run create-owner -- "الاسم" owner@company.com، ثم افتح الرابط المطبوع (صالح 24 ساعة، لمرة واحدة) واختر كلمة المرور.
 5. افتح http://127.0.0.1:3100.
 

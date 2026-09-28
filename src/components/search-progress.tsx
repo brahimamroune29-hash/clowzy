@@ -16,7 +16,7 @@ export function SearchProgress({search,reload}:{search:Search;reload:()=>Promise
         if(value.message)setMessage(value.message);
         if(value.status!=='awaiting_provider'){await reload();return;}
       }catch(e){if(active)setMessage((e as Error).message);}
-      if(active && Date.now()-began<10*60*1000)timer=setTimeout(poll,6000);
+      if(active && Date.now()-began<20*60*1000)timer=setTimeout(poll,6000);
       else if(active)setMessage('ما زال الطلب محفوظًا. اضغط متابعة لتحديث حالته، أو عد إليه لاحقًا من سجل البحث.');
     }
     void poll();

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const sectors = ['التقنية والبرمجيات', 'العقارات', 'الصحة والعيادات', 'التجارة الإلكترونية', 'التعليم والتدريب', 'السياحة والضيافة', 'الخدمات المهنية', 'الصناعة'] as const;
-export const countries = ['السعودية', 'الإمارات', 'الجزائر', 'مصر'] as const;
+export const countries = ['السعودية', 'الإمارات', 'قطر', 'الكويت', 'البحرين', 'عُمان', 'الجزائر', 'مصر'] as const;
 export const searchSchema = z.object({
   sector: z.enum(sectors),
   country: z.enum(countries),
@@ -27,7 +27,7 @@ export type OverviewStats = {
   weekly: { start: string; end: string; count: number }[];
 };
 export type Snapshot = {
-  provider?: { name: 'FullEnrich' | 'demo'; configured: boolean; maxCount: number };
+  provider?: { name: 'Icypeas'; configured: boolean; maxCount: number };
   user: User; contacts: Contact[]; searches: Search[]; ledger: Ledger[]; exports: ExportEvent[];
   summary?: OverviewStats;
   admin?: { users: AdminUser[]; invitations: Invitation[]; audit: AuditEvent[]; totals: { delivered: number; searches: number; exports: number; used: number; members?: number; activeMembers?: number } };

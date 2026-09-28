@@ -79,6 +79,18 @@ export class Store {
         amount INTEGER NOT NULL CHECK(amount > 0)
       );
       CREATE TABLE IF NOT EXISTS worker_heartbeats (id TEXT PRIMARY KEY, seen_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS provider_runs (
+        search_id TEXT PRIMARY KEY REFERENCES searches(id), phase TEXT NOT NULL, people TEXT NOT NULL DEFAULT '[]',
+        file TEXT, scanned INTEGER NOT NULL DEFAULT 0, submitted INTEGER NOT NULL DEFAULT 0,
+        submitted_at INTEGER, message TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS provider_cursors (
+        user_id TEXT NOT NULL REFERENCES users(id), query_key TEXT NOT NULL, stage INTEGER NOT NULL DEFAULT 0, token TEXT,
+        leftovers TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(user_id, query_key)
+      ) WITHOUT ROWID;
+      CREATE TABLE IF NOT EXISTS provider_seen (
+        user_id TEXT NOT NULL REFERENCES users(id), person_key TEXT NOT NULL, PRIMARY KEY(user_id, person_key)
+      ) WITHOUT ROWID;
       CREATE INDEX IF NOT EXISTS jobs_available ON search_jobs(available_at,lease_until);
       CREATE INDEX IF NOT EXISTS reservations_owner ON reservations(user_id);
       CREATE INDEX IF NOT EXISTS search_status ON searches(status,created_at);
@@ -278,6 +290,58 @@ export class Store {
     return !!this.db.prepare(`SELECT 1 FROM search_jobs j JOIN searches s ON s.id=j.search_id
       WHERE s.id=? AND s.status='running' AND j.lease_token=? AND j.lease_until>?`).get(searchId,token,Date.now());
   }
+  // Inserts new contacts for this search and debits 1 credit each, up to the requested count; duplicates for this
+  // member are counted, never charged. Returns the search's delivered total. Caller holds a transaction.
+  private deliverInto(search: Search, candidates: Candidate[]) {
+    const current=(this.db.prepare('SELECT delivered FROM searches WHERE id=?').get(search.id) as {delivered:number}).delivered;
+    const sector=(JSON.parse(search.filters) as SearchInput).sector, seen=new Set<string>();
+    let delivered=0, duplicates=0;
+    for (const candidate of candidates.slice(0,1000)) {
+      const email=normalizeEmail(candidate.email || '');
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length>254) continue;
+      if (seen.has(email) || this.db.prepare('SELECT 1 FROM contacts WHERE user_id=? AND email=?').get(search.user_id,email)) {duplicates++;continue;}
+      seen.add(email);
+      if (current+delivered>=search.requested) break;
+      const cid=randomUUID(),c:Candidate={...candidate,email};
+      this.db.prepare('INSERT INTO contacts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(cid,search.user_id,search.id,c.name,c.email,c.company,c.title,c.sector,c.country,c.city,c.website,c.size,c.source,c.email_status,now());
+      this.credit(search.user_id,-1,'debit','بريد جديد من '+sector,'delivery:'+cid);
+      delivered++;
+    }
+    this.db.prepare('UPDATE searches SET delivered=delivered+?,duplicates=duplicates+? WHERE id=?').run(delivered,duplicates,search.id);
+    return current+delivered;
+  }
+  // Provider flow (live-search.ts): deliver one batch into a search that is still waiting on the provider.
+  deliverBatch(userId: string, searchId: string, candidates: Candidate[]) {
+    return this.transaction(() => {
+      const search=this.db.prepare("SELECT * FROM searches WHERE id=? AND user_id=? AND status='awaiting_provider'").get(searchId,userId) as Search | undefined;
+      if (!search) return 0;
+      this.user(userId);
+      return this.deliverInto(search,candidates);
+    });
+  }
+  finishSearch(searchId: string) {
+    this.transaction(() => {
+      this.db.prepare("UPDATE searches SET status=CASE WHEN delivered>=requested THEN 'completed' ELSE 'partial' END WHERE id=? AND status='awaiting_provider'").run(searchId);
+      this.db.prepare('DELETE FROM reservations WHERE search_id=?').run(searchId);
+    });
+  }
+  // People already sent to the provider for this member, or already in their contacts, are not paid for again.
+  isKnownPerson(userId: string, key: string, name: string, company: string) {
+    return !!(this.db.prepare('SELECT 1 FROM provider_seen WHERE user_id=? AND person_key=?').get(userId,key)
+      || this.db.prepare('SELECT 1 FROM contacts WHERE user_id=? AND lower(name)=lower(?) AND lower(company)=lower(?)').get(userId,name.trim(),company.trim()));
+  }
+  markSeen(userId: string, key: string) { this.db.prepare('INSERT OR IGNORE INTO provider_seen VALUES(?,?)').run(userId,key); }
+  unmarkSeen(userId: string, keys: string[]) {
+    const remove=this.db.prepare('DELETE FROM provider_seen WHERE user_id=? AND person_key=?');
+    this.transaction(() => { for (const key of keys) remove.run(userId,key); });
+  }
+  // Where this member stopped in the provider's result list for the same filters, so repeat searches go deeper.
+  cursor(userId: string, queryKey: string) {
+    return (this.db.prepare('SELECT stage,token,leftovers FROM provider_cursors WHERE user_id=? AND query_key=?').get(userId,queryKey) as {stage:number;token:string|null;leftovers:string} | undefined) ?? {stage:0,token:null,leftovers:'[]'};
+  }
+  saveCursor(userId: string, queryKey: string, stage: number, token: string | null, leftovers: string) {
+    this.db.prepare('INSERT INTO provider_cursors VALUES(?,?,?,?,?) ON CONFLICT(user_id,query_key) DO UPDATE SET stage=excluded.stage,token=excluded.token,leftovers=excluded.leftovers').run(userId,queryKey,stage,token,leftovers);
+  }
   async executeJob(claim: {search: Search; token: string}, provider: LeadProvider = demoProvider, retry = true, timeoutMs = 30000) {
     const {search,token} = claim, input: SearchInput = JSON.parse(search.filters);
     const controller = new AbortController();
@@ -289,20 +353,8 @@ export class Store {
       this.transaction(() => {
         if (!this.ownsJob(search.id,token)) return;
         this.user(search.user_id);
-        let delivered=0, duplicates=0;
-        const seen=new Set<string>();
-        for (const candidate of candidates.slice(0,1000)) {
-          const email=normalizeEmail(candidate.email || '');
-          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length>254) continue;
-          if (seen.has(email) || this.db.prepare('SELECT 1 FROM contacts WHERE user_id=? AND email=?').get(search.user_id,email)) {duplicates++;continue;}
-          seen.add(email);
-          if (delivered>=input.count) break;
-          const cid=randomUUID(),c:Candidate={...candidate,email};
-          this.db.prepare('INSERT INTO contacts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(cid,search.user_id,search.id,c.name,c.email,c.company,c.title,c.sector,c.country,c.city,c.website,c.size,c.source,c.email_status,now());
-          this.credit(search.user_id,-1,'debit','بريد جديد من '+input.sector,'delivery:'+cid);
-          delivered++;
-        }
-        this.db.prepare('UPDATE searches SET delivered=?,duplicates=?,status=? WHERE id=?').run(delivered,duplicates,delivered<input.count?'partial':'completed',search.id);
+        const delivered=this.deliverInto(search,candidates);
+        this.db.prepare('UPDATE searches SET status=? WHERE id=?').run(delivered<input.count?'partial':'completed',search.id);
         this.db.prepare('DELETE FROM reservations WHERE search_id=?').run(search.id);
         this.db.prepare('UPDATE search_jobs SET lease_token=NULL,lease_until=NULL,last_error=NULL WHERE search_id=?').run(search.id);
       });
@@ -384,7 +436,7 @@ export class Store {
       this.db.prepare('UPDATE users SET active=? WHERE id=?').run(active ? 1 : 0, userId);
       if (!active) {
         this.db.prepare('DELETE FROM sessions WHERE user_id=?').run(userId);
-        this.db.prepare("UPDATE searches SET status='cancelled' WHERE user_id=? AND status IN ('queued','running')").run(userId);
+        this.db.prepare("UPDATE searches SET status='cancelled' WHERE user_id=? AND status IN ('queued','running','awaiting_provider')").run(userId);
         this.db.prepare('DELETE FROM reservations WHERE user_id=?').run(userId);
       }
       this.audit(adminId, active ? 'تفعيل الحساب' : 'تعطيل الحساب', target.name);

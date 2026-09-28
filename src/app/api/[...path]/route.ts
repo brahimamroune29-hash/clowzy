@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { AppError, getStore } from '@/lib/store';
 import { searchSchema } from '@/lib/contracts';
 import { suggestFilters } from '@/lib/demo-provider';
-import { FullEnrichClient, FullEnrichError, providerInfo } from '@/lib/fullenrich';
+import { IcypeasClient, IcypeasError, providerInfo } from '@/lib/icypeas';
 import { LiveSearch } from '@/lib/live-search';
 import { contactsCsv } from '@/lib/csv';
 import { weekBoundariesSchema } from '@/lib/overview';
@@ -99,7 +99,7 @@ async function handle(req: NextRequest, { params }: { params: Promise<{ path: st
     if (path === 'search') {
       const input = searchSchema.parse(b);
       rateLimit('search:' + user.id, 20);
-      if (!providerInfo().configured) throw new AppError('أضف مفتاح FullEnrich إلى .env.local ثم أعد تشغيل المنصة.',503);
+      if (!providerInfo().configured) throw new AppError('مزوّد البيانات غير مهيأ على الخادم. تواصل مع مالك المنصة.',503);
       return json(await new LiveSearch(store).start(user.id,input));
     }
     if (path === 'search/poll') {
@@ -108,7 +108,7 @@ async function handle(req: NextRequest, { params }: { params: Promise<{ path: st
     }
     if (path === 'provider/verify') {
       store.admin(user.id);
-      return json(await new FullEnrichClient().verify());
+      return json(await new IcypeasClient().verify());
     }
     if (path === 'assistant') {
       rateLimit('assistant:' + user.id, 15);
@@ -151,7 +151,7 @@ async function handle(req: NextRequest, { params }: { params: Promise<{ path: st
     throw new AppError('العملية المطلوبة غير موجودة.', 404);
   } catch (error) {
     if (error instanceof z.ZodError) return json({error:'راجع البيانات المدخلة، وتأكد من تأكيد معايير البحث.'},400);
-    if (error instanceof FullEnrichError) return json({error:error.message},502);
+    if (error instanceof IcypeasError) return json({error:error.message},error.status);
     if (error instanceof AppError) {
       // Denials must be visible in the server log: a wrong APP_URL would otherwise reject every user silently.
       if ([403,413,415,429,503].includes(error.status)) console.warn('API denied', error.status, req.method, req.nextUrl.pathname, error.message);
