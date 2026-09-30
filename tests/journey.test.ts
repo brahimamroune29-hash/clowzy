@@ -1,0 +1,249 @@
+import { test, type TestContext } from 'node:test';
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { NextRequest } from 'next/server';
+import { GET, POST } from '../src/app/api/[...path]/route';
+import type { Store } from '../src/lib/store';
+import { testStore } from './pg';
+
+// The member journey through the real API handler (invite -> password -> terms -> count -> search -> poll -> export),
+// with a fake Icypeas behind global fetch and a mocked clock, including the ways the provider can fail.
+const APP = 'https://clowzy.test';
+process.env.APP_URL = APP;
+process.env.DATABASE_URL = 'postgres://unused'; // getStore() returns the test store set on globalThis below
+process.env.ICYPEAS_API_KEY = 'journey-secret';
+const holder = globalThis as unknown as { waslStore?: Store };
+let clock = Date.parse('2026-10-01T08:00:00Z');
+
+type Lead = ReturnType<typeof lead>;
+const lead = (id: string) => ({ firstname: 'Person', lastname: id, profileUrl: 'https://www.linkedin.com/in/' + id, lastJobTitle: 'CEO', address: 'Riyadh, Saudi Arabia', lastCompanyName: 'Co ' + id, lastCompanyWebsite: 'https://co-' + id + '.example', lastCompanyIndustry: 'Software Development', lastCompanySize: 12 });
+const people = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => lead(prefix + i));
+
+// strict/broad: people per stage. found: ids with a very_sure email. pendingReads: reads answered "in progress" first.
+type Fake = { strict?: Lead[]; broad?: Lead[]; found?: (id: string) => boolean; submit?: 'ok' | 'no-credits' | 'throw'; down?: boolean; pendingReads?: number; neverDone?: boolean };
+function provider(o: Fake = {}) {
+  const strict = o.strict ?? people('s', 30), broad = o.broad ?? [], found = o.found ?? (() => true), files: string[][] = [], calls: string[] = [];
+  let pending = o.pendingReads ?? 0;
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    const path = String(url).replace('https://app.icypeas.com/api/', ''), body = JSON.parse(String(init.body));
+    calls.push(path);
+    if (o.down) throw new TypeError('fetch failed');
+    const list = body.query?.location?.exclude ? broad : strict;
+    if (path === 'find-people/count') return Response.json({ success: true, total: list.length });
+    if (path === 'find-people') {
+      const from = body.pagination?.token ? Number(body.pagination.token.slice(1)) : 0, to = from + body.pagination.size;
+      return Response.json({ success: true, total: list.length, leads: list.slice(from, to), ...(to < list.length ? { pagination: { token: 'p' + to } } : {}) });
+    }
+    if (path === 'bulk-search') {
+      if (o.submit === 'no-credits') return Response.json({ success: false, validationErrors: [{ message: 'InsufficientCredits' }] });
+      if (o.submit === 'throw') throw new TypeError('socket hang up');
+      files.push(body.data.map((row: string[]) => row[1]));
+      return Response.json({ success: true, file: 'f' + files.length });
+    }
+    if (path === 'bulk-single-searchs/read') {
+      const ids = files[Number(body.file.slice(1)) - 1], waiting = o.neverDone || pending-- > 0;
+      return Response.json({ success: true, items: ids.map((id, i) => ({ _id: 'i' + i, status: waiting ? 'IN_PROGRESS' : found(id) ? 'DEBITED' : 'DEBITED_NOT_FOUND', userData: { externalId: String(i) },
+        results: { emails: !waiting && found(id) ? [{ email: id + '@co-' + id + '.example', certainty: 'very_sure' }] : [] } })) });
+    }
+    throw new Error('unexpected provider path ' + path);
+  }) as typeof fetch;
+  return { calls, submits: () => calls.filter(c => c === 'bulk-search').length };
+}
+
+function browser() {
+  let cookie = '';
+  const ip = '10.0.' + Math.floor(Math.random() * 250) + '.' + Math.floor(Math.random() * 250);
+  return async function call(path: string, body?: unknown) {
+    const method = body === undefined ? 'GET' : 'POST';
+    const req = new NextRequest(APP + '/api/' + path, { method, body: body === undefined ? undefined : JSON.stringify(body),
+      headers: { host: 'clowzy.test', origin: APP, 'content-type': 'application/json', 'x-forwarded-for': ip, ...(cookie ? { cookie } : {}) } });
+    const res = await (method === 'GET' ? GET : POST)(req, { params: Promise.resolve({ path: path.split('?')[0].split('/') }) });
+    const set = res.headers.get('set-cookie');
+    if (set) cookie = set.split(';')[0];
+    const data = (res.headers.get('content-type') || '').includes('json') ? await res.json() : await res.text();
+    return { status: res.status, data };
+  };
+}
+type Call = ReturnType<typeof browser>;
+
+async function setup(t: TestContext, credits = 20) {
+  clock += 3600000; // a fresh minute for the in-memory rate limits of every test
+  t.mock.timers.enable({ apis: ['Date'], now: clock });
+  const store = holder.waslStore = await testStore();
+  t.after(() => store.close());
+  await store.addUser('المالك', 'owner@clowzy.test', 'owner-password-1', 'admin');
+  const owner = browser();
+  assert.equal((await owner('auth/login', { email: 'owner@clowzy.test', password: 'owner-password-1' })).status, 200);
+  const invite = await owner('admin/invite', { name: 'سارة', email: 'sara@clinic.test', credits });
+  assert.equal(invite.status, 200);
+  const member = browser();
+  assert.equal((await member('invitation?token=' + invite.data.token)).data.name, 'سارة');
+  assert.equal((await member('auth/accept', { token: invite.data.token, password: 'sara-password-1' })).status, 200);
+  assert.equal((await member('terms', {})).status, 200);
+  return { store, owner, member, token: invite.data.token as string };
+}
+const form = (count: number) => ({ sector: 'التقنية والبرمجيات', country: 'السعودية', city: '', title: '', size: 'all', count, confirmed: true, requestId: randomUUID() });
+const me = async (member: Call) => (await member('bootstrap?view=full')).data;
+async function finish(t: TestContext, member: Call, id: string, stepMs = 10000) {
+  for (let i = 0; i < 200; i++) {
+    t.mock.timers.tick(stepMs);
+    const r = await member('search/poll', { searchId: id });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    if (r.data.status !== 'awaiting_provider') return r.data;
+  }
+  throw new Error('the search never finished');
+}
+
+test('journey: invited member searches, gets the requested emails, pays one credit each, exports them', async t => {
+  const { store, owner, member, token } = await setup(t);
+  const fake = provider();
+  assert.equal((await browser()('auth/accept', { token, password: 'another-password' })).status, 410); // the link works once
+  const count = await member('search/count', form(3));
+  assert.deepEqual(count.data, { total: 30, strict: 30 });
+  const input = form(3), started = await member('search', input);
+  assert.equal(started.status, 200);
+  assert.equal((await member('search', input)).data.id, started.data.id); // a double click is the same search
+  const done = await finish(t, member, started.data.id);
+  assert.equal(done.status, 'completed');
+  assert.equal(done.delivered, 3);
+  const account = await me(member);
+  assert.equal(account.user.balance, 17);
+  assert.equal(account.contacts.length, 3);
+  const csv = await member('export', { searchId: started.data.id });
+  assert.equal(csv.status, 200);
+  assert.equal(csv.data.trim().split('\n').length, 4); // header + 3 contacts
+  // A second search with the same filters goes deeper: new people, never the same emails again.
+  const again = await member('search', form(2));
+  const second = await finish(t, member, again.data.id);
+  assert.equal(second.delivered, 2);
+  assert.equal(new Set((await me(member)).contacts.map((c: { email: string }) => c.email)).size, 5);
+  assert.equal((await me(member)).user.balance, 15);
+  assert.equal(fake.submits(), 2);
+  // The member cannot reach the owner's tools; the owner sees the spend.
+  assert.equal((await member('admin/credits', { userId: account.user.id, mode: 'add', amount: 100, reason: 'hack', requestId: randomUUID() })).status, 403);
+  const admin = await me(owner);
+  assert.equal(admin.admin.totals.delivered, 5);
+  assert.equal((await store.db.get<{ n: number }>('SELECT count(*)::int n FROM reservations'))!.n, 0);
+});
+
+test('journey: fewer emails than requested -> charged only for what arrived, and told why', async t => {
+  const { member } = await setup(t);
+  provider({ strict: people('s', 12), found: id => id === 's3' });
+  const started = await member('search', form(5));
+  const done = await finish(t, member, started.data.id);
+  assert.equal(done.status, 'partial');
+  assert.equal(done.delivered, 1);
+  assert.match(done.message, /بحثنا عن بريد 12/);
+  assert.equal((await me(member)).user.balance, 19);
+});
+
+test('journey: nobody matches -> nothing charged, clear advice', async t => {
+  const { member } = await setup(t);
+  provider({ strict: [] });
+  assert.equal((await member('search/count', form(3))).data.total, 0);
+  const done = await member('search', form(3));
+  assert.equal(done.data.status, 'partial');
+  assert.equal(done.data.delivered, 0);
+  assert.match(done.data.message, /لا يوجد أشخاص/);
+  assert.equal((await me(member)).user.balance, 20);
+});
+
+test('journey: provider account out of credits -> the search fails cleanly, nothing charged, member can retry later', async t => {
+  const { store, member } = await setup(t);
+  provider({ submit: 'no-credits' });
+  const r = await member('search', form(3));
+  assert.equal(r.data.status, 'failed');
+  assert.match(r.data.message, /رصيد مزوّد البيانات/);
+  assert.equal((await me(member)).user.balance, 20);
+  assert.equal((await store.db.get<{ n: number }>('SELECT count(*)::int n FROM reservations'))!.n, 0);
+  provider(); // topped up
+  t.mock.timers.tick(60000);
+  const retry = await member('search', form(3));
+  assert.equal((await finish(t, member, retry.data.id)).delivered, 3); // the same people are offered again
+});
+
+test('journey: provider unreachable -> error shown, nothing charged', async t => {
+  const { member } = await setup(t);
+  provider({ down: true });
+  const count = await member('search/count', form(3));
+  assert.equal(count.status, 502);
+  const r = await member('search', form(3));
+  assert.equal(r.data.status, 'failed');
+  assert.equal((await me(member)).user.balance, 20);
+});
+
+test('journey: the paid submit times out -> marked uncertain, nothing charged, credits released', async t => {
+  const { store, member } = await setup(t);
+  provider({ submit: 'throw' });
+  const r = await member('search', form(3));
+  assert.equal(r.data.status, 'unknown');
+  assert.equal((await me(member)).user.balance, 20);
+  assert.equal((await store.db.get<{ n: number }>('SELECT count(*)::int n FROM reservations'))!.n, 0);
+});
+
+test('journey: slow provider -> the page keeps polling until the emails arrive', async t => {
+  const { member } = await setup(t);
+  provider({ pendingReads: 6 });
+  const started = await member('search', form(2));
+  const done = await finish(t, member, started.data.id);
+  assert.equal(done.delivered, 2);
+});
+
+test('journey: provider never finishes a batch -> closed after the deadline, nothing charged', async t => {
+  const { store, member } = await setup(t);
+  provider({ neverDone: true });
+  const started = await member('search', form(2));
+  const done = await finish(t, member, started.data.id, 60000);
+  assert.equal(done.delivered, 0);
+  assert.notEqual(done.status, 'awaiting_provider');
+  assert.equal((await me(member)).user.balance, 20);
+  assert.equal((await store.db.get<{ n: number }>('SELECT count(*)::int n FROM reservations'))!.n, 0);
+});
+
+test('journey: member closes the tab mid-search -> the next search closes it with what arrived', async t => {
+  const { member } = await setup(t);
+  provider();
+  const abandoned = await member('search', form(3));
+  t.mock.timers.tick(20 * 60000); // back 20 minutes later, no polls in between
+  const next = await member('search', form(2));
+  await finish(t, member, next.data.id);
+  const searches = (await me(member)).searches as { id: string; status: string; delivered: number }[];
+  const old = searches.find(s => s.id === abandoned.data.id)!;
+  assert.equal(old.status, 'completed');
+  assert.equal(old.delivered, 3);
+  assert.equal((await me(member)).user.balance, 15);
+});
+
+test('journey: no credits left -> the search is refused before anything is spent', async t => {
+  const { member } = await setup(t, 0);
+  const fake = provider();
+  const r = await member('search', form(1));
+  assert.equal(r.status, 400);
+  assert.equal(fake.submits(), 0);
+});
+
+test('journey: a member cannot see or export another member\'s results', async t => {
+  const { owner, member } = await setup(t);
+  provider();
+  const started = await member('search', form(2));
+  await finish(t, member, started.data.id);
+  const invite = await owner('admin/invite', { name: 'خالد', email: 'khaled@shop.test', credits: 5 });
+  const other = browser();
+  await other('auth/accept', { token: invite.data.token, password: 'khaled-password-1' });
+  await other('terms', {});
+  assert.equal((await other('search/poll', { searchId: started.data.id })).status, 404);
+  assert.equal((await other('export', { searchId: started.data.id })).status, 400);
+  const ids = (await me(member)).contacts.map((c: { id: string }) => c.id);
+  assert.equal((await other('export', { ids })).status, 403);
+});
+
+test('journey: owner deactivates a member mid-search -> signed out, search cancelled, nothing more charged', async t => {
+  const { owner, member } = await setup(t);
+  provider();
+  const account = await me(member);
+  const started = await member('search', form(3));
+  assert.equal((await owner('admin/status', { userId: account.user.id, active: false })).status, 200);
+  assert.equal((await member('search/poll', { searchId: started.data.id })).status, 401);
+  const users = (await me(owner)).admin.users as { id: string; balance: number }[];
+  assert.equal(users.find(u => u.id === account.user.id)!.balance, 20);
+});
