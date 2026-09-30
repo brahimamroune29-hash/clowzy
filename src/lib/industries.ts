@@ -1,5 +1,5 @@
 // Icypeas' exact industry names (find-people currentCompany.industry), from https://api-doc.icypeas.com/assets/files/industries-054af2e58c8a6e7bb3cbe357085f09c8.txt
-// fetched 2026-09-30. Server-only: the AI mapping for a typed sector is checked against this list.
+// fetched 2026-09-30, minus alcohol, nightlife and gambling (never searched for Gulf members). Server-only: the AI mapping for a typed sector is checked against this list.
 export const INDUSTRIES: readonly string[] = [
   "Abrasives and Nonmetallic Minerals Manufacturing",
   "Accessible Architecture and Design",
@@ -38,7 +38,6 @@ export const INDUSTRIES: readonly string[] = [
   "Aviation and Aerospace Component Manufacturing",
   "Baked Goods Manufacturing",
   "Banking",
-  "Bars, Taverns, and Nightclubs",
   "Bed-and-Breakfasts, Hostels, Homestays",
   "Beverage Manufacturing",
   "Biomass Electric Power Generation",
@@ -49,7 +48,6 @@ export const INDUSTRIES: readonly string[] = [
   "Boilers, Tanks, and Shipping Container Manufacturing",
   "Book and Periodical Publishing",
   "Book Publishing",
-  "Breweries",
   "Broadcast Media Production and Distribution",
   "Building Construction",
   "Building Equipment Contractors",
@@ -115,7 +113,6 @@ export const INDUSTRIES: readonly string[] = [
   "Design Services",
   "Desktop Computing Software Products",
   "Digital Accessibility Services",
-  "Distilleries",
   "E-learning",
   "E-Learning Providers",
   "Economic Programs",
@@ -167,7 +164,6 @@ export const INDUSTRIES: readonly string[] = [
   "Funds and Trusts",
   "Furniture",
   "Furniture and Home Furnishings Manufacturing",
-  "Gambling Facilities and Casinos",
   "Geothermal Electric Power Generation",
   "Glass Product Manufacturing",
   "Glass, Ceramics and Concrete Manufacturing",
@@ -460,7 +456,6 @@ export const INDUSTRIES: readonly string[] = [
   "Water, Waste, Steam, and Air Conditioning Services",
   "Wellness and Fitness Services",
   "Wholesale",
-  "Wholesale Alcoholic Beverages",
   "Wholesale Apparel and Sewing Supplies",
   "Wholesale Appliances, Electrical, and Electronics",
   "Wholesale Building Materials",
@@ -483,7 +478,6 @@ export const INDUSTRIES: readonly string[] = [
   "Wholesale Recyclable Materials",
   "Wind Electric Power Generation",
   "Wine & Spirits",
-  "Wineries",
   "Wireless Services",
   "Women's Handbag Manufacturing",
   "Wood Product Manufacturing",

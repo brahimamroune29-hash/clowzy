@@ -61,6 +61,8 @@ test('a typed sector maps to exact industry names only; nonsense or an AI outage
     const perfume = await resolveAudience(store, form({ sector: 'محلات العطور' }), ai([{ name: 'Retail Health and Personal Care Products', ar: 'متاجر العناية الشخصية' }, { name: 'Perfume Kingdom', ar: 'مخترع' }, { name: 'Cosmetics', ar: 'مستحضرات التجميل' }]));
     assert.deepEqual(perfume.industries, ['Retail Health and Personal Care Products', 'Cosmetics'], 'names outside the provider list are dropped');
     assert.deepEqual(perfume.industryLabels, ['متاجر العناية الشخصية', 'مستحضرات التجميل']);
+    const cafes = await resolveAudience(store, form({ sector: 'مطاعم وكافيهات' }), ai([{ name: 'Restaurants', ar: 'المطاعم' }, { name: 'Bars, Taverns, and Nightclubs', ar: 'الحانات والنوادي الليلية' }]));
+    assert.deepEqual(cafes.industryLabels, ['المطاعم'], 'alcohol, nightlife and gambling are never searched: they embarrass a Gulf member');
     let asked = 0;
     const nonsense: AiMapper = { ...noAi, sector: async () => { asked++; return [{ name: 'Not An Industry', ar: 'x' }]; } };
     for (let i = 0; i < 2; i++) await assert.rejects(resolveAudience(store, form({ sector: 'كلام بلا معنى' }), nonsense), (e: AppError) => e.status === 400);
