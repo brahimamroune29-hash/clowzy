@@ -36,8 +36,20 @@ revoke update, delete on clowzy.ledger, clowzy.audit, clowzy.contacts, clowzy.ex
   postgresql://clowzy_app.<project-ref>:<password>@aws-1-<region>.pooler.supabase.com:6543/postgres
 - الاتصال مشفّر ويتحقق من شهادة الخادم واسمه بشهادة Supabase الجذرية الرسمية (src/lib/supabase-ca.ts، صالحة حتى 2031-04-26).
 - كل تغيير في رصيد مشترك يجري في معاملة تقفل صفّه أولًا، فالطلبات المتزامنة من أي خادم تُطبَّق بالتتابع. الحجز وبدء البحث يُحفظان معًا أو لا يُحفظ أيهما.
-- ترحيلات قاعدة قائمة (تُطبَّق مرة بصلاحية المالك، والقاعدة الجديدة تأخذها من schema.sql):
-  - 30 سبتمبر 2026، ذاكرة «أخرى»: `create table clowzy.ai_cache (kind text not null, input text not null, output text not null, created_at text not null, primary key (kind, input));` (الصلاحيات تأتي من default privileges)، و`alter table clowzy.provider_runs add column read_errors integer not null default 0;` (أخطاء قراءة النتائج المتتالية)، و`create table clowzy.rate_hits (key text not null, window_start bigint not null, count integer not null, primary key (key, window_start));` (حد محاولات الدخول المشترك)، و`alter table clowzy.provider_runs add column fetched integer not null default 0;` (السقف اليومي).
+- ترحيلات قاعدة قائمة (القاعدة الجديدة تأخذها من schema.sql). ترحيل 30 سبتمبر 2026 يُطبَّق كتلة واحدة بصلاحية المالك، وصلاحيات دور التطبيق صريحة (default privileges لا تشمل جداول ينشئها دور آخر)، ولا بحث جارٍ (`select count(*) from clowzy.searches where status='awaiting_provider'` = 0):
+
+```sql
+begin;
+set local lock_timeout = '5s';
+create table clowzy.ai_cache (kind text not null, input text not null, output text not null, created_at text not null, primary key (kind, input));
+create table clowzy.rate_hits (key text not null, window_start bigint not null, count integer not null, primary key (key, window_start));
+alter table clowzy.provider_runs add column read_errors integer not null default 0;
+alter table clowzy.provider_runs add column fetched integer not null default 0;
+grant select, insert, update, delete on clowzy.ai_cache, clowzy.rate_hits to clowzy_app;
+commit;
+select has_table_privilege('clowzy_app', 'clowzy.rate_hits', 'SELECT,INSERT,UPDATE,DELETE') and has_table_privilege('clowzy_app', 'clowzy.ai_cache', 'SELECT,INSERT'); -- true قبل النشر
+```
+
 - فحص التزامن الحقيقي على القاعدة (لا تقدر عليه قاعدة الاختبار داخل العملية): DATABASE_URL=... npx tsx scripts/check-concurrency.ts. ينشئ بيانات مؤقتة ويحذفها بصلاحيات التطبيق وحدها.
 
 ## النشر (Vercel)
