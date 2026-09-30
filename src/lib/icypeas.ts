@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { SUBMIT_MULTIPLE, type Candidate, type SearchInput } from './contracts';
+import { SUBMIT_MULTIPLE, type Candidate, type Resolved } from './contracts';
+import { cityNames, countryLabel, englishName, placeOf } from './places';
 
 // status: HTTP status for the API response. uncertain: a paid request may have reached Icypeas.
 // rejected: Icypeas refused this exact request (validation / 4xx), e.g. an expired pagination token.
@@ -7,27 +8,14 @@ export class IcypeasError extends Error {
   constructor(message: string, public status = 502, public uncertain = false, public rejected = false) { super(message); }
 }
 export function providerInfo() {
-  return { name: 'Icypeas' as const, configured: !!process.env.ICYPEAS_API_KEY?.trim(), maxCount: 50 };
+  return { configured: !!process.env.ICYPEAS_API_KEY?.trim(), maxCount: 50 };
 }
-// Two stages per search: people matched by country code first (33% very-sure emails in an A/B on 2026-09-28), then people
-// matched only by the English country name (13%, but a larger pool). Measured with live batches of 15 each.
-const countryCodes: Record<SearchInput['country'], [string, string]> = {
-  السعودية: ['SA', 'Saudi Arabia'], الإمارات: ['AE', 'United Arab Emirates'], قطر: ['QA', 'Qatar'], الكويت: ['KW', 'Kuwait'],
-  البحرين: ['BH', 'Bahrain'], عُمان: ['OM', 'Oman'], الجزائر: ['DZ', 'Algeria'], مصر: ['EG', 'Egypt'],
-};
-// Names checked against Icypeas' published industry list (api-doc.icypeas.com, find-people).
-const industries: Record<SearchInput['sector'], string[]> = {
-  'التقنية والبرمجيات': ['Software Development', 'IT Services and IT Consulting'], 'العقارات': ['Real Estate'],
-  'الصحة والعيادات': ['Hospitals and Health Care', 'Medical Practices'], 'التجارة الإلكترونية': ['Online and Mail Order Retail', 'Internet Marketplace Platforms'],
-  'التعليم والتدريب': ['Education', 'Professional Training and Coaching'], 'السياحة والضيافة': ['Hospitality', 'Travel Arrangements'],
-  'الخدمات المهنية': ['Professional Services'], 'الصناعة': ['Manufacturing'],
-};
-const cityNames: Record<string, string> = {
-  'الرياض': 'Riyadh', 'جدة': 'Jeddah', 'الدمام': 'Dammam', 'الخبر': 'Khobar', 'مكة': 'Mecca', 'المدينة المنورة': 'Medina',
-  'دبي': 'Dubai', 'أبوظبي': 'Abu Dhabi', 'أبو ظبي': 'Abu Dhabi', 'الشارقة': 'Sharjah', 'عجمان': 'Ajman',
-  'الدوحة': 'Doha', 'مدينة الكويت': 'Kuwait City', 'المنامة': 'Manama', 'مسقط': 'Muscat',
-  'القاهرة': 'Cairo', 'الإسكندرية': 'Alexandria', 'الجيزة': 'Giza', 'الجزائر': 'Algiers', 'الجزائر العاصمة': 'Algiers', 'وهران': 'Oran', 'قسنطينة': 'Constantine',
-};
+// Two stages per search, both by where the person lives (profileLocation; `location` also matches the employer's office:
+// Qatar tech 16,771 vs 4,655 living there, free counts 2026-09-30): people tagged with a country code first, then people
+// whose profile names the country without the code (Arabic-localized profiles, e.g. 1.7M in Saudi Arabia). Never bare
+// 'عمان' for Oman: it also matches Amman.
+const broadArabic: Record<string, string> = { OM: 'سلطنة عمان' };
+const plain = (s: string) => s.replace(/[\u064B-\u0652]/g, '');
 export const BATCH = 100; // people per email submission: one results read covers a whole batch (reads return <= 100 rows)
 export const PAGE = 25; // people per find-people page (0.02 credit each); constant so a saved cursor stays valid across searches
 export const submitCap = (count: number) => count * SUBMIT_MULTIPLE;
@@ -35,23 +23,29 @@ export const submitCap = (count: number) => count * SUBMIT_MULTIPLE;
 export const fetchCap = (count: number) => count * 20;
 
 export const STAGES = 2;
-export type Audience = Pick<SearchInput, 'sector' | 'country' | 'city' | 'title' | 'size'>;
+export type Audience = Pick<Resolved, 'countries' | 'city' | 'size' | 'industries' | 'titles'>;
 export function peopleQuery(input: Audience, stage = 0) {
-  const typed = input.city.trim(), city = Object.hasOwn(cityNames, typed) ? cityNames[typed] : typed, title = input.title.trim(), [cc, country] = countryCodes[input.country];
-  if (/[؀-ۿ]/.test(city + title)) throw new IcypeasError('اكتب المدينة والمسمى الوظيفي بالإنجليزية، أو اتركهما فارغين.', 400);
+  const typed = input.city.trim(), city = Object.hasOwn(cityNames, typed) ? cityNames[typed] : typed, codes = [...new Set(input.countries)].sort();
+  if (/[؀-ۿ]/.test(city)) throw new IcypeasError('اكتب المدينة بالإنجليزية أو اختر مدينة رئيسية، أو اتركها فارغة.', 400);
+  if (city && codes.length !== 1) throw new IcypeasError('اختر دولة واحدة عند تحديد المدينة.', 400);
   const [min, max] = input.size === 'all' ? [] : input.size.split('-').map(Number);
-  const strict = city ? `${city}, ${cc}` : cc;
+  const strict = codes.map(cc => city ? `${city}, ${cc}` : cc);
   // Arabic-localized profiles read "<province> <city> <country>" (e.g. 'مكة جدة السعودية') and match as ordered phrases, so the
   // broad stage adds "<city> <country>" for each Arabic spelling of the city: never the province alone ('مكة' also matches Jeddah)
   // nor another country ('دبي السعودية': 3 people). Free counts on 2026-09-30, Jeddah e-commerce broad stage: 113 -> 228 people.
-  const arabic = Object.keys(cityNames).filter(k => city && cityNames[k].toLowerCase() === city.toLowerCase()).map(k => `${k} ${input.country.replace(/[\u064B-\u0652]/g, '')}`);
+  const broad = city
+    ? [`${city}, ${englishName(codes[0])}`, ...Object.keys(cityNames).filter(k => cityNames[k].toLowerCase() === city.toLowerCase()).map(k => `${k} ${plain(countryLabel(codes[0]))}`)]
+    : codes.flatMap(cc => [englishName(cc), broadArabic[cc] ?? countryLabel(cc)]);
   return {
-    location: stage === 0 ? { include: [strict] } : { include: [city ? `${city}, ${country}` : country, ...arabic], exclude: [strict] },
-    'currentCompany.industry': { include: industries[input.sector] },
-    ...(title ? { currentJobTitle: { include: [title] } } : {}),
+    profileLocation: stage === 0 ? { include: strict } : { include: broad, exclude: strict },
+    'currentCompany.industry': { include: input.industries },
+    ...(input.titles.length ? { currentJobTitle: { include: input.titles } } : {}),
     ...(input.size !== 'all' ? { 'currentCompany.headcount': { '>=': min, '<=': max } } : {}),
   };
 }
+
+// A member's place in the results, per audience: covers both stages, so a changed broad query never reuses an old token.
+export const cursorKey = (input: Audience) => JSON.stringify(Array.from({ length: STAGES }, (_, stage) => peopleQuery(input, stage)));
 
 const text = z.string().nullish();
 const leadSchema = z.object({
@@ -65,12 +59,19 @@ const itemSchema = z.object({
   results: z.object({ emails: z.array(z.object({ email: z.string(), certainty: z.string().nullish() })).nullish() }).nullish(),
 });
 const pending = ['NONE', 'SCHEDULED', 'IN_PROGRESS'];
-// Link pages, social networks and store builders host many companies: their domain is not the company's, so search by name.
-const sharedHost = /(^|\.)(linktr\.ee|lnk\.bio|linkin\.bio|bio\.link|beacons\.ai|taplink\.cc|instagram\.com|instagr\.am|facebook\.com|fb\.com|fb\.me|x\.com|twitter\.com|t\.co|tiktok\.com|snapchat\.com|linkedin\.com|youtube\.com|youtu\.be|wa\.me|wa\.link|whatsapp\.com|t\.me|goo\.gl|google\.com|business\.site|blogspot\.com|wordpress\.com|wixsite\.com|myshopify\.com|salla\.sa|zid\.store|youcan\.shop|expandcart\.com|wuilt\.com|zyda\.com|odoo\.com)$/i;
+// Link pages, social networks, store builders, forms and short links host many companies: their domain is not the company's.
+const sharedHost = /(^|\.)(linktr\.ee|lnk\.bio|linkin\.bio|bio\.link|beacons\.ai|taplink\.cc|instagram\.com|instagr\.am|facebook\.com|fb\.com|fb\.me|x\.com|twitter\.com|t\.co|tiktok\.com|snapchat\.com|linkedin\.com|youtube\.com|youtu\.be|wa\.me|wa\.link|whatsapp\.com|t\.me|goo\.gl|google\.com|business\.site|blogspot\.com|wordpress\.com|wixsite\.com|myshopify\.com|salla\.sa|zid\.store|youcan\.shop|expandcart\.com|wuilt\.com|zyda\.com|odoo\.com|forms\.gle|bit\.ly|tinyurl\.com|calendly\.com|about\.me|carrd\.co|github\.io|notion\.site)$/i;
+// Personal mailboxes: never a company domain, and never delivered (the platform promises work emails only).
+export const freeMail = /^((gmail|googlemail|hotmail|outlook|live|msn|yahoo|ymail|icloud|aol|protonmail|proton|yandex|gmx)(\.[a-z]{2,3}){1,2}|(me|mac|mail|rocketmail)\.com|emirates\.net\.ae|eim\.ae|batelco\.com\.bh|omantel\.net\.om|qatar\.net\.qa|qualitynet\.net)$/i; // incl. Gulf ISP mailboxes
+// Placeholder employers: without a website there is nothing to find an email at.
+const genericCompany = /^(confidential\b|private (company|office|sector)$|self[- ]?employed|freelancer?$|stealth\b|n\/?a$|none$|-+$)/i;
+const hostOf = (url: string) => { try { return new URL(/^https?:\/\//i.test(url) ? url : 'https://' + url).hostname.replace(/^www\d*\./i, '').toLowerCase(); } catch { return ''; } };
 const domainOf = (lead: Lead) => {
-  const site = (lead.lastCompanyWebsite || '').replace(/^https?:\/\/(www\.)?/i, '').replace(/[/?#].*$/, '').replace(/:\d+$/, '').trim();
-  return site && !sharedHost.test(site) ? site : (lead.lastCompanyName || '').trim();
+  const site = hostOf((lead.lastCompanyWebsite || '').trim()), name = (lead.lastCompanyName || '').trim();
+  return site && !sharedHost.test(site) && !freeMail.test(site) ? site : genericCompany.test(name) ? '' : name;
 };
+// The provider matched the search by profile location; the address is checked too, so nobody from another country is sent.
+const inCountries = (lead: Lead, codes: string[]) => { const { code } = placeOf(lead.address); return !code || codes.includes(code); };
 export const leadName = (lead: Lead) => [lead.firstname, lead.lastname].filter(Boolean).join(' ').trim();
 const nameKey = (name: string, company: string) => (name + '|' + company).trim().toLowerCase();
 export const personKey = (lead: Lead) => lead.profileUrl?.trim().toLowerCase() || nameKey(leadName(lead), lead.lastCompanyName || '');
@@ -117,12 +118,12 @@ export class IcypeasClient {
     return { total: totals.reduce((a, b) => a + b, 0), strict: totals[0] };
   }
   // One page of PAGE people (0.02 Icypeas credit each). token: continue where the previous page stopped.
-  async people(input: SearchInput, token?: string | null, stage = 0): Promise<{ leads: Lead[]; returned: number; token: string | null }> {
+  async people(input: Audience, token?: string | null, stage = 0): Promise<{ leads: Lead[]; returned: number; token: string | null }> {
     const raw = await this.request('find-people', { query: peopleQuery(input, stage), pagination: { size: PAGE, ...(token ? { token } : {}) } });
     const parsed = z.array(leadSchema).max(200).safeParse(raw.leads ?? []);
     if (!parsed.success) throw new IcypeasError('تغيّرت صيغة نتائج مزوّد البيانات. يلزم مراجعة الربط.');
     const next = z.object({ token: z.string().min(1) }).safeParse(raw.pagination);
-    return { leads: parsed.data.filter(lead => leadName(lead) && domainOf(lead)), returned: parsed.data.length, token: next.success ? next.data.token : null };
+    return { leads: parsed.data.filter(lead => leadName(lead) && domainOf(lead) && inCountries(lead, input.countries)), returned: parsed.data.length, token: next.success ? next.data.token : null };
   }
   async submit(leads: Lead[], name: string): Promise<string> {
     const raw = await this.request('bulk-search', {
@@ -143,14 +144,14 @@ export class IcypeasClient {
     const candidates: Candidate[] = [];
     for (const item of finished) {
       const lead = leads[Number(item.userData?.externalId)];
-      const email = item.results?.emails?.find(e => ['ultra_sure', 'very_sure'].includes(e.certainty || '') && z.email().safeParse(e.email).success);
+      const email = item.results?.emails?.find(e => ['ultra_sure', 'very_sure'].includes(e.certainty || '') && z.email().safeParse(e.email).success && !freeMail.test(e.email.split('@')[1]));
       if (!lead || !email) continue;
-      const place = (lead.address || '').split(',').map(s => s.trim()).filter(Boolean);
+      const place = placeOf(lead.address);
       candidates.push({
         name: leadName(lead), email: email.email, company: lead.lastCompanyName || '', title: lead.lastJobTitle || '',
-        sector: lead.lastCompanyIndustry || '', country: place.at(-1) || '', city: place.length > 1 ? place[0] : '',
+        sector: lead.lastCompanyIndustry || '', country: place.code ? countryLabel(place.code) : '', city: place.city,
         website: safeWebsite(lead.lastCompanyWebsite), size: lead.lastCompanySize == null ? '' : String(lead.lastCompanySize),
-        source: 'Icypeas', email_status: 'VERIFIED',
+        source: 'clowzy', email_status: 'VERIFIED',
       });
     }
     return { done: finished.length + malformed >= leads.length, candidates }; // a malformed row counts as finished without email

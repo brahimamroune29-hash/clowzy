@@ -60,6 +60,11 @@ create table clowzy.provider_seen (
   user_id text not null references clowzy.users(id), person_key text not null, primary key (user_id, person_key)
 );
 
+-- «أخرى»: one AI mapping per kind ('sector' | 'title') and normalized text, so the same words never pay twice.
+create table clowzy.ai_cache (
+  kind text not null, input text not null, output text not null, created_at text not null, primary key (kind, input)
+);
+
 create index reservations_owner on clowzy.reservations(user_id);
 create index search_status on clowzy.searches(status, created_at);
 create index searches_owner on clowzy.searches(user_id, created_at);

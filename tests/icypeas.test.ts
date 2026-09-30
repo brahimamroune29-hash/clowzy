@@ -1,13 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { IcypeasClient, IcypeasError, peopleQuery, personKey, safeWebsite } from '../src/lib/icypeas';
+import { cursorKey, freeMail, IcypeasClient, IcypeasError, peopleQuery, personKey, safeWebsite } from '../src/lib/icypeas';
 import { LiveSearch } from '../src/lib/live-search';
 import { Store } from '../src/lib/store';
-import { expectedEmails, type SearchInput } from '../src/lib/contracts';
+import { expectedEmails, type Resolved } from '../src/lib/contracts';
+import { audienceOf, SECTOR_INDUSTRIES } from '../src/lib/audience';
 import { hookDb, testStore } from './pg';
 
-const input = (count = 2): SearchInput => ({ sector: 'التقنية والبرمجيات', country: 'السعودية', city: '', title: '', size: 'all', count, confirmed: true, requestId: randomUUID() });
+const input = (count = 2): Resolved => audienceOf(JSON.stringify({ sector: 'التقنية والبرمجيات', countries: ['SA'], city: '', title: '', size: 'all', count, confirmed: true, requestId: randomUUID() }));
 const lead = (id: string) => ({ firstname: 'Person', lastname: id, profileUrl: 'https://www.linkedin.com/in/' + id, lastJobTitle: 'CEO', address: 'Riyadh, Riyadh, Saudi Arabia', lastCompanyName: 'Company ' + id, lastCompanyWebsite: 'https://www.company-' + id + '.example/about', lastCompanyIndustry: 'Software Development', lastCompanySize: 12 });
 const item = (i: number, email: string | null, certainty = 'ultra_sure', status = email ? 'DEBITED' : 'DEBITED_NOT_FOUND') => ({ _id: 'item' + i, status, userData: { externalId: String(i) }, results: { emails: email ? [{ email, certainty }] : [] } });
 const fresh = () => ({ gaps: { read: 0, bulk: 0 }, slots: { read: 0, bulk: 0 } });
@@ -15,7 +16,7 @@ const live = (store: Store, client: IcypeasClient, o = fresh()) => new LiveSearc
 
 // pages: find-people pages, a page's token points at the next page ('t1' -> pages[1]). files: result rows per bulk submission.
 function mockTransport(o: { pages?: { leads: unknown[]; token?: string }[]; broad?: { leads: unknown[]; token?: string }[]; files?: unknown[][]; bulkThrow?: boolean; bulkHttp?: number; bulkBody?: unknown; onRead?: (n: number) => Promise<void>; http?: number; expired?: string } = {}) {
-  type Body = { query?: { location?: { include?: string[]; exclude?: string[] } }; pagination?: { size?: number; token?: string }; data?: string[][]; file?: string };
+  type Body = { query?: { profileLocation?: { include?: string[]; exclude?: string[] } }; pagination?: { size?: number; token?: string }; data?: string[][]; file?: string };
   const calls: { path: string; body: Body }[] = [];
   let submitted = 0, reads = 0;
   const pages = o.pages ?? [{ leads: [lead('a'), lead('b'), lead('c')] }];
@@ -29,7 +30,7 @@ function mockTransport(o: { pages?: { leads: unknown[]; token?: string }[]; broa
     if (path === 'find-people/count') return Response.json({ success: true, total: 5 });
     if (path === 'find-people') {
       if (o.expired && body.pagination?.token === o.expired) return Response.json({ success: false, validationErrors: ['token expired'] });
-      const list = body.query?.location?.exclude ? (o.broad ?? []) : pages;
+      const list = body.query?.profileLocation?.exclude ? (o.broad ?? []) : pages;
       const page = list[body.pagination?.token ? Number(body.pagination.token.slice(1)) : 0] ?? { leads: [] };
       return Response.json({ success: true, total: 99, leads: page.leads, ...(page.token ? { pagination: { size: 100, token: page.token } } : {}) });
     }
@@ -55,25 +56,25 @@ async function setup() {
 const eligible = (store: Store) => store.db.run('UPDATE provider_runs SET updated_at=0');
 
 test('query: country code first, then name-only people; city narrowed; headcount range; Arabic free text is a 400', () => {
-  const q = peopleQuery({ ...input(), country: 'الإمارات', city: 'دبي', size: '11-50' });
-  assert.deepEqual(q.location, { include: ['Dubai, AE'] });
+  const q = peopleQuery({ ...input(), countries: ['AE'], city: 'دبي', size: '11-50' });
+  assert.deepEqual(q.profileLocation, { include: ['Dubai, AE'] }, 'where the person lives, not where their employer is');
   // The broad stage also matches Arabic-localized profiles ("<province> <city> <country>") by "<city> <country>" phrases.
-  assert.deepEqual(peopleQuery({ ...input(), country: 'الإمارات', city: 'دبي' }, 1).location, { include: ['Dubai, United Arab Emirates', 'دبي الإمارات'], exclude: ['Dubai, AE'] });
-  assert.deepEqual(peopleQuery({ ...input(), city: 'مكة' }, 1).location.include, ['Mecca, Saudi Arabia', 'مكة السعودية'], 'never bare مكة: Jeddah addresses start with the province مكة');
-  assert.deepEqual(peopleQuery({ ...input(), city: 'Jeddah' }, 1).location.include, ['Jeddah, Saudi Arabia', 'جدة السعودية'], 'typed in English: the same query as جدة');
-  assert.deepEqual(peopleQuery({ ...input(), city: 'دبي' }, 1).location.include, ['Dubai, Saudi Arabia', 'دبي السعودية'], 'scoped to the chosen country');
-  assert.deepEqual(peopleQuery({ ...input(), country: 'عُمان', city: 'مسقط' }, 1).location.include, ['Muscat, Oman', 'مسقط عمان'], 'addresses spell عمان without diacritics');
-  assert.deepEqual(peopleQuery({ ...input(), country: 'الجزائر', city: 'الجزائر' }, 1).location.include, ['Algiers, Algeria', 'الجزائر الجزائر', 'الجزائر العاصمة الجزائر']);
-  assert.deepEqual(peopleQuery({ ...input(), city: 'Tabuk' }, 1).location, { include: ['Tabuk, Saudi Arabia'], exclude: ['Tabuk, SA'] });
-  assert.deepEqual(peopleQuery({ ...input(), city: 'constructor' }, 1).location.include, ['constructor, Saudi Arabia'], 'object property names are plain text, not a crash');
-  assert.deepEqual(peopleQuery(input(), 1).location, { include: ['Saudi Arabia'], exclude: ['SA'] });
-  assert.deepEqual(q['currentCompany.industry'], { include: ['Software Development', 'IT Services and IT Consulting'] });
+  assert.deepEqual(peopleQuery({ ...input(), countries: ['AE'], city: 'دبي' }, 1).profileLocation, { include: ['Dubai, United Arab Emirates', 'دبي الإمارات'], exclude: ['Dubai, AE'] });
+  assert.deepEqual(peopleQuery({ ...input(), city: 'مكة' }, 1).profileLocation.include, ['Mecca, Saudi Arabia', 'مكة السعودية'], 'never bare مكة: Jeddah addresses start with the province مكة');
+  assert.deepEqual(peopleQuery({ ...input(), city: 'Jeddah' }, 1).profileLocation.include, ['Jeddah, Saudi Arabia', 'جدة السعودية'], 'typed in English: the same query as جدة');
+  assert.deepEqual(peopleQuery({ ...input(), city: 'دبي' }, 1).profileLocation.include, ['Dubai, Saudi Arabia', 'دبي السعودية'], 'scoped to the chosen country');
+  assert.deepEqual(peopleQuery({ ...input(), countries: ['OM'], city: 'مسقط' }, 1).profileLocation.include, ['Muscat, Oman', 'مسقط عمان'], 'addresses spell عمان without diacritics');
+  assert.deepEqual(peopleQuery({ ...input(), countries: ['DZ'], city: 'الجزائر' }, 1).profileLocation.include, ['Algiers, Algeria', 'الجزائر الجزائر', 'الجزائر العاصمة الجزائر']);
+  assert.deepEqual(peopleQuery({ ...input(), city: 'Tabuk' }, 1).profileLocation, { include: ['Tabuk, Saudi Arabia'], exclude: ['Tabuk, SA'] });
+  assert.deepEqual(peopleQuery({ ...input(), city: 'constructor' }, 1).profileLocation.include, ['constructor, Saudi Arabia'], 'object property names are plain text, not a crash');
+  assert.deepEqual(peopleQuery(input(), 1).profileLocation, { include: ['Saudi Arabia', 'السعودية'], exclude: ['SA'] }, 'Arabic-localized profiles carry no country code');
+  assert.deepEqual(q['currentCompany.industry'], { include: SECTOR_INDUSTRIES['التقنية والبرمجيات'] });
   assert.deepEqual(q['currentCompany.headcount'], { '>=': 11, '<=': 50 });
-  for (const [country, cc, name] of [['قطر', 'QA', 'Qatar'], ['الكويت', 'KW', 'Kuwait'], ['البحرين', 'BH', 'Bahrain'], ['عُمان', 'OM', 'Oman']] as const) {
-    assert.deepEqual(peopleQuery({ ...input(), country }).location, { include: [cc] });
-    assert.deepEqual(peopleQuery({ ...input(), country }, 1).location, { include: [name], exclude: [cc] });
+  for (const [cc, name, ar] of [['QA', 'Qatar', 'قطر'], ['KW', 'Kuwait', 'الكويت'], ['BH', 'Bahrain', 'البحرين'], ['OM', 'Oman', 'سلطنة عمان']] as const) {
+    assert.deepEqual(peopleQuery({ ...input(), countries: [cc] }).profileLocation, { include: [cc] });
+    assert.deepEqual(peopleQuery({ ...input(), countries: [cc] }, 1).profileLocation, { include: [name, ar], exclude: [cc] }, 'never bare عمان: it also matches Amman');
   }
-  assert.throws(() => peopleQuery({ ...input(), title: 'مدير' }), (e: IcypeasError) => e.status === 400);
+  assert.throws(() => peopleQuery({ ...input(), city: 'تبوك' }), (e: IcypeasError) => e.status === 400, 'an Arabic city outside the dictionary');
   assert.equal(safeWebsite('javascript:alert(1)'), ''); assert.equal(safeWebsite('company.example'), 'https://company.example/');
 });
 
@@ -91,7 +92,7 @@ test('start is paid once per request; only ultra/very sure emails are delivered 
     assert.deepEqual((await store.snapshot(user.id)).contacts.map(c => c.email).sort(), ['a@company-a.example', 'c@company-c.example'], 'probable email is not delivered');
     assert.equal((await store.user(user.id)).balance, 8); assert.equal(await store.reserved(user.id), 0);
     const contact = (await store.snapshot(user.id)).contacts[0];
-    assert.equal(contact.source, 'Icypeas'); assert.equal(contact.email_status, 'VERIFIED'); assert.equal(contact.sector, 'التقنية والبرمجيات');
+    assert.equal(contact.source, 'clowzy', 'the provider name is not shown to members'); assert.equal(contact.country, 'السعودية'); assert.equal(contact.city, 'Riyadh'); assert.equal(contact.email_status, 'VERIFIED'); assert.equal(contact.sector, 'التقنية والبرمجيات');
     await eligible(store); await search.poll(user.id, first.id); await search.start(user.id, request);
     assert.equal(m.count('bulk-search'), 1); assert.equal((await store.user(user.id)).balance, 8);
   } finally { await store.close(); }
@@ -225,7 +226,7 @@ test('a repeat search continues from the member\'s cursor (leftovers, then the n
 test('an expired cursor restarts from the top; a rejected submission frees the people it picked', async () => {
   const m = mockTransport({ expired: 'old' }), { store, user } = await setup();
   try {
-    await store.saveCursor(user.id, JSON.stringify(peopleQuery(input())), 0, 'old', '[]');
+    await store.saveCursor(user.id, cursorKey(input()), 0, 'old', '[]');
     const r = await live(store, m.client).start(user.id, input());
     assert.deepEqual(m.calls.filter(c => c.path === 'find-people').slice(0, 2).map(c => c.body.pagination?.token), ['old', undefined], 'expired token, then the same stage from the top');
     assert.equal(r.status, 'awaiting_provider'); assert.equal(m.count('bulk-search'), 1);
@@ -243,7 +244,7 @@ test('people matched by country code are used first; name-only matches fill the 
   const { store, user } = await setup();
   try {
     await live(store, m.client).start(user.id, input(1));
-    assert.deepEqual(m.calls.filter(c => c.path === 'find-people').map(c => c.body.query?.location), [{ include: ['SA'] }, { include: ['Saudi Arabia'], exclude: ['SA'] }]);
+    assert.deepEqual(m.calls.filter(c => c.path === 'find-people').map(c => c.body.query?.profileLocation), [{ include: ['SA'] }, { include: ['Saudi Arabia', 'السعودية'], exclude: ['SA'] }]);
     assert.deepEqual(m.calls.find(c => c.path === 'bulk-search')?.body.data?.map(r => r[1]), ['a', 'b']);
   } finally { await store.close(); }
 });
@@ -265,7 +266,7 @@ test('a transient error keeps the member\'s cursor; only a rejected token restar
     if (String(url).endsWith('find-people')) { calls++; if (body.pagination?.token) throw new Error('network blip'); return Response.json({ success: true, leads: [lead('z')] }); }
     return Response.json({ success: true, file: 'file1' });
   };
-  const { store, user } = await setup(), queryKey = JSON.stringify(peopleQuery(input()));
+  const { store, user } = await setup(), queryKey = cursorKey(input());
   try {
     await store.saveCursor(user.id, queryKey, 0, 'deep', '[]');
     const r = await live(store, new IcypeasClient('unit-test-secret', transport)).start(user.id, input());
@@ -276,10 +277,10 @@ test('a transient error keeps the member\'s cursor; only a rejected token restar
 
 test('count is free: both stages via the count endpoint only, summed; Arabic free text is a 400 before any call', async () => {
   const m = mockTransport();
-  assert.deepEqual(await m.client.count({ ...input(), city: 'الرياض', title: 'Marketing Director' }), { total: 10, strict: 5 }, 'stage 0 + stage 1 (each mocked at 5)');
+  assert.deepEqual(await m.client.count({ ...input(), city: 'الرياض', titles: ['Marketing Director'] }), { total: 10, strict: 5 }, 'stage 0 + stage 1 (each mocked at 5)');
   assert.deepEqual(m.calls.map(c => c.path), ['find-people/count', 'find-people/count'], 'no paid find-people or bulk-search call');
-  assert.deepEqual(m.calls.map(c => c.body.query?.location), [{ include: ['Riyadh, SA'] }, { include: ['Riyadh, Saudi Arabia', 'الرياض السعودية'], exclude: ['Riyadh, SA'] }]);
-  await assert.rejects(m.client.count({ ...input(), title: 'مدير تسويق' }), (e: unknown) => e instanceof IcypeasError && e.status === 400);
+  assert.deepEqual(m.calls.map(c => c.body.query?.profileLocation), [{ include: ['Riyadh, SA'] }, { include: ['Riyadh, Saudi Arabia', 'الرياض السعودية'], exclude: ['Riyadh, SA'] }]);
+  await assert.rejects(m.client.count({ ...input(), city: 'تبوك' }), (e: unknown) => e instanceof IcypeasError && e.status === 400);
   assert.equal(m.calls.length, 2);
 });
 
@@ -420,6 +421,40 @@ test('a link page or social profile is not the company domain: the email search 
   try {
     await live(store, m.client).start(user.id, input(2));
     assert.deepEqual(m.calls.find(c => c.path === 'bulk-search')?.body.data?.map(r => r[2]), ['Company a', 'Company b', 'gomla.sa', 'Company d', 'Company e', 'shop-f.example', 'Company g']);
+  } finally { await store.close(); }
+});
+
+test('people whose address is in another country are never sent or charged; an unreadable address is kept', async () => {
+  const at = (id: string, address: string) => ({ ...lead(id), address });
+  const m = mockTransport({ pages: [{ leads: [at('a', 'Las Vegas, United States'), at('b', 'الرياض السعودية'), at('c', 'Toulouse, Occitanie, France'), at('d', 'Greater Riyadh Area'), at('e', 'Jubail, Province de l\'Est, Arabie saoudite')] }] });
+  const { store, user } = await setup();
+  try {
+    await live(store, m.client).start(user.id, input(2));
+    assert.deepEqual(m.calls.find(c => c.path === 'bulk-search')?.body.data?.map(r => r[1]), ['b', 'd', 'e']);
+  } finally { await store.close(); }
+});
+
+test('the company domain is the website\'s real host; free mail, short links and generic names are not a company', async () => {
+  const site = (id: string, url: string, company = 'Company ' + id) => ({ ...lead(id), lastCompanyWebsite: url, lastCompanyName: company });
+  const m = mockTransport({ pages: [{ leads: [site('a', 'http://alawad.co@gmail.com'), site('b', 'https://forms.gle/xyz'), site('c', 'https://bit.ly/abc'), site('d', 'https://www2.shop-d.com.sa/ar'),
+    site('e', 'https://calendly.com/e'), site('f', '', 'Confidential'), site('g', '', 'Private Company'), site('h', 'hotmail.com')] }] });
+  const { store, user } = await setup();
+  try {
+    await live(store, m.client).start(user.id, input(2));
+    assert.deepEqual(m.calls.find(c => c.path === 'bulk-search')?.body.data?.map(r => r[2]), ['Company a', 'Company b', 'Company c', 'shop-d.com.sa', 'Company e', 'Company h']);
+  } finally { await store.close(); }
+});
+
+test('a personal mailbox (gmail, hotmail...) is never delivered or charged: the platform promises work emails only', async () => {
+  for (const d of ['gmail.com', 'hotmail.co.uk', 'outlook.sa', 'me.com', 'mail.com', 'emirates.net.ae', 'batelco.com.bh']) assert.ok(freeMail.test(d), d);
+  for (const d of ['company.com.sa', 'live.company.com', 'mail.company.com', 'gmailer.com']) assert.ok(!freeMail.test(d), d);
+  const m = mockTransport({ files: [[item(0, 'person.a@gmail.com'), item(1, 'b@company-b.example'), item(2, 'c@outlook.sa')]] });
+  const { store, user } = await setup();
+  try {
+    const s = live(store, m.client), started = await s.start(user.id, input(3));
+    await eligible(store); await s.poll(user.id, started.id);
+    assert.deepEqual((await store.snapshot(user.id)).contacts.map(c => c.email), ['b@company-b.example']);
+    assert.equal((await store.user(user.id)).balance, 9);
   } finally { await store.close(); }
 });
 

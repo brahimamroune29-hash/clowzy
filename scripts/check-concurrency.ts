@@ -5,12 +5,13 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Db, pgDriver } from '../src/lib/db';
 import { Store } from '../src/lib/store';
+import { audienceOf } from '../src/lib/audience';
 
 const url = process.env.DATABASE_URL;
 if (!url) { console.error('Set DATABASE_URL (the app role connection).'); process.exit(1); }
 const store = new Store(new Db(pgDriver(url))), db = store.db, tag = '@check.invalid';
 const hash = (s: string) => createHash('sha256').update(s).digest('hex'), now = () => new Date().toISOString(), inAnHour = () => new Date(Date.now() + 3600000).toISOString();
-const input = (count: number) => ({ sector: 'العقارات' as const, country: 'السعودية' as const, city: '', title: '', size: 'all' as const, count, confirmed: true as const, requestId: randomUUID() });
+const input = (count: number) => audienceOf(JSON.stringify({ sector: 'العقارات', countries: ['SA'], city: '', title: '', size: 'all', count, confirmed: true, requestId: randomUUID() }));
 async function member(balance: number) {
   const id = randomUUID();
   await db.run('INSERT INTO users(id,name,email,password_hash,role,balance,created_at) VALUES(?,?,?,?,?,?,?)', id, 'check', `check-${id}${tag}`, 'x:y', 'member', balance, now());

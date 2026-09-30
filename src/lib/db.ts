@@ -34,7 +34,8 @@ export class Db {
 export function pgDriver(url: string): Driver {
   const sql = postgres(url, {
     prepare: false, max: 5, idle_timeout: 20, connect_timeout: 10,
-    ssl: { ca: SUPABASE_ROOT_CA, rejectUnauthorized: true }, // verify the server certificate and host name (plain 'require' does not)
+    // Verify the server certificate and host name (plain 'require' does not); a database on this machine (local checks) has no TLS.
+    ssl: /@(localhost|127\.0\.0\.1)[:/]/.test(url) ? false : { ca: SUPABASE_ROOT_CA, rejectUnauthorized: true },
     types: { int8: { to: 20, from: [20], serialize: String, parse: Number } }, // counts and epoch ms fit a JS number
   });
   const wrap = (s: postgres.Sql | postgres.TransactionSql): Driver => ({

@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { AppError, getStore } from '@/lib/store';
-import { searchSchema } from '@/lib/contracts';
+import { searchSchema, withCountries } from '@/lib/contracts';
 import { IcypeasClient, IcypeasError, providerInfo } from '@/lib/icypeas';
 import { LiveSearch } from '@/lib/live-search';
+import { resolveAudience } from '@/lib/audience';
 import { contactsCsv } from '@/lib/csv';
 import { weekBoundariesSchema } from '@/lib/overview';
 import { accessError, bodyLimit, clientIp, isHttps } from '@/lib/access';
@@ -100,16 +101,17 @@ async function handle(req: NextRequest, { params }: { params: Promise<{ path: st
     if (req.method !== 'POST') throw new AppError('الصفحة المطلوبة غير موجودة.', 404);
     const b = await body(req);
     if (path === 'search') {
-      const input = searchSchema.parse(b);
+      const input = searchSchema.parse(withCountries(b)); // a page opened before multi-country still searches
       rateLimit('search:' + user.id, 20);
       if (!providerInfo().configured) throw new AppError('مزوّد البيانات غير مهيأ على الخادم. تواصل مع مالك المنصة.',503);
-      return json(await new LiveSearch(store).start(user.id,input));
+      return json(await new LiveSearch(store).start(user.id,await resolveAudience(store,input)));
     }
     if (path === 'search/count') {
-      const input = searchSchema.pick({ sector:true, country:true, city:true, title:true, size:true }).parse(b);
-      rateLimit('count:' + user.id, 60); // ponytail: in-memory, like the other limits; each call is 2 free provider requests
+      const input = searchSchema.pick({ sector:true, countries:true, city:true, title:true, size:true }).parse(withCountries(b));
+      rateLimit('count:' + user.id, 60); // ponytail: in-memory, like the other limits; each call is 2 free provider requests, plus one paid AI call per new «أخرى» text (then cached)
       if (!providerInfo().configured) throw new AppError('مزوّد البيانات غير مهيأ على الخادم. تواصل مع مالك المنصة.',503);
-      return json(await new IcypeasClient().count(input));
+      const audience = await resolveAudience(store,input); // «أخرى» is mapped here, so the member sees what will be searched
+      return json({...await new IcypeasClient().count(audience),industryLabels:audience.industryLabels});
     }
     if (path === 'search/poll') {
       const {searchId}=z.object({searchId:z.string().uuid()}).parse(b);

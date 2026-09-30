@@ -2,11 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { Store } from '../src/lib/store';
-import { demoCatalog } from '../src/lib/demo-provider';
 import { contactsCsv,cell } from '../src/lib/csv';
-import { Candidate,SearchInput,searchSchema } from '../src/lib/contracts';
+import { Candidate,Resolved,searchSchema } from '../src/lib/contracts';
+import { audienceOf } from '../src/lib/audience';
 import { testStore } from './pg';
-const input=(count=2):SearchInput=>({sector:'التقنية والبرمجيات',country:'السعودية',city:'',title:'',size:'all',count,confirmed:true,requestId:randomUUID()});
+
+// Three synthetic contacts (the CSV test's second row relies on the demo status and label).
+const demoCatalog:Candidate[]=[0,1,2].map(i=>({name:'خالد '+i+' الحسن',email:'contact-'+i+'@example.com',company:'شركة '+i,title:'مدير التسويق',sector:'التقنية والبرمجيات',country:'السعودية',city:'الرياض',size:'1-10',website:'https://example.com',source:'كتالوج تجريبي محلي',email_status:'demo'}));
+const input=(count=2):Resolved=>audienceOf(JSON.stringify({sector:'التقنية والبرمجيات',countries:['SA'],city:'',title:'',size:'all',count,confirmed:true,requestId:randomUUID()}));
 async function setup(){
   const store=await testStore();
   const admin=await store.addUser('Owner','owner@example.com','secure-password-123','admin');
@@ -15,7 +18,7 @@ async function setup(){
   return {store,admin,alice,bob};
 }
 // The live flow (live-search.ts) without the provider: reserve -> one delivered batch -> finish.
-async function deliver(store:Store,userId:string,request:SearchInput,candidates:Candidate[]){
+async function deliver(store:Store,userId:string,request:Resolved,candidates:Candidate[]){
   const search=await store.enqueueSearch(userId,request);
   if(search.status==='queued'){
     await store.db.run("UPDATE searches SET status='awaiting_provider' WHERE id=?",search.id);
@@ -105,6 +108,7 @@ test('CSV keeps each contact stored email status; only demo rows carry the demo 
   const row={id:'c',user_id:'u',search_id:'s',created_at:''};
   const [,real,demo]=contactsCsv([{...demoCatalog[0],...row,source:'FullEnrich',email_status:'DELIVERABLE'},{...demoCatalog[1],...row}]).split('\r\n');
   assert.ok(real.endsWith(',"DELIVERABLE"'),real);
+  assert.ok(real.includes(',"clowzy",')&&!real.includes('FullEnrich'),'the provider name never reaches the member\'s file: '+real);
   assert.ok(demo.endsWith(',"DEMO — not real contact data"'),demo);
 });
 test('invitations accepted once, preserve assigned credits, reject expired token',async()=>{

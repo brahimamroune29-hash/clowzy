@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
-import { searchSchema } from './contracts';
-import type { AdminUser, AuditEvent, Candidate, Contact, ExportEvent, Invitation, Ledger, Search, SearchInput, Snapshot, User } from './contracts';
+import { countryLabel } from './places';
+import { resolvedSchema } from './contracts';
+import type { AdminUser, AuditEvent, Candidate, Contact, ExportEvent, Invitation, Ledger, Resolved, Search, Snapshot, User } from './contracts';
 import { Db, pgDriver } from './db';
 import { weekBoundaries, weekBoundariesSchema } from './overview';
 
@@ -22,6 +23,7 @@ const checkPassword = (password: string, encoded: string) => {
 const userFields = 'id,name,email,role,active,balance,created_at,terms_accepted_at';
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
 const count = (row: { n: number } | undefined) => row?.n ?? 0;
+const placesTitle = (codes: string[]) => codes.length > 3 ? codes.slice(0, 3).map(countryLabel).join('، ') + ' +' + (codes.length - 3) : codes.map(countryLabel).join('، ');
 
 // Money rule: every change to a member's balance runs in a transaction that first locks that member's row
 // (user(id, true) / FOR UPDATE), so concurrent requests from any server instance apply one after another.
@@ -154,11 +156,17 @@ export class Store {
       return result;
     });
   }
+  async aiCached(kind: string, input: string) {
+    return (await this.db.get<{ output: string }>('SELECT output FROM ai_cache WHERE kind=? AND input=?', kind, input))?.output;
+  }
+  async saveAiCache(kind: string, input: string, output: string) {
+    await this.db.run('INSERT INTO ai_cache(kind,input,output,created_at) VALUES(?,?,?,?) ON CONFLICT DO NOTHING', kind, input, output, now());
+  }
   async reserved(id: string) {
     return count(await this.db.get<{ n: number }>('SELECT COALESCE(sum(amount),0) AS n FROM reservations WHERE user_id=?', id));
   }
-  enqueueSearch(id: string, raw: SearchInput): Promise<Search> {
-    const input = searchSchema.parse(raw);
+  enqueueSearch(id: string, raw: Resolved): Promise<Search> {
+    const input = resolvedSchema.parse(raw);
     return this.transaction(async () => {
       const user = await this.user(id, true);
       const old = await this.db.get<Search>('SELECT * FROM searches WHERE user_id=? AND request_id=?', id, input.requestId);
@@ -171,7 +179,7 @@ export class Store {
       if (count(await this.db.get<{ n: number }>('SELECT count(*) n FROM reservations')) >= 1000) throw new AppError('قائمة البحث ممتلئة مؤقتًا. حاول لاحقًا.', 503);
       const sid = randomUUID();
       await this.db.run('INSERT INTO searches(id,user_id,request_id,filters,title,requested,status,created_at) VALUES(?,?,?,?,?,?,?,?)',
-        sid, id, input.requestId, JSON.stringify(input), input.sector + ' · ' + (input.city || input.country), input.count, 'queued', now());
+        sid, id, input.requestId, JSON.stringify(input), input.sector + ' · ' + (input.city || placesTitle(input.countries)), input.count, 'queued', now());
       await this.db.run('INSERT INTO reservations(search_id,user_id,amount) VALUES(?,?,?)', sid, id, input.count);
       return this.getSearch(id, sid);
     });
@@ -186,7 +194,7 @@ export class Store {
   // member are counted, never charged. Returns the search's delivered total. Caller holds the member's row lock.
   private async deliverInto(search: Search, candidates: Candidate[]) {
     const current = count(await this.db.get<{ n: number }>('SELECT delivered AS n FROM searches WHERE id=?', search.id));
-    const sector = (JSON.parse(search.filters) as SearchInput).sector, seen = new Set<string>();
+    const sector = (JSON.parse(search.filters) as Resolved).sector, seen = new Set<string>();
     let delivered = 0, duplicates = 0;
     for (const candidate of candidates.slice(0, 1000)) {
       const email = normalizeEmail(candidate.email || '');

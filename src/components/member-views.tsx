@@ -3,7 +3,8 @@ import { useEffect,useState } from 'react';
 import Link from 'next/link';
 import { useRouter,useSearchParams } from 'next/navigation';
 import { ArrowLeft, ArrowUpLeft, ArrowDown, Check, CheckCircle, Coins, Copy, DownloadSimple, EnvelopeSimple, MagnifyingGlass, MapPin, Plus, Sparkle, Target, UsersThree, ClockCounterClockwise, Buildings, ArrowSquareOut } from '@phosphor-icons/react';
-import { Contact, countries, expectedEmails, Search, SearchInput, sectors } from '@/lib/contracts';
+import { Contact, expectedEmails, gulf, listedCountries, OTHER, Search, SearchInput, sectors, titles, withCountries } from '@/lib/contracts';
+import { countryFromText, countryLabel } from '@/lib/places';
 import { api,date,downloadContacts,number } from '@/lib/client';
 import type { ViewProps } from './platform';
 import { SearchProgress } from './search-progress';
@@ -22,31 +23,69 @@ export function Dashboard({data}:ViewProps) {
   </>;
 }
 
+// The form as the member edits it, from a saved search ("repeat") or the defaults.
+function formOf(filters?:string){
+  const raw=(filters?withCountries(JSON.parse(filters)):{}) as Partial<SearchInput>;
+  return {sector:raw.sector||sectors[0],countries:raw.countries?.length?raw.countries:['SA'],city:raw.city||'',title:raw.title||'',size:raw.size||'all',count:raw.count||10};
+}
+// «أخرى»: free text that counts only once the member applies it (each applied text is one AI mapping on the server).
+function OtherText({label,placeholder,value,onChange,onApply,applied}:{label:string;placeholder:string;value:string;onChange:(v:string)=>void;onApply:()=>void;applied:boolean}){
+  return <div className="other-row"><input aria-label={label} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} maxLength={60}
+    onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();if(value.trim().length>=2)onApply();}}}/>
+    <Button type="button" variant="secondary" disabled={value.trim().length<2||applied} onClick={onApply}>{applied?'معتمد':'اعتماد'}</Button></div>;
+}
 export function SearchView({data,reload,notify}:ViewProps){
   const router=useRouter(),query=useSearchParams();
   const previous=data.searches.find(s=>s.id===query.get('from'));
-  const initial:Partial<SearchInput>=previous?JSON.parse(previous.filters):{};
+  const [initial]=useState(()=>formOf(previous?.filters));
   const [busy,setBusy]=useState(false),[confirmed,setConfirmed]=useState(false),[error,setError]=useState('');
   const [requestId,setRequestId]=useState(()=>crypto.randomUUID());
-  const [filters,setFilters]=useState({sector:initial.sector||sectors[0],country:initial.country||countries[0],city:initial.city||'',title:initial.title||'',size:initial.size||'all',count:Math.min(initial.count||10,data.provider?.maxCount??50)});
-  const [match,setMatch]=useState<{total?:number;strict?:number;error?:string}|null>(null); // null: counting
-  function change(key:string,value:string|number){setFilters(f=>({...f,[key]:value}));setConfirmed(false);setRequestId(crypto.randomUUID());if(key!=='count')setMatch(null);}
+  const [filters,setFilters]=useState({...initial,count:Math.min(initial.count,data.provider?.maxCount??50)});
+  const listedSector=(sectors as readonly string[]).includes(initial.sector),listedTitle=!initial.title||(titles as readonly string[]).includes(initial.title);
+  const [sectorOther,setSectorOther]=useState(!listedSector),[sectorDraft,setSectorDraft]=useState(listedSector?'':initial.sector);
+  const [titleOther,setTitleOther]=useState(!listedTitle),[titleDraft,setTitleDraft]=useState(listedTitle?'':initial.title);
+  const [countryOther,setCountryOther]=useState(false),[countryDraft,setCountryDraft]=useState(''),[countryError,setCountryError]=useState('');
+  const [match,setMatch]=useState<{total?:number;strict?:number;industryLabels?:string[];error?:string}|null>(null); // null: counting
+  function change(patch:Partial<typeof filters>){
+    setFilters(f=>{const next={...f,...patch};if(next.countries.length!==1)next.city='';return next;});
+    setConfirmed(false);setRequestId(crypto.randomUUID());if(!('count' in patch))setMatch(null);
+  }
+  const allGulf=gulf.every(c=>filters.countries.includes(c));
+  function toggleCountry(code:string){
+    const has=filters.countries.includes(code);
+    if(has&&filters.countries.length===1)return; // at least one country
+    setCountries(has?filters.countries.filter(c=>c!==code):[...filters.countries,code]);
+  }
+  function setCountries(list:string[]){
+    if(list.length>10){setCountryError('يمكن اختيار 10 دول كحد أقصى في البحث الواحد.');return;}
+    setCountryError('');change({countries:list.length?list:['SA']});
+  }
+  function addCountry(){
+    const code=countryFromText(countryDraft);
+    if(!code){setCountryError('لم نتعرف على هذه الدولة. اكتب اسمها كاملًا، مثلًا: الأردن أو المغرب.');return;}
+    setCountryDraft('');setCountryOther(false);
+    if(!filters.countries.includes(code))setCountries([...filters.countries,code]);
+  }
+  const audience=JSON.stringify({sector:filters.sector,countries:filters.countries,city:filters.city,title:filters.title,size:filters.size});
   // Free count of matching people, so a too-narrow search is visible before any credit is spent.
   useEffect(()=>{
-    if(!data.provider?.configured)return;
+    if(!data.provider?.configured||JSON.parse(audience).sector.length<2)return;
     let active=true;
-    const t=setTimeout(()=>api<{total:number;strict:number}>('search/count',{sector:filters.sector,country:filters.country,city:filters.city,title:filters.title,size:filters.size})
+    const t=setTimeout(()=>api<{total:number;strict:number;industryLabels:string[]}>('search/count',JSON.parse(audience))
       .then(r=>{if(active)setMatch(r);}).catch(e=>{if(active)setMatch({error:(e as Error).message});}),700);
     return()=>{active=false;clearTimeout(t);};
-  },[data.provider?.configured,filters.sector,filters.country,filters.city,filters.title,filters.size]);
+  },[data.provider?.configured,audience]);
   const expected=match?.total!==undefined?expectedEmails(match.strict??0,match.total,filters.count||0):undefined;
   const few=expected!==undefined&&expected<filters.count;
+  const pending=sectorOther&&filters.sector!==sectorDraft.trim()||titleOther&&filters.title!==titleDraft.trim();
+  const place=filters.city||filters.countries.map(countryLabel).join('، ');
   async function submit(e:React.FormEvent){
     e.preventDefault();setBusy(true);setError('');
     try{
       const result=await api<Search>('search',{...filters,confirmed,requestId});
       await reload();
       if(['failed','unknown'].includes(result.status)){
+        setRequestId(crypto.randomUUID()); // pressing the button again is a new attempt, not the same failed search
         setError((result.message || 'تعذّر إكمال الطلب.')+' لم يُخصم كريدت من رصيدك.');
         return;
       }
@@ -56,10 +95,23 @@ export function SearchView({data,reload,notify}:ViewProps){
   }
   return <><PageHeading eyebrow="اكتشف فرصتك التالية" title="من تريد الوصول إليه؟" description="ابدأ بمعايير واضحة. يمكنك تعديل جمهورك في كل بحث."/>
   <div className="search-layout"><section className="panel search-panel">
-  <form onSubmit={submit}><div className="form-section"><div className="section-label"><span>01</span><h3>الجمهور المستهدف</h3></div><div className="form-grid"><Field label="مجال العمل"><select value={filters.sector} onChange={e=>change('sector',e.target.value)}>{sectors.map(s=><option key={s}>{s}</option>)}</select></Field><Field label="حجم الشركة"><select value={filters.size} onChange={e=>change('size',e.target.value)}><option value="all">كل الأحجام</option><option value="1-10">1–10 موظفين</option><option value="11-50">11–50 موظفًا</option><option value="51-200">51–200 موظف</option></select></Field><Field label="البلد"><select value={filters.country} onChange={e=>change('country',e.target.value)}>{countries.map(c=><option key={c}>{c}</option>)}</select></Field><Field label="المدينة" hint="اتركها فارغة للبلد كاملًا. المدن الرئيسية بالعربية مقبولة، وغيرها بالإنجليزية."><input value={filters.city} onChange={e=>change('city',e.target.value)} placeholder="مثلًا: الرياض" maxLength={60}/></Field><Field label="المسمى الوظيفي" hint="اختياري — بالإنجليزية مثل Marketing Director"><input value={filters.title} onChange={e=>change('title',e.target.value)} placeholder="جميع المسميات" maxLength={60}/></Field><Field label="عدد الإيميلات المطلوبة" hint={'حتى '+(data.provider?.maxCount??50)+' بريدًا موثّقًا؛ قد يعود عدد أقل إذا لم تتوفر إيميلات مؤكدة.'}><input type="number" min="1" max={Math.min(data.provider?.maxCount??50,data.user.balance)} value={filters.count} onChange={e=>change('count',Number(e.target.value))} required/></Field></div></div><div className="form-section confirm-section"><div className="section-label"><span>02</span><h3>راجع ثم ابدأ</h3></div><label className="check-label"><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/><span>راجعت المعايير. أوافق على خصم كريدت لكل بريد جديد يتم تسليمه.</span></label>{!data.provider?.configured&&<Notice error>البحث غير متاح حاليًا. تواصل مع مالك المنصة.</Notice>}{data.provider?.configured&&<div className={'match-count'+(match?.error||few?' warn':'')} role="status"><UsersThree size={18}/><span>{!match?'نحسب عدد الأشخاص المطابقين…':match.error?match.error:match.total===0?'لا يوجد أحد يطابق هذه المعايير. احذف المسمى الوظيفي أو حجم الشركة أو المدينة لتوسيع البحث.':few?(expected?'المتوقع نحو '+expected+' بريد موثّق من أصل '+filters.count:'قد لا نجد أي بريد موثّق بهذه المعايير')+' (المطابقون: '+number(match.total!)+'). لا يُخصم إلا البريد المسلَّم. لنتائج أكثر: احذف حجم الشركة أو المدينة أو المسمى الوظيفي.':'عدد الأشخاص المطابقين: '+number(match.total!)+'. العدّ مجاني ولا يخصم من رصيدك.'}</span></div>}{error&&<Notice error>{error}</Notice>}<Notice>يُخصم كريدت واحد لكل بريد عمل جديد موثّق يُحفظ في حسابك. النتائج المكررة أو غير المؤكدة لا تُخصم، ولا نطلب هواتف أو إيميلات شخصية.</Notice><div className="search-submit"><span><Coins size={18}/>الحد الأقصى للخصم: <strong>{filters.count||0} كريدت</strong></span><Button type="submit" arrow loading={busy} disabled={!confirmed||!data.user.balance||!data.provider?.configured||match?.total===0}>ابدأ البحث</Button></div></div></form></section>
-  <aside className="search-aside"><div className="search-summary"><span className="small-icon"><Target size={27} weight="light"/></span><h3>بحثك، في لمحة</h3><div className="summary-line"><Buildings size={18}/><span>{filters.sector}</span></div><div className="summary-line"><MapPin size={18}/><span>{filters.city||filters.country}</span></div><div className="summary-line"><EnvelopeSimple size={18}/><span>حتى {filters.count||0} بريد جديد</span></div><hr/><div className="balance-line"><span>رصيدك الآن</span><strong>{number(data.user.balance)}</strong></div><p>تُخصم النتائج الجديدة فقط. النتائج المكررة أو غير المتاحة لا تستهلك رصيدك.</p></div><div className="help-card"><h4>ابدأ واسعًا، ثم خصّص.</h4><p>إذا لم تجد نتائج، جرّب إزالة المدينة أو المسمى الوظيفي لتوسيع البحث.</p></div><div className="local-note">نسلّم بريد العمل الموثّق فقط، من قاعدة بيانات مهنية. قد لا تتوفر إيميلات لكل شركة، والقطاعات تُطابق أقرب تصنيف مهني.</div></aside></div></>;
+  <form onSubmit={submit}><div className="form-section"><div className="section-label"><span>01</span><h3>الجمهور المستهدف</h3></div><div className="form-grid">
+    <div><Field label="مجال العمل"><select value={sectorOther?OTHER:filters.sector} onChange={e=>{if(e.target.value===OTHER){setSectorOther(true);change({sector:sectorDraft.trim()});}else{setSectorOther(false);change({sector:e.target.value});}}}>{sectors.map(s=><option key={s}>{s}</option>)}<option value={OTHER}>أخرى (اكتب مجالك)</option></select></Field>
+      {sectorOther&&<OtherText label="اكتب مجال العمل" placeholder="مثلًا: محلات العطور" value={sectorDraft} onChange={setSectorDraft} onApply={()=>change({sector:sectorDraft.trim()})} applied={filters.sector===sectorDraft.trim()}/>}</div>
+    <Field label="حجم الشركة"><select value={filters.size} onChange={e=>change({size:e.target.value as typeof filters.size})}><option value="all">كل الأحجام</option><option value="1-10">1–10 موظفين</option><option value="11-50">11–50 موظفًا</option><option value="51-200">51–200 موظف</option></select></Field>
+    <fieldset className="field country-field"><legend>البلد</legend><div className="chips">
+      <button type="button" className={'chip'+(allGulf?' on':'')} aria-pressed={allGulf} onClick={()=>setCountries(allGulf?filters.countries.filter(c=>!(gulf as readonly string[]).includes(c)):[...new Set([...gulf,...filters.countries])])}>كل دول الخليج</button>
+      {[...listedCountries,...filters.countries.filter(c=>!(listedCountries as readonly string[]).includes(c))].map(c=><button type="button" key={c} className={'chip'+(filters.countries.includes(c)?' on':'')} aria-pressed={filters.countries.includes(c)} onClick={()=>toggleCountry(c)}>{countryLabel(c)}</button>)}
+      <button type="button" className={'chip'+(countryOther?' on':'')} aria-expanded={countryOther} onClick={()=>setCountryOther(v=>!v)}>أخرى</button></div>
+      {countryOther&&<div className="other-row"><input aria-label="اكتب اسم الدولة" value={countryDraft} onChange={e=>{setCountryDraft(e.target.value);setCountryError('');}} placeholder="اكتب اسم الدولة، مثلًا: الأردن" maxLength={40} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();addCountry();}}}/><Button type="button" variant="secondary" disabled={!countryDraft.trim()} onClick={addCountry}>إضافة</Button></div>}
+      {countryError?<small className="field-error" role="alert">{countryError}</small>:<small>اختر دولة أو أكثر. اضغط على الدولة مرة أخرى لإلغائها.</small>}</fieldset>
+    <Field label="المدينة" hint={filters.countries.length===1?'اتركها فارغة للبلد كاملًا. المدن الرئيسية بالعربية مقبولة، وغيرها بالإنجليزية.':'المدينة متاحة عند اختيار دولة واحدة فقط.'}><input value={filters.city} onChange={e=>change({city:e.target.value})} placeholder={filters.countries.length===1?'مثلًا: الرياض':'—'} disabled={filters.countries.length!==1} maxLength={60}/></Field>
+    <div><Field label="المسمى الوظيفي"><select value={titleOther?OTHER:filters.title} onChange={e=>{if(e.target.value===OTHER){setTitleOther(true);change({title:titleDraft.trim()});}else{setTitleOther(false);change({title:e.target.value});}}}><option value="">جميع المسميات</option>{titles.map(t=><option key={t}>{t}</option>)}<option value={OTHER}>أخرى (اكتب المسمى)</option></select></Field>
+      {titleOther&&<OtherText label="اكتب المسمى الوظيفي" placeholder="مثلًا: مدير مستودع" value={titleDraft} onChange={setTitleDraft} onApply={()=>change({title:titleDraft.trim()})} applied={filters.title===titleDraft.trim()}/>}</div>
+    <Field label="عدد الإيميلات المطلوبة" hint={'حتى '+(data.provider?.maxCount??50)+' بريدًا موثّقًا؛ قد يعود عدد أقل إذا لم تتوفر إيميلات مؤكدة.'}><input type="number" min="1" max={Math.min(data.provider?.maxCount??50,data.user.balance)} value={filters.count} onChange={e=>change({count:Number(e.target.value)})} required/></Field>
+  </div></div><div className="form-section confirm-section"><div className="section-label"><span>02</span><h3>راجع ثم ابدأ</h3></div><label className="check-label"><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/><span>راجعت المعايير. أوافق على خصم كريدت لكل بريد جديد يتم تسليمه.</span></label>{!data.provider?.configured&&<Notice error>البحث غير متاح حاليًا. تواصل مع مالك المنصة.</Notice>}{data.provider?.configured&&<div className={'match-count'+(match?.error||few||pending?' warn':'')} role="status"><UsersThree size={18}/><span>{pending||filters.sector.length<2?'اكتب ما تريده في «أخرى» ثم اضغط «اعتماد».':!match?'نحسب عدد الأشخاص المطابقين…':match.error?match.error:(sectorOther&&match.industryLabels?.length?'سنبحث في: '+match.industryLabels.join('، ')+'. ':'')+(match.total===0?'لا يوجد أحد يطابق هذه المعايير. احذف المسمى الوظيفي أو حجم الشركة أو المدينة لتوسيع البحث.':few?(expected?'المتوقع نحو '+expected+' بريد موثّق من أصل '+filters.count:'قد لا نجد أي بريد موثّق بهذه المعايير')+' (المطابقون: '+number(match.total!)+'). لا يُخصم إلا البريد المسلَّم. لنتائج أكثر: احذف حجم الشركة أو المدينة أو المسمى الوظيفي.':'عدد الأشخاص المطابقين: '+number(match.total!)+'. العدّ مجاني ولا يخصم من رصيدك.')}</span></div>}{error&&<Notice error>{error}</Notice>}<Notice>يُخصم كريدت واحد لكل بريد عمل جديد موثّق يُحفظ في حسابك. النتائج المكررة أو غير المؤكدة لا تُخصم، ولا نطلب هواتف أو إيميلات شخصية.</Notice><div className="search-submit"><span><Coins size={18}/>الحد الأقصى للخصم: <strong>{filters.count||0} كريدت</strong></span><Button type="submit" arrow loading={busy} disabled={!confirmed||pending||filters.sector.length<2||!match||!!match.error||match.total===0||!data.user.balance||!data.provider?.configured}>ابدأ البحث</Button></div></div></form></section>
+  <aside className="search-aside"><div className="search-summary"><span className="small-icon"><Target size={27} weight="light"/></span><h3>بحثك، في لمحة</h3><div className="summary-line"><Buildings size={18}/><span>{filters.sector||'—'}</span></div><div className="summary-line"><MapPin size={18}/><span>{place}</span></div><div className="summary-line"><EnvelopeSimple size={18}/><span>حتى {filters.count||0} بريد جديد</span></div><hr/><div className="balance-line"><span>رصيدك الآن</span><strong>{number(data.user.balance)}</strong></div><p>تُخصم النتائج الجديدة فقط. النتائج المكررة أو غير المتاحة لا تستهلك رصيدك.</p></div><div className="help-card"><h4>ابدأ واسعًا، ثم خصّص.</h4><p>إذا لم تجد نتائج، جرّب إزالة المدينة أو المسمى الوظيفي لتوسيع البحث.</p></div><div className="local-note">نسلّم بريد العمل الموثّق فقط، من قاعدة بيانات مهنية. قد لا تتوفر إيميلات لكل شركة، والقطاعات تُطابق أقرب تصنيف مهني.</div></aside></div></>;
 }
-
 export function LeadsView({data,reload,notify}:ViewProps){
   const query=useSearchParams(),searchId=query.get('search'),search=data.searches.find(s=>s.id===searchId);
   const [text,setText]=useState(''),[sector,setSector]=useState('all'),[sort,setSort]=useState('recent'),[selected,setSelected]=useState<string[]>([]),[page,setPage]=useState(1),[detail,setDetail]=useState<Contact|null>(null),[busy,setBusy]=useState(false);
@@ -75,7 +127,7 @@ export function LeadsView({data,reload,notify}:ViewProps){
   {!(search?.status==='awaiting_provider'&&!base.length)&&<section className="panel table-panel"><div className="table-toolbar"><div className="search-input"><MagnifyingGlass size={19}/><input aria-label="البحث في جهات الاتصال" placeholder="ابحث بالاسم أو الشركة أو البريد…" value={text} onChange={e=>{setText(e.target.value);setPage(1);}}/></div><select aria-label="تصفية حسب القطاع" value={sector} onChange={e=>{setSector(e.target.value);setPage(1);}}><option value="all">كل القطاعات</option>{[...new Set([...sectors,...data.contacts.map(c=>c.sector).filter(Boolean)])].map(s=><option key={s}>{s}</option>)}</select><select aria-label="ترتيب النتائج" value={sort} onChange={e=>setSort(e.target.value)}><option value="recent">الأحدث أولًا</option><option value="name">حسب الاسم</option></select><span className="result-count">{rows.length} نتيجة</span></div>
   {rows.length?<><div className="table-scroll-hint"><ArrowLeft size={14}/>اسحب الجدول للاطلاع على بقية التفاصيل.</div><div className="table-scroll"><table className="leads-table"><thead><tr><th className="check-cell"><input aria-label="تحديد نتائج الصفحة" type="checkbox" checked={visible.length>0&&visible.every(c=>selected.includes(c.id))} onChange={e=>setSelected(e.target.checked?[...new Set([...selected,...visible.map(c=>c.id)])]:selected.filter(id=>!visible.some(c=>c.id===id)))}/></th><th>جهة الاتصال</th><th>الشركة</th><th>البريد الإلكتروني</th><th>الموقع</th><th>المصدر</th><th/></tr></thead><tbody>{visible.map((c,i)=><tr key={c.id}><td><input aria-label={'تحديد '+c.name} type="checkbox" checked={selected.includes(c.id)} onChange={()=>toggle(c.id)}/></td><td><button className="contact-name" onClick={()=>setDetail(c)}><span className={'avatar avatar-'+i%4}>{c.name.split(' ').map(s=>s[0]).join('')}</span><span><strong>{c.name}</strong><small>{c.title}</small></span></button></td><td><strong className="company-name">{c.company}</strong><small>{c.sector}</small></td><td><span className="email-text" dir="ltr">{c.email}</span><span className="email-meta"><span/>{c.email_status==='demo'?'عينة تجريبية':'بريد موثّق'}</span></td><td><span className="location-cell"><MapPin size={14}/>{c.city}</span><small>{c.country}</small></td><td><Badge>{c.email_status==='demo'?'بيانات عرض':'موثّق'}</Badge></td><td><button className="icon-button" title="عرض التفاصيل" aria-label={'تفاصيل '+c.name} onClick={()=>setDetail(c)}><ArrowUpLeft size={19}/></button></td></tr>)}</tbody></table></div><div className="pagination"><span>عرض {(activePage-1)*10+1}–{Math.min(activePage*10,rows.length)} من {rows.length}</span><div><Button variant="ghost" disabled={activePage===1} onClick={()=>setPage(activePage-1)}>السابق</Button><span className="page-number">{activePage}</span><Button variant="ghost" disabled={activePage===pages} onClick={()=>setPage(activePage+1)}>التالي</Button></div></div></>:<Empty title={search?.status==='awaiting_provider'?'بانتظار الإيميلات':search?'لا توجد نتائج جديدة لهذا البحث':'لا توجد نتائج مطابقة'} description={search?.status==='awaiting_provider'?'يمكنك إبقاء الصفحة مفتوحة أو العودة إلى هذا البحث من السجل.':search?'ربما حُفظت النتائج سابقًا، أو أن معايير البحث ضيقة. لم يُخصم كريدت لنتائج غير متاحة.':'جرّب تعديل التصفية أو ابدأ بحثًا جديدًا.'}><Link href="/search" className="button secondary">بحث جديد <MagnifyingGlass size={16}/></Link></Empty>}
   </section>}<div className="export-tip"><DownloadSimple size={22}/><div><strong>جاهز لخطوتك التالية؟</strong><p>نزّل CSV، ثم ارفعه من صفحة Contacts داخل GoHighLevel وطابق الأعمدة. كل البريد في الملف موثّق.</p></div></div>
-  {detail&&<Modal title="تفاصيل جهة الاتصال" onClose={()=>setDetail(null)}><div className="contact-detail"><span className="avatar avatar-large">{detail.name[0]}</span><h3>{detail.name}</h3><p>{detail.title} · {detail.company}</p><Badge tone={detail.email_status==='demo'?'amber':'green'}>{detail.email_status==='demo'?'جهة اتصال تجريبية':'بريد عمل موثّق'}</Badge><dl><dt>البريد الإلكتروني</dt><dd dir="ltr">{detail.email}<button className="icon-button" aria-label="نسخ البريد" onClick={async()=>{try{await navigator.clipboard.writeText(detail.email);notify('تم نسخ البريد.');}catch{notify('تعذّر النسخ. يمكنك تحديد النص ونسخه.',true);}}}><Copy size={17}/></button></dd><dt>الموقع</dt><dd>{detail.city}، {detail.country}</dd><dt>القطاع</dt><dd>{detail.sector}</dd><dt>حجم الشركة</dt><dd>{detail.size} موظفين</dd><dt>موقع الشركة</dt><dd>{detail.website?<a href={detail.website} target="_blank" rel="noreferrer" className="text-link" dir="ltr">{detail.website} <ArrowSquareOut size={16}/></a>:'غير متاح'}</dd><dt>المصدر</dt><dd>{detail.source}</dd><dt>تاريخ الحفظ</dt><dd>{date(detail.created_at)}</dd></dl></div></Modal>}</>;
+  {detail&&<Modal title="تفاصيل جهة الاتصال" onClose={()=>setDetail(null)}><div className="contact-detail"><span className="avatar avatar-large">{detail.name[0]}</span><h3>{detail.name}</h3><p>{detail.title} · {detail.company}</p><Badge tone={detail.email_status==='demo'?'amber':'green'}>{detail.email_status==='demo'?'جهة اتصال تجريبية':'بريد عمل موثّق'}</Badge><dl><dt>البريد الإلكتروني</dt><dd dir="ltr">{detail.email}<button className="icon-button" aria-label="نسخ البريد" onClick={async()=>{try{await navigator.clipboard.writeText(detail.email);notify('تم نسخ البريد.');}catch{notify('تعذّر النسخ. يمكنك تحديد النص ونسخه.',true);}}}><Copy size={17}/></button></dd><dt>الموقع</dt><dd>{detail.city}، {detail.country}</dd><dt>القطاع</dt><dd>{detail.sector}</dd><dt>حجم الشركة</dt><dd>{detail.size} موظفين</dd><dt>موقع الشركة</dt><dd>{detail.website?<a href={detail.website} target="_blank" rel="noreferrer" className="text-link" dir="ltr">{detail.website} <ArrowSquareOut size={16}/></a>:'غير متاح'}</dd><dt>تاريخ الحفظ</dt><dd>{date(detail.created_at)}</dd></dl></div></Modal>}</>;
 }
 
 export function HistoryView({data}:ViewProps){

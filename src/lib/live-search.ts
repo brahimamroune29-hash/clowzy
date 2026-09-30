@@ -1,6 +1,7 @@
-import type { Search, SearchInput } from './contracts';
+import type { Resolved, Search } from './contracts';
+import { audienceOf } from './audience';
 import { Store } from './store';
-import { BATCH, fetchCap, IcypeasClient, IcypeasError, type Lead, leadName, peopleQuery, personKey, STAGES, submitCap } from './icypeas';
+import { BATCH, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadName, peopleQuery, personKey, STAGES, submitCap } from './icypeas';
 
 type Run = { search_id: string; phase: string; people: string; file: string | null; scanned: number; submitted: number; submitted_at: number | null; message: string; updated_at: number };
 type Slots = { read: number; bulk: number };
@@ -46,7 +47,7 @@ export class LiveSearch {
   private async shortfall(userId: string, search: Search, checked: number) {
     const widen = 'لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو المسمى الوظيفي.';
     if (!checked) return 'لا يوجد أشخاص جدد مطابقون لهذه المعايير حاليًا. ' + widen;
-    const cursor = await this.store.cursor(userId, JSON.stringify(peopleQuery(JSON.parse(search.filters) as SearchInput)));
+    const cursor = await this.store.cursor(userId, cursorKey(audienceOf(search.filters)));
     const found = search.delivered + search.duplicates, dup = search.duplicates ? `، منها ${search.duplicates} مكرر مستبعد` : '';
     return `بحثنا عن بريد ${checked} من الأشخاص المطابقين، ${found ? `ووجدنا بريدًا موثّقًا لـ ${found} منهم${dup}` : 'ولم نجد بريدًا موثّقًا لأيّ منهم'}. `
       + (!cursor.stage && !cursor.token && cursor.leftovers === '[]' ? 'جرّبنا كل المطابقين المتاحين. ' + widen : 'أعد البحث بالمعايير نفسها لتجربة أشخاص آخرين، أو وسّعها لنتائج أكثر.');
@@ -70,16 +71,16 @@ export class LiveSearch {
       await this.store.finishSearch(id);
     });
   }
-  private async page(input: SearchInput, token: string | null, stage: number) {
+  private async page(input: Resolved, token: string | null, stage: number) {
     try { return await this.client.people(input, token, stage); }
     catch (e) { if (token && e instanceof IcypeasError && e.rejected) return this.client.people(input, null, stage); throw e; } // only a refused (expired) token restarts the stage
   }
   // Called only by the request that owns the 'searching' phase (start, or the poll that won the 'delivering' claim).
-  private async advance(userId: string, id: string, input: SearchInput): Promise<Search> {
+  private async advance(userId: string, id: string, input: Resolved): Promise<Search> {
     const picked: string[] = [];
     let sent = false; // from the paid submit on, a failure may mean the provider has the batch (and charged for it)
     try {
-      const search = await this.store.getSearch(userId, id), run = (await this.run(id))!, queryKey = JSON.stringify(peopleQuery(input));
+      const search = await this.store.getSearch(userId, id), run = (await this.run(id))!, queryKey = cursorKey(input);
       const want = Math.min(BATCH, submitCap(search.requested) - run.submitted, Math.ceil((search.requested - search.delivered) / EXPECTED_FIND_RATE));
       const cursor = await this.store.cursor(userId, queryKey), batch: Lead[] = [];
       let pool = JSON.parse(cursor.leftovers) as Lead[], token = cursor.token, stage = cursor.stage, wrapped = false, scanned = run.scanned;
@@ -118,7 +119,7 @@ export class LiveSearch {
       return this.view(userId, id);
     }
   }
-  async start(userId: string, input: SearchInput): Promise<Search> {
+  async start(userId: string, input: Resolved): Promise<Search> {
     peopleQuery(input); // Validate filters before reserving credits or contacting the provider.
     // Close this member's abandoned or interrupted searches first, so they do not hold credits or pending slots.
     const stale = await this.store.db.all<{ search_id: string }>(`SELECT r.search_id FROM provider_runs r JOIN searches s ON s.id=r.search_id WHERE s.user_id=? AND s.status='awaiting_provider'
@@ -150,7 +151,7 @@ export class LiveSearch {
     // Read-only polling may safely resume after an interruption; the row lock spaces out concurrent readers.
     const locked = await this.store.db.run('UPDATE provider_runs SET updated_at=? WHERE search_id=? AND updated_at=?', Date.now(), id, run.updated_at);
     if (!locked) return this.view(userId, id);
-    const input = JSON.parse(search.filters) as SearchInput, expired = Date.now() - (run.submitted_at ?? run.updated_at) > BATCH_DEADLINE;
+    const input = audienceOf(search.filters), expired = Date.now() - (run.submitted_at ?? run.updated_at) > BATCH_DEADLINE;
     let claimed = false;
     try {
       const result = await this.client.results(run.file, JSON.parse(run.people) as Lead[]);

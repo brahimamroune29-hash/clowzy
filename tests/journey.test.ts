@@ -12,6 +12,7 @@ const APP = 'https://clowzy.test';
 process.env.APP_URL = APP;
 process.env.DATABASE_URL = 'postgres://unused'; // getStore() returns the test store set on globalThis below
 process.env.ICYPEAS_API_KEY = 'journey-secret';
+process.env.OPENROUTER_API_KEY = 'journey-ai-secret';
 const holder = globalThis as unknown as { waslStore?: Store };
 let clock = Date.parse('2026-10-01T08:00:00Z');
 
@@ -20,15 +21,22 @@ const lead = (id: string) => ({ firstname: 'Person', lastname: id, profileUrl: '
 const people = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => lead(prefix + i));
 
 // strict/broad: people per stage. found: ids with a very_sure email. pendingReads: reads answered "in progress" first.
-type Fake = { strict?: Lead[]; broad?: Lead[]; found?: (id: string) => boolean; submit?: 'ok' | 'no-credits' | 'throw'; down?: boolean; pendingReads?: number; neverDone?: boolean };
+type Fake = { strict?: Lead[]; broad?: Lead[]; found?: (id: string) => boolean; submit?: 'ok' | 'no-credits' | 'throw'; down?: boolean; pendingReads?: number; neverDone?: boolean; ai?: 'down' };
 function provider(o: Fake = {}) {
-  const strict = o.strict ?? people('s', 30), broad = o.broad ?? [], found = o.found ?? (() => true), files: string[][] = [], calls: string[] = [];
+  const strict = o.strict ?? people('s', 30), broad = o.broad ?? [], found = o.found ?? (() => true), files: string[][] = [], calls: string[] = [], queries: { profileLocation?: unknown; 'currentCompany.industry'?: { include: string[] }; currentJobTitle?: { include: string[] } }[] = [];
   let pending = o.pendingReads ?? 0;
   globalThis.fetch = (async (url: string, init: RequestInit) => {
     const path = String(url).replace('https://app.icypeas.com/api/', ''), body = JSON.parse(String(init.body));
     calls.push(path);
+    queries.push(body.query);
+    if (String(url).startsWith('https://openrouter.ai/')) {
+      if (o.ai === 'down') return Response.json({}, { status: 500 });
+      const asked = body.messages[1].content as string;
+      const content = asked.startsWith('Sector:') ? { industries: [{ name: 'Retail Health and Personal Care Products', ar: 'متاجر العناية الشخصية' }, { name: 'Cosmetics', ar: 'مستحضرات التجميل' }] } : { titles: ['Warehouse Manager'] };
+      return Response.json({ choices: [{ message: { content: JSON.stringify(content) } }] });
+    }
     if (o.down) throw new TypeError('fetch failed');
-    const list = body.query?.location?.exclude ? broad : strict;
+    const list = body.query?.profileLocation?.exclude ? broad : strict;
     if (path === 'find-people/count') return Response.json({ success: true, total: list.length });
     if (path === 'find-people') {
       const from = body.pagination?.token ? Number(body.pagination.token.slice(1)) : 0, to = from + body.pagination.size;
@@ -47,7 +55,7 @@ function provider(o: Fake = {}) {
     }
     throw new Error('unexpected provider path ' + path);
   }) as typeof fetch;
-  return { calls, submits: () => calls.filter(c => c === 'bulk-search').length };
+  return { calls, queries, submits: () => calls.filter(c => c === 'bulk-search').length };
 }
 
 function browser() {
@@ -82,7 +90,7 @@ async function setup(t: TestContext, credits = 20) {
   assert.equal((await member('terms', {})).status, 200);
   return { store, owner, member, token: invite.data.token as string };
 }
-const form = (count: number) => ({ sector: 'التقنية والبرمجيات', country: 'السعودية', city: '', title: '', size: 'all', count, confirmed: true, requestId: randomUUID() });
+const form = (count: number) => ({ sector: 'التقنية والبرمجيات', countries: ['SA'], city: '', title: '', size: 'all', count, confirmed: true, requestId: randomUUID() });
 const me = async (member: Call) => (await member('bootstrap?view=full')).data;
 async function finish(t: TestContext, member: Call, id: string, stepMs = 10000) {
   for (let i = 0; i < 200; i++) {
@@ -99,7 +107,7 @@ test('journey: invited member searches, gets the requested emails, pays one cred
   const fake = provider();
   assert.equal((await browser()('auth/accept', { token, password: 'another-password' })).status, 410); // the link works once
   const count = await member('search/count', form(3));
-  assert.deepEqual(count.data, { total: 30, strict: 30 });
+  assert.deepEqual(count.data, { total: 30, strict: 30, industryLabels: ['التقنية والبرمجيات'] });
   const input = form(3), started = await member('search', input);
   assert.equal(started.status, 200);
   assert.equal((await member('search', input)).data.id, started.data.id); // a double click is the same search
@@ -246,4 +254,32 @@ test('journey: owner deactivates a member mid-search -> signed out, search cance
   assert.equal((await member('search/poll', { searchId: started.data.id })).status, 401);
   const users = (await me(owner)).admin.users as { id: string; balance: number }[];
   assert.equal(users.find(u => u.id === account.user.id)!.balance, 20);
+});
+
+test('journey: several Gulf countries in one search, and «أخرى» typed in Arabic for the sector and the title', async t => {
+  const { member } = await setup(t);
+  const fake = provider();
+  const typed = { ...form(2), countries: ['SA', 'AE', 'QA'], sector: 'محلات العطور', title: 'مدير مستودع' };
+  const count = await member('search/count', typed);
+  assert.equal(count.status, 200);
+  assert.deepEqual(count.data.industryLabels, ['متاجر العناية الشخصية', 'مستحضرات التجميل'], 'the member sees what their words were mapped to');
+  const q = fake.queries.find(x => x?.profileLocation)!;
+  assert.deepEqual(q.profileLocation, { include: ['AE', 'QA', 'SA'] });
+  assert.deepEqual(q['currentCompany.industry']!.include, ['Retail Health and Personal Care Products', 'Cosmetics']);
+  assert.deepEqual(q.currentJobTitle!.include, ['مدير مستودع', 'Warehouse Manager']);
+  const aiCalls = fake.calls.filter(c => c.startsWith('https://openrouter.ai/')).length;
+  const started = await member('search', typed);
+  const done = await finish(t, member, started.data.id);
+  assert.equal(done.delivered, 2);
+  assert.equal(fake.calls.filter(c => c.startsWith('https://openrouter.ai/')).length, aiCalls, 'the search reuses the mapping: no second AI call, same query');
+  assert.match(done.title, /محلات العطور · السعودية، الإمارات، قطر/);
+});
+
+test('journey: the AI is unavailable -> «أخرى» explains it; listed options keep working', async t => {
+  const { member } = await setup(t);
+  provider({ ai: 'down' });
+  const other = await member('search/count', { ...form(2), sector: 'محلات الورد' });
+  assert.equal(other.status, 503);
+  assert.match(other.data.error, /«أخرى»/);
+  assert.equal((await member('search/count', form(2))).status, 200);
 });
