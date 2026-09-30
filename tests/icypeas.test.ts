@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { cursorKey, freeMail, IcypeasClient, IcypeasError, peopleQuery, personKey, safeWebsite } from '../src/lib/icypeas';
 import { LiveSearch } from '../src/lib/live-search';
 import { Store } from '../src/lib/store';
-import { expectedEmails } from '../src/lib/contracts';
+import { emailTrust, expectedEmails } from '../src/lib/contracts';
 import { SECTOR_INDUSTRIES } from '../src/lib/audience';
 import { hookDb, input, item, lead, live, testStore } from './pg';
 
@@ -73,7 +73,7 @@ test('query: country code first, then name-only people; city narrowed; headcount
   assert.equal(safeWebsite('javascript:alert(1)'), ''); assert.equal(safeWebsite('company.example'), 'https://company.example/');
 });
 
-test('start is paid once per request; only ultra/very sure emails are delivered and charged; malformed rows are skipped', async () => {
+test('start is paid once per request; sure emails are delivered before probable ones; malformed rows are skipped', async () => {
   const { store, user, bob } = await setup(), m = mockTransport(), search = live(store, m.client), request = input();
   try {
     const [first, repeated] = await Promise.all([search.start(user.id, request), search.start(user.id, request)]);
@@ -84,7 +84,7 @@ test('start is paid once per request; only ultra/very sure emails are delivered 
     await assert.rejects(search.poll(bob.id, first.id));
     await eligible(store); const done = await search.poll(user.id, first.id);
     assert.equal(done.status, 'completed'); assert.equal(done.delivered, 2);
-    assert.deepEqual((await store.snapshot(user.id)).contacts.map(c => c.email).sort(), ['a@company-a.example', 'c@company-c.example'], 'probable email is not delivered');
+    assert.deepEqual((await store.snapshot(user.id)).contacts.map(c => c.email).sort(), ['a@company-a.example', 'c@company-c.example'], 'with more found than asked, the sure ones are delivered');
     assert.equal((await store.user(user.id)).balance, 8); assert.equal(await store.reserved(user.id), 0);
     const contact = (await store.snapshot(user.id)).contacts[0];
     assert.equal(contact.source, 'clowzy', 'the provider name is not shown to members'); assert.equal(contact.country, 'السعودية'); assert.equal(contact.city, 'Riyadh'); assert.equal(contact.email_status, 'VERIFIED'); assert.equal(contact.sector, 'التقنية والبرمجيات');
@@ -93,6 +93,14 @@ test('start is paid once per request; only ultra/very sure emails are delivered 
   } finally { await store.close(); }
 });
 
+test('a probable email (95% sure, paid by the provider anyway) is delivered and labelled, never thrown away', async () => {
+  const both = { ...item(3, 'd1@company-d.example', 'probable'), results: { emails: [{ email: 'd1@company-d.example', certainty: 'probable' }, { email: 'd2@company-d.example', certainty: 'very_sure' }] } };
+  const m = mockTransport({ files: [[item(0, 'x@gmail.com', 'probable'), item(1, 'b@company-b.example', 'probable'), item(2, 'c@company-c.example', 'ultra_sure'), both, item(4, 'e@company-e.example', 'risky'), { ...item(5, 'f@company-f.example'), results: { emails: [{ email: 'f@company-f.example' }] } }]] });
+  const { candidates } = await m.client.results('file1', ['a', 'b', 'c', 'd', 'e', 'f'].map(lead) as never);
+  assert.deepEqual(candidates.map(c => [c.email, c.email_status]), [['c@company-c.example', 'VERIFIED'], ['d2@company-d.example', 'VERIFIED'], ['b@company-b.example', 'PROBABLE']],
+    'sure first, and the sure address of a person with both; personal mailboxes and unknown or missing certainty are refused');
+  assert.equal(emailTrust('PROBABLE'), 'مؤكد ٩٥٪'); assert.equal(emailTrust('VERIFIED'), 'مؤكد ٩٩٪');
+});
 test('short batches top up from the next people page, never submitting more than 10x the requested count', async () => {
   const pages = [{ leads: ['a', 'b', 'c', 'd'].map(lead), token: 't1' }, { leads: ['e', 'f', 'g', 'h', 'i', 'j', 'k', 'l'].map(lead) }];
   const nf = (n: number) => Array.from({ length: n }, (_, i) => item(i, null));

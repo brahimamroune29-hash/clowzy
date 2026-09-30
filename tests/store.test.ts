@@ -111,6 +111,8 @@ test('CSV keeps each contact stored email status; only demo rows carry the demo 
   assert.ok(real.endsWith(',"DELIVERABLE"'),real);
   assert.ok(real.includes(',"clowzy",')&&!real.includes('FullEnrich'),'the provider name never reaches the member\'s file: '+real);
   assert.ok(demo.endsWith(',"DEMO — not real contact data"'),demo);
+  const [,probable]=contactsCsv([{...demoCatalog[0],...row,email_status:'PROBABLE'}]).split('\r\n');
+  assert.ok(probable.endsWith(',"مؤكد ٩٥٪"'),'the member reads how sure each email is: '+probable);
 });
 test('invitations accepted once, preserve assigned credits, reject expired token',async()=>{
   const {store,admin}=await setup();

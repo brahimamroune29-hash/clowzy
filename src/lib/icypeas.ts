@@ -62,6 +62,7 @@ const itemSchema = z.object({
 const pending = ['NONE', 'SCHEDULED', 'IN_PROGRESS'];
 // Link pages, social networks, store builders, forms and short links host many companies: their domain is not the company's.
 const sharedHost = /(^|\.)(linktr\.ee|lnk\.bio|linkin\.bio|bio\.link|beacons\.ai|taplink\.cc|instagram\.com|instagr\.am|facebook\.com|fb\.com|fb\.me|x\.com|twitter\.com|t\.co|tiktok\.com|snapchat\.com|linkedin\.com|youtube\.com|youtu\.be|wa\.me|wa\.link|whatsapp\.com|t\.me|goo\.gl|google\.com|business\.site|blogspot\.com|wordpress\.com|wixsite\.com|myshopify\.com|salla\.sa|zid\.store|youcan\.shop|expandcart\.com|wuilt\.com|zyda\.com|odoo\.com|forms\.gle|bit\.ly|tinyurl\.com|calendly\.com|about\.me|carrd\.co|github\.io|notion\.site)$/i;
+const sure = ['ultra_sure', 'very_sure'];
 // Personal mailboxes: never a company domain, and never delivered (the platform promises work emails only).
 export const freeMail = /^((gmail|googlemail|hotmail|outlook|live|msn|yahoo|ymail|icloud|aol|protonmail|proton|yandex|gmx)(\.[a-z]{2,3}){1,2}|(me|mac|mail|rocketmail)\.com|emirates\.net\.ae|eim\.ae|batelco\.com\.bh|omantel\.net\.om|qatar\.net\.qa|qualitynet\.net)$/i; // incl. Gulf ISP mailboxes
 // Placeholder employers: without a website there is nothing to find an email at.
@@ -148,7 +149,8 @@ export class IcypeasClient {
     return file.data.file;
   }
   // One read (a batch has at most BATCH rows). Read-only; safe to repeat. Candidates come from finished rows only and
-  // include only emails Icypeas rates ultra_sure / very_sure (<1% expected bounce). Malformed rows are skipped, not fatal.
+  // include emails Icypeas rates ultra_sure / very_sure (<1% expected bounce) or probable (<5%; charged anyway, so delivered
+  // and labelled rather than wasted), sure ones first. Malformed rows are skipped, not fatal.
   async results(file: string, leads: Lead[]): Promise<{ done: boolean; candidates: Candidate[]; unpaid: Lead[] }> {
     const raw = await this.request('bulk-single-searchs/read', { mode: 'bulk', file, limit: BATCH });
     const rows = Array.isArray(raw.items) ? raw.items : [];
@@ -157,18 +159,20 @@ export class IcypeasClient {
     const candidates: Candidate[] = [];
     for (const item of finished) {
       const lead = leads[Number(item.userData?.externalId)];
-      const email = item.results?.emails?.find(e => ['ultra_sure', 'very_sure'].includes(e.certainty || '') && z.email().safeParse(e.email).success && !freeMail.test(e.email.split('@')[1]));
+      const usable = (item.results?.emails ?? []).filter(e => z.email().safeParse(e.email).success && !freeMail.test(e.email.split('@')[1]));
+      const email = usable.find(e => sure.includes(e.certainty || '')) ?? usable.find(e => e.certainty === 'probable');
       if (!lead || !email) continue;
       const place = placeOf(lead.address);
       candidates.push({
         name: leadName(lead), email: email.email, company: lead.lastCompanyName || '', title: lead.lastJobTitle || '',
         sector: lead.lastCompanyIndustry || '', country: place.code ? countryLabel(place.code) : '', city: place.city,
         website: safeWebsite(lead.lastCompanyWebsite), size: lead.lastCompanySize == null ? '' : String(lead.lastCompanySize),
-        source: 'clowzy', email_status: 'VERIFIED',
+        source: 'clowzy', email_status: sure.includes(email.certainty || '') ? 'VERIFIED' : 'PROBABLE',
       });
     }
     // Rows the provider could not pay for (its balance ran out after the batch was accepted) were never searched.
     const unpaid = finished.filter(i => i.status === 'INSUFFICIENT_FUNDS').flatMap(i => leads[Number(i.userData?.externalId)] ?? []);
+    candidates.sort((a, b) => Number(a.email_status === 'PROBABLE') - Number(b.email_status === 'PROBABLE'));
     return { done: finished.length + malformed >= leads.length, candidates, unpaid }; // a malformed row counts as finished without email
   }
 }

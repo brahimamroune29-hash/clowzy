@@ -30,6 +30,8 @@ export function expectedEmails(strict: number, total: number, count: number) {
 }
 export type Role = 'admin' | 'member';
 export type User = { id: string; name: string; email: string; role: Role; active: number; balance: number; created_at: string; terms_accepted_at: string | null };
+// How sure the provider is that the email exists: VERIFIED <1% expected bounce, PROBABLE <5% (Icypeas certainties).
+export const emailTrust = (status: string) => status === 'PROBABLE' ? 'مؤكد ٩٥٪' : status === 'VERIFIED' ? 'مؤكد ٩٩٪' : status;
 export type Contact = { id: string; user_id: string; search_id: string; name: string; email: string; company: string; title: string; sector: string; country: string; city: string; website: string; size: string; source: string; email_status: string; created_at: string };
 export type Search = { id: string; user_id: string; filters: string; title: string; requested: number; delivered: number; duplicates: number; status: string; created_at: string; message?: string; checked?: number };
 export type Ledger = { id: string; amount: number; kind: string; reason: string; created_at: string; balance_after: number };
