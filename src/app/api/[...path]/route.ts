@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { AppError, getStore } from '@/lib/store';
-import { searchSchema, withCountries } from '@/lib/contracts';
+import { withCountries } from '@/lib/contracts';
+import { searchSchema, weekBoundariesSchema } from '@/lib/schemas';
 import { IcypeasClient, IcypeasError, providerInfo } from '@/lib/icypeas';
 import { LiveSearch } from '@/lib/live-search';
 import { resolveAudience } from '@/lib/audience';
 import { contactsCsv } from '@/lib/csv';
-import { weekBoundariesSchema } from '@/lib/overview';
 import { accessError, bodyLimit, clientIp, isHttps } from '@/lib/access';
 
 export const runtime = 'nodejs';
@@ -55,12 +55,17 @@ async function handle(req: NextRequest, { params }: { params: Promise<{ path: st
     const path = (await params).path.join('/');
     const store = getStore();
     const session = req.cookies.get('wasl_session')?.value;
-    if (req.method === 'GET' && path === 'invitation') return json(await store.invitation(tokenField.parse(req.nextUrl.searchParams.get('token'))));
+    if (req.method === 'GET' && path === 'invitation') {
+      const token = tokenField.safeParse(req.nextUrl.searchParams.get('token'));
+      if (!token.success) throw new AppError('الدعوة غير صالحة أو انتهت مدتها.', 410); // a truncated link reads like an expired one
+      return json(await store.invitation(token.data));
+    }
     if (req.method === 'POST' && path.startsWith('auth/')) {
-      // ponytail: in-memory limits suit the single-process deployment; move to the database if we run several instances.
       const ip = clientIp(req.headers.get('x-forwarded-for'));
       if (ip === 'unknown' && process.env.APP_URL) console.warn('No X-Forwarded-For: every client shares one login limit. Check the reverse proxy.');
-      rateLimit('auth:' + ip, 30); // per IP only: a per-email limit would let anyone lock the owner out
+      // Counted in the database: Vercel runs several instances, each with its own memory. Per IP only: a per-email
+      // limit would let anyone lock the owner out.
+      await store.hit('auth:' + ip, 30);
       const b = await body(req);
       if (path === 'auth/login') {
         const data = z.object({email:z.email(),password:z.string().min(1).max(128)}).parse(b);
@@ -110,6 +115,7 @@ async function handle(req: NextRequest, { params }: { params: Promise<{ path: st
       const input = searchSchema.pick({ sector:true, countries:true, city:true, title:true, size:true }).parse(withCountries(b));
       rateLimit('count:' + user.id, 60); // ponytail: in-memory, like the other limits; each call is 2 free provider requests, plus one paid AI call per new «أخرى» text (then cached)
       if (!providerInfo().configured) throw new AppError('مزوّد البيانات غير مهيأ على الخادم. تواصل مع مالك المنصة.',503);
+      if (user.balance < 1) throw new AppError('رصيدك صفر. تواصل مع مالك المنصة لإضافة رصيد قبل البحث.'); // no paid AI mapping for a search that cannot run
       const audience = await resolveAudience(store,input); // «أخرى» is mapped here, so the member sees what will be searched
       return json({...await new IcypeasClient().count(audience),industryLabels:audience.industryLabels});
     }
@@ -160,7 +166,7 @@ async function handle(req: NextRequest, { params }: { params: Promise<{ path: st
     }
     throw new AppError('العملية المطلوبة غير موجودة.', 404);
   } catch (error) {
-    if (error instanceof z.ZodError) return json({error:'راجع البيانات المدخلة، وتأكد من تأكيد معايير البحث.'},400);
+    if (error instanceof z.ZodError) return json({error:['/api/search','/api/search/count'].includes(req.nextUrl.pathname)?'راجع البيانات المدخلة، وتأكد من تأكيد معايير البحث.':'راجع البيانات المدخلة.'},400);
     if (error instanceof IcypeasError) return json({error:error.message},error.status);
     if (error instanceof AppError) {
       // Denials must be visible in the server log: a wrong APP_URL would otherwise reject every user silently.

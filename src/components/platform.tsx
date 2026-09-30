@@ -6,7 +6,7 @@ import { ChartPieSlice, ClockCounterClockwise, Coins, GearSix, House, List, Magn
 import type { Snapshot } from '@/lib/contracts';
 import { api,number } from '@/lib/client';
 import { overviewOnly,weekBoundaries } from '@/lib/overview';
-import { Brand, ThemeToggle } from './ui';
+import { Brand, Button, Notice, ThemeToggle } from './ui';
 import Auth from './auth';
 import { TermsGate, TermsPage } from './terms';
 import { Dashboard, SearchView, LeadsView, HistoryView, CreditsView, SettingsView } from './member-views';
@@ -17,29 +17,34 @@ const adminNav=[{href:'/admin',label:'نظرة عامة',icon:ChartPieSlice},{hr
 export default function Platform(){
   const [data,setData]=useState<Snapshot|null>(null),[loading,setLoading]=useState(true),[menu,setMenu]=useState(false),[toast,setToast]=useState<{message:string;error:boolean}|null>(null);
   const pathname=usePathname(),query=useSearchParams(),router=useRouter();
+  // Only a 401 signs the user out; any other failure (network, a paused database, a redeploy) keeps the page and says so.
+  const [failure,setFailure]=useState('');
+  const failed=useCallback((e:unknown)=>{const signedOut=(e as {status?:number}).status===401;if(signedOut)setData(null);setFailure(signedOut?'':(e as Error).message);},[]);
   const requestPath=overviewOnly(pathname)?'bootstrap?view=overview&days='+encodeURIComponent(JSON.stringify(weekBoundaries())):'bootstrap?view=full';
   const [loadedPath,setLoadedPath]=useState('');
   const requestVersion=useRef(0);
   const refresh=useCallback(async()=>{
     const version=++requestVersion.current;
-    try {const value=await api<Snapshot>(requestPath);if(version===requestVersion.current)setData(value);}
-    catch {if(version===requestVersion.current)setData(null);}
-    finally {if(version===requestVersion.current){setLoadedPath(requestPath);setLoading(false);}}
-  },[requestPath]);
+    try {const value=await api<Snapshot>(requestPath);if(version===requestVersion.current){setData(value);setFailure('');setLoadedPath(requestPath);}}
+    catch(e){if(version===requestVersion.current)failed(e);}
+    finally {if(version===requestVersion.current)setLoading(false);}
+  },[requestPath,failed]);
   useEffect(()=>{
     const version=++requestVersion.current;
     let active=true;
-    api<Snapshot>(requestPath).then(value=>{if(active&&version===requestVersion.current)setData(value);})
-      .catch(()=>{if(active&&version===requestVersion.current)setData(null);})
-      .finally(()=>{if(active&&version===requestVersion.current){setLoadedPath(requestPath);setLoading(false);}});
+    api<Snapshot>(requestPath).then(value=>{if(active&&version===requestVersion.current){setData(value);setFailure('');setLoadedPath(requestPath);}})
+      .catch(e=>{if(active&&version===requestVersion.current){failed(e);if((e as {status?:number}).status===401)setLoadedPath(requestPath);}})
+      .finally(()=>{if(active&&version===requestVersion.current)setLoading(false);});
     return()=>{active=false;};
-  },[requestPath]);
+  },[requestPath,failed]);
   useEffect(()=>{if(!toast)return;const t=setTimeout(()=>setToast(null),5000);return()=>clearTimeout(t);},[toast]);
   const notify=(message:string,error=false)=>setToast({message,error});
   async function onLogin(){await refresh();router.replace('/dashboard');}
-  async function logout(){requestVersion.current++;await api('auth/logout',{});setData(null);router.replace('/');}
+  async function logout(){requestVersion.current++;await api('auth/logout',{});setData(null);setFailure('');router.replace('/');}
   const token=query.get('token')||undefined;
   if(pathname==='/terms')return <TermsPage/>;
+  // A page whose data did not load (network, paused database, redeploy): say so and retry; never show another page's data.
+  if(!loading&&failure&&loadedPath!==requestPath)return <div className="boot"><Brand/><p>{failure}</p><Button variant="secondary" onClick={()=>{setLoading(true);void refresh();}}>إعادة المحاولة</Button></div>;
   if(loading||loadedPath!==requestPath)return <div className="boot"><Brand/><p>نجهّز مساحة عملك…</p><span className="loading-line"/></div>;
   if((pathname==='/invite'||pathname==='/reset')&&token)return <Auth onLogin={onLogin} token={token} reset={pathname==='/reset'}/>;
   if(!data)return <Auth onLogin={onLogin}/>;
@@ -65,7 +70,7 @@ export default function Platform(){
       <div className="profile"><span className="avatar">{data.user.name.split(' ').map(x=>x[0]).slice(0,2).join('')}</span><div><strong>{data.user.name}</strong><small>{admin?'مالك المنصة':'مشترك'}</small></div><button className="icon-button" aria-label="تسجيل الخروج" onClick={logout}><SignOut size={20}/></button></div></div>
     </aside>
     <div className="main-area"><header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-only" aria-label="فتح القائمة" onClick={()=>setMenu(true)}><List size={24}/></button><span>{admin?'إدارة المنصة':'مساحة العمل'}</span><span className="slash">/</span><strong>{label}</strong></div><div className="topbar-tools"><ThemeToggle/><span className="topbar-avatar">{data.user.name[0]}</span></div></header>
-    <main className="page-content" key={pathname}>{page}</main><footer className="app-footer"><span>clowzy — مساحة الفرص</span><Link href="/terms">شروط الاستخدام</Link></footer></div>
-    {toast&&<div className={'toast '+(toast.error?'toast-error':'')} role="status">{toast.error?<WarningCircle size={22}/>:<CheckCircle size={22}/>}<span>{toast.message}</span><button className="icon-button" aria-label="إغلاق التنبيه" onClick={()=>setToast(null)}><X size={17}/></button></div>}
+    <main className="page-content" key={pathname}>{failure&&<Notice error>{failure} البيانات المعروضة من آخر تحديث ناجح.</Notice>}{page}</main><footer className="app-footer"><span>clowzy — مساحة الفرص</span><Link href="/terms">شروط الاستخدام</Link></footer></div>
+    {toast&&<div className={'toast '+(toast.error?'toast-error':'')} role={toast.error?'alert':'status'}>{toast.error?<WarningCircle size={22}/>:<CheckCircle size={22}/>}<span>{toast.message}</span><button className="icon-button" aria-label="إغلاق التنبيه" onClick={()=>setToast(null)}><X size={17}/></button></div>}
   </div>;
 }

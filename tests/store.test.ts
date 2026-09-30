@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { Store } from '../src/lib/store';
+import { AppError, Store } from '../src/lib/store';
 import { contactsCsv,cell } from '../src/lib/csv';
-import { Candidate,Resolved,searchSchema } from '../src/lib/contracts';
+import { Candidate,Resolved } from '../src/lib/contracts';
+import { searchSchema } from '../src/lib/schemas';
 import { audienceOf } from '../src/lib/audience';
 import { testStore } from './pg';
 
@@ -179,5 +180,25 @@ test('owner snapshot, password change, profile and logout run on Postgres types'
     await store.updateProfile(alice.id,'Alice B');assert.equal((await store.session(token)).name,'Alice B');
     await store.logout(token);await assert.rejects(store.session(token));
     assert.equal((await store.session(await store.login(alice.email,'another-secure-password'))).id,alice.id);
+  } finally {await store.close();}
+});
+
+test('a newer reset link, a used one or a password change cancels every older reset link',async()=>{
+  const {store,admin,alice}=await setup();
+  try {
+    const a=await store.createReset(admin.id,alice.id),b=await store.createReset(admin.id,alice.id);
+    await assert.rejects(store.resetPassword(a,'leaked-link-password'),'a newer link cancels the older one');
+    await store.resetPassword(b,'new-password-12345');
+    const c=await store.createReset(admin.id,alice.id);
+    await store.changePassword(alice.id,'new-password-12345','newer-password-123');
+    await assert.rejects(store.resetPassword(c,'x-password-12345'),'a password change cancels outstanding links');
+  } finally {await store.close();}
+});
+test('login attempts are counted per IP in the database, so every server instance shares the limit',async()=>{
+  const {store}=await setup();
+  try {
+    for(let i=0;i<20;i++) await store.hit('auth:1.2.3.4',20);
+    await assert.rejects(store.hit('auth:1.2.3.4',20),(e:AppError)=>e.status===429);
+    await store.hit('auth:5.6.7.8',20);
   } finally {await store.close();}
 });

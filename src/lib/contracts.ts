@@ -1,5 +1,4 @@
-import { z } from 'zod';
-import { countryFromText, isCountry } from './places';
+import { countryFromText } from './places';
 
 // What the member picks from. The server maps each label to exact provider names (src/lib/audience.ts);
 // anything else typed under «أخرى» is mapped by the AI there.
@@ -15,28 +14,13 @@ export const titles = ['المالك أو المؤسس', 'الرئيس التن�
 export const OTHER = 'أخرى';
 export const gulf = ['SA', 'AE', 'QA', 'KW', 'BH', 'OM'] as const;
 export const listedCountries = [...gulf, 'DZ', 'EG'] as const;
-const text = (max: number) => z.string().trim().max(max);
-export const searchSchema = z.object({
-  sector: text(60).min(2), // a listed sector, or the member's own words
-  countries: z.array(z.string().refine(isCountry)).min(1).max(10),
-  city: text(60).default(''),
-  title: text(60).default(''), // a listed title, English as typed, or Arabic words for the AI
-  size: z.enum(['all', '1-10', '11-50', '51-200']).default('all'),
-  count: z.number().int().min(1).max(50),
-  confirmed: z.literal(true),
-  requestId: z.string().uuid(),
-});
-export type SearchInput = z.infer<typeof searchSchema>;
+export type { Resolved, SearchInput } from './schemas'; // types only: the browser never loads the validation library
 // Searches saved (and pages opened) before multi-country send `country` (an Arabic name) instead of `countries`.
 export function withCountries(raw: unknown) {
   if (!raw || typeof raw !== 'object' || 'countries' in raw || !('country' in raw)) return raw;
   return { ...raw, countries: [countryFromText(String(raw.country))].filter(Boolean) };
 }
-// A search as stored and run: the form plus the provider names it resolved to (server-side only, never from the client).
-export const resolvedSchema = searchSchema.extend({
-  industries: z.array(text(120)).min(1).max(40), industryLabels: z.array(text(80)).max(40), titles: z.array(text(80)).max(40),
-});
-export type Resolved = z.infer<typeof resolvedSchema>;
+
 export const SUBMIT_MULTIPLE = 10; // approved 2026-09-30 (was 5): submit at most 10x the requested emails for email discovery
 // Emails a search can expect, from pooled live very-sure rates (A/B 2026-09-28 + production searches 2026-09-30): people matched by
 // country code 8 of 45 (18%), name-only matches 2 of 25 (8%). A search tries at most SUBMIT_MULTIPLE x the count, strict first.

@@ -1,10 +1,10 @@
 import type { Resolved, Search } from './contracts';
 import { audienceOf } from './audience';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { Store } from './store';
+import { DAILY_PEOPLE, dailyLimit, Store } from './store';
 import { BATCH, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadName, peopleQuery, personKey, STAGES, submitCap } from './icypeas';
 
-type Run = { search_id: string; phase: string; people: string; file: string | null; scanned: number; submitted: number; submitted_at: number | null; message: string; updated_at: number; read_errors: number };
+type Run = { search_id: string; phase: string; people: string; file: string | null; scanned: number; fetched: number; submitted: number; submitted_at: number | null; message: string; updated_at: number; read_errors: number };
 type Slots = { read: number; bulk: number };
 // ponytail: process-wide spacing for Icypeas account limits (results read 30/min, bulk submit 1/s); per server instance, so two
 // instances can collide: a refused submit (429) is retried once (icypeas.ts), a refused read waits for the next poll. Move the
@@ -46,10 +46,11 @@ export class LiveSearch {
     // checked: people sent for email discovery so far (the live progress the results page shows while searching).
     return { ...search, checked: run?.submitted ?? 0, message: run?.message || (search.status === 'awaiting_provider' ? 'جارٍ البحث والتحقق من الإيميلات.' : '') };
   }
-  private stop(id: string, message: string, uncertain = false) {
+  private stop(userId: string, id: string, message: string, uncertain = false) {
     return this.store.transaction(async () => {
       await this.patch(id, { phase: uncertain ? 'unknown' : 'failed', message });
-      await this.store.db.run("UPDATE searches SET status=? WHERE id=? AND status='awaiting_provider'", uncertain ? 'unknown' : 'failed', id);
+      // Only the request that closes the search alerts the owner (two tabs may both get here).
+      if (await this.store.db.run("UPDATE searches SET status=? WHERE id=? AND status='awaiting_provider'", uncertain ? 'unknown' : 'failed', id)) await this.store.alert(userId, id, message);
       await this.store.db.run('DELETE FROM reservations WHERE search_id=?', id);
     });
   }
@@ -75,9 +76,10 @@ export class LiveSearch {
   }
   // A batch past its deadline is closed with what was delivered, through the same claim as a delivery: if another
   // request is delivering it (or already closed it), that request decides.
-  private closeExpired(id: string, file: string, message: string) {
+  private closeExpired(userId: string, id: string, file: string, message: string) {
     return this.store.transaction(async () => {
       if (!await this.store.db.run("UPDATE provider_runs SET phase='finished',message=?,updated_at=? WHERE search_id=? AND phase='waiting' AND file=?", message, Date.now(), id, file)) return;
+      await this.store.alert(userId, id, 'تعذّرت قراءة نتائج دفعة مدفوعة؛ راجع حساب المزوّد.');
       await this.store.finishSearch(id);
     });
   }
@@ -108,14 +110,18 @@ export class LiveSearch {
       batch = JSON.parse(run.people) as Lead[]; // picked (and claimed) by an earlier request of this search, not sent yet
       const want = Math.min(BATCH, submitCap(search.requested) - run.submitted, Math.ceil((search.requested - search.delivered) / EXPECTED_FIND_RATE));
       const cursor = await this.store.cursor(userId, queryKey);
-      let pool = JSON.parse(cursor.leftovers) as Lead[], token = cursor.token, stage = cursor.stage, wrapped = false, scanned = run.scanned, pages = 0;
+      let pool = JSON.parse(cursor.leftovers) as Lead[], token = cursor.token, stage = cursor.stage, wrapped = false, scanned = run.scanned, fetched = run.fetched, pages = 0;
       while (want > 0 && batch.length < want) {
         if (!pool.length) {
           if (scanned >= fetchCap(search.requested) || wrapped) break;
           if (pages >= PAGES_PER_CALL || this.elapsed() > COLLECT_MS) return this.pause(userId, id, batch);
+          if (await this.store.dailyFetched(userId) >= DAILY_PEOPLE) { // the member's daily provider work: send who was picked, then stop
+            if (batch.length) break;
+            return this.finish(userId, id, 'حُسب فقط ما وصل. ' + dailyLimit);
+          }
           pages++;
           const page = await this.page(input, token, stage);
-          scanned += page.returned; pool = page.leads; token = page.token;
+          scanned += page.returned; fetched += page.returned; pool = page.leads; token = page.token;
           if (!token || !page.returned) { // stage done: next stage, or back to the top on the next search
             token = null; stage = (stage + 1) % STAGES; wrapped = stage === 0;
             if (wrapped) scanned = Math.max(scanned, fetchCap(search.requested)); // this search has seen everything: no further pages
@@ -129,7 +135,7 @@ export class LiveSearch {
             if (await this.store.claimPerson(userId, personKey(lead), leadName(lead), lead.lastCompanyName || '')) batch.push(lead);
           }
           await this.store.saveCursor(userId, queryKey, stage, token, JSON.stringify(pool));
-          await this.patch(id, { scanned, people: JSON.stringify(batch) });
+          await this.patch(id, { scanned, fetched, people: JSON.stringify(batch) });
         });
       }
       if (!batch.length) return this.finish(userId, id);
@@ -147,8 +153,8 @@ export class LiveSearch {
       const error = e instanceof IcypeasError ? e : sent ? new IcypeasError('تعذّر حفظ نتيجة الطلب. لن نعيد الإرسال تلقائيًا.', 502, true)
         : new IcypeasError('تعذّر إكمال البحث الآن. حاول مجددًا بعد قليل.', 503);
       if (!error.uncertain) await this.release(userId, queryKey, batch); // nothing reached the provider: offered again first
-      if ((await this.store.getSearch(userId, id)).delivered > 0) return this.finish(userId, id, error.message);
-      await this.stop(id, error.message, error.uncertain);
+      if ((await this.store.getSearch(userId, id)).delivered > 0) { await this.store.alert(userId, id, error.message); return this.finish(userId, id, error.message); }
+      await this.stop(userId, id, error.message, error.uncertain);
       return this.view(userId, id);
     }
   }
@@ -184,9 +190,10 @@ export class LiveSearch {
       // ponytail: runs left in 'delivering' by the pre-2026-09-30 code (claim committed apart from the delivery); delete once none is open.
       if (stale && run.phase === 'delivering') await this.store.db.run("UPDATE provider_runs SET phase='waiting',updated_at=? WHERE search_id=? AND phase='delivering' AND updated_at=?", Date.now(), id, run.updated_at);
       else if (stale && run.phase === 'submitting') { // may have reached the provider: never resent
+        if (!await this.store.db.run("UPDATE provider_runs SET phase='finished',updated_at=? WHERE search_id=? AND phase='submitting' AND updated_at=?", Date.now(), id, run.updated_at)) return this.view(userId, id); // another poll handles it
         console.warn('Icypeas submit interrupted; check the provider for this batch:', { search: id, batch: `clowzy-${id}-${run.submitted}` });
-        if (search.delivered > 0) return this.finish(userId, id, 'توقف إرسال الدفعة الأخيرة قبل تأكيده. حُسب فقط ما وصل.');
-        await this.stop(id, 'توقف إرسال الطلب قبل تأكيده.', true); // the page adds that nothing was charged
+        if (search.delivered > 0) { await this.store.alert(userId, id, 'توقف إرسال دفعة قبل تأكيده؛ راجع حساب المزوّد.'); return this.finish(userId, id, 'توقف إرسال الدفعة الأخيرة قبل تأكيده. حُسب فقط ما وصل.'); }
+        await this.stop(userId, id, 'توقف إرسال الطلب قبل تأكيده.', true); // the page adds that nothing was charged
       }
       return this.view(userId, id);
     }
@@ -210,6 +217,7 @@ export class LiveSearch {
       if (delivered === null) return this.view(userId, id);
       if (result.unpaid.length) { // the provider ran out of credit mid-batch: no further batch until it is topped up
         console.warn('Icypeas: insufficient credits for', result.unpaid.length, 'rows; top it up.');
+        await this.store.alert(userId, id, 'رصيد مزوّد البيانات نفد أثناء البحث؛ اشحن الرصيد.');
         return this.finish(userId, id, 'رصيد مزوّد البيانات لا يكفي لإكمال البحث الآن. حُسب فقط ما وصل. تواصل مع مالك المنصة.');
       }
       // advance() fetches no page past fetchCap, but still tries people already fetched (the member's leftovers).
@@ -218,7 +226,7 @@ export class LiveSearch {
     } catch (e) {
       // Reads are repeatable and a failed delivery rolled back whole: the next poll retries. Only a batch past its deadline
       // whose reads keep failing (READ_ERRORS in a row) is closed with what was delivered.
-      if (age > BATCH_DEADLINE && run.read_errors + 1 >= READ_ERRORS) { await this.closeExpired(id, run.file, 'تعذّر إكمال قراءة النتائج من مزوّد البيانات. حُسب فقط ما وصل.'); return this.view(userId, id); }
+      if (age > BATCH_DEADLINE && run.read_errors + 1 >= READ_ERRORS) { await this.closeExpired(userId, id, run.file, 'تعذّر إكمال قراءة النتائج من مزوّد البيانات. حُسب فقط ما وصل.'); return this.view(userId, id); }
       await this.patch(id, { read_errors: run.read_errors + 1, message: e instanceof IcypeasError ? e.message : 'تعذّر تحديث الحالة. سنحاول مجددًا؛ لن نعيد إرسال الطلب.' });
       return this.view(userId, id);
     }

@@ -225,3 +225,30 @@ test('a stale submit after earlier deliveries closes the search with what arrive
     assert.equal(await store.reserved(user.id), 0);
   } finally { await store.close(); }
 });
+
+// Members pay only for delivered emails; the provider is paid for every person fetched. A daily cap keeps one member from
+// spending the provider account on searches that deliver little (owner's decision 2026-09-30: 1,000 people a day).
+test('a member\'s provider work is capped at 1,000 people a day: new searches are refused, a running one stops', async () => {
+  const m = mock({ pages: [{ leads: Array.from({ length: 25 }, (_, i) => lead('p' + i)), token: 't1' }, { leads: Array.from({ length: 25 }, (_, i) => lead('q' + i)) }] });
+  const { store, user } = await setup(50);
+  try {
+    const earlier = await live(store, m.client).start(user.id, input(1)); // earlier today: 990 people fetched
+    await store.db.run('UPDATE provider_runs SET fetched=990 WHERE search_id=?', earlier.id);
+    await store.db.run("UPDATE searches SET status='completed' WHERE id=?", earlier.id); await store.db.run('DELETE FROM reservations');
+    const before = m.count('find-people'), s = await live(store, m.client).start(user.id, input(20));
+    assert.equal(m.count('find-people'), before + 1, 'one page reaches the cap, none past it');
+    assert.equal(s.status, 'awaiting_provider', 'the people picked before the cap are still searched');
+    await assert.rejects(live(store, m.client).start(user.id, input(1)), (e: Error) => /حد البحث اليومي/.test(e.message));
+  } finally { await store.close(); }
+});
+
+// The owner sees failed or uncertain searches in the activity log, not only in the server log.
+test('a failed search is recorded in the owner\'s activity log with the member and the reason', async () => {
+  const m = mock({ pages: [{ leads: ['a', 'b'].map(lead) }], onBulk: () => Response.json({ success: false, validationErrors: [{ type: 'InsufficientCredits' }] }) });
+  const { store, user, admin } = await setup();
+  try {
+    await live(store, m.client).start(user.id, input(2));
+    const audit = (await store.snapshot(admin.id)).admin!.audit;
+    assert.ok(audit.some(a => a.action.includes('تنبيه') && a.detail.includes('Alice') && a.detail.includes('رصيد مزوّد البيانات')), JSON.stringify(audit));
+  } finally { await store.close(); }
+});

@@ -1,4 +1,5 @@
-import { resolvedSchema, type Resolved, type SearchInput, sectors, titles, withCountries } from './contracts';
+import { type Resolved, type SearchInput, sectors, titles, withCountries } from './contracts';
+import { resolvedSchema } from './schemas';
 import { INDUSTRIES } from './industries';
 import { norm } from './places';
 import { AppError, type Store } from './store';

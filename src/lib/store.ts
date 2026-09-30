@@ -1,9 +1,9 @@
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { countryLabel } from './places';
-import { resolvedSchema } from './contracts';
+import { resolvedSchema, weekBoundariesSchema } from './schemas';
 import type { AdminUser, AuditEvent, Candidate, Contact, ExportEvent, Invitation, Ledger, Resolved, Search, Snapshot, User } from './contracts';
 import { Db, pgDriver } from './db';
-import { weekBoundaries, weekBoundariesSchema } from './overview';
+import { weekBoundaries } from './overview';
 
 export class AppError extends Error {
   constructor(message: string, public status = 400) { super(message); }
@@ -20,6 +20,12 @@ const checkPassword = (password: string, encoded: string) => {
   const actual = scryptSync(password, salt, 64), expected = Buffer.from(stored, 'hex');
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 };
+// Compared when the email is unknown, so a login takes as long whether or not the account exists.
+let dummyHash: string | undefined;
+// Provider work (people fetched) per member per 24 h: members pay per delivered email, the provider per person fetched.
+// ponytail: counted by each search's start time, and a running search may pass it by one page (two can run at once).
+export const DAILY_PEOPLE = 1000;
+export const dailyLimit = 'بلغت حد البحث اليومي لحسابك. يمكنك البحث مجددًا بعد 24 ساعة من أول بحث اليوم، أو تواصل مع مالك المنصة.';
 const userFields = 'id,name,email,role,active,balance,created_at,terms_accepted_at';
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
 const count = (row: { n: number } | undefined) => row?.n ?? 0;
@@ -61,7 +67,7 @@ export class Store {
   }
   async login(email: string, password: string) {
     const row = await this.db.get<{ id: string; password_hash: string }>('SELECT id,password_hash FROM users WHERE email=?', normalizeEmail(email));
-    if (!row || !checkPassword(password, row.password_hash)) throw new AppError('البريد الإلكتروني أو كلمة المرور غير صحيحة.', 401);
+    if (!checkPassword(password, row?.password_hash ?? (dummyHash ??= passwordHash(randomBytes(16).toString('hex')))) || !row) throw new AppError('البريد الإلكتروني أو كلمة المرور غير صحيحة.', 401);
     return this.createSession((await this.user(row.id)).id);
   }
   async createSession(id: string) {
@@ -156,6 +162,24 @@ export class Store {
       return result;
     });
   }
+  // Requests per key (e.g. 'auth:<ip>') in the current minute, counted in the database so every server instance shares it.
+  // ponytail: fixed one-minute windows (up to 2x max across a minute boundary); a sliding window if that ever matters.
+  async hit(key: string, max: number) {
+    const window = Math.floor(Date.now() / 60000);
+    await this.db.run('DELETE FROM rate_hits WHERE window_start < ?', window - 1);
+    const row = await this.db.get<{ count: number }>(`INSERT INTO rate_hits(key,window_start,count) VALUES(?,?,1)
+      ON CONFLICT(key,window_start) DO UPDATE SET count=rate_hits.count+1 RETURNING count`, key, window);
+    if (row!.count > max) throw new AppError('طلبات كثيرة. انتظر دقيقة وحاول مجددًا.', 429);
+  }
+  async dailyFetched(userId: string) {
+    return count(await this.db.get<{ n: number }>('SELECT COALESCE(sum(r.fetched),0)::int n FROM provider_runs r JOIN searches s ON s.id=r.search_id WHERE s.user_id=? AND s.created_at>?',
+      userId, new Date(Date.now() - 86400000).toISOString()));
+  }
+  // A search that failed, or may have been paid at the provider, shows in the owner's activity log: member, search, reason.
+  async alert(userId: string, searchId: string, detail: string) {
+    const row = await this.db.get<{ name: string; title: string; created_at: string }>('SELECT u.name,s.title,s.created_at FROM searches s JOIN users u ON u.id=s.user_id WHERE s.id=?', searchId);
+    await this.audit(userId, 'تنبيه: بحث لم يكتمل', [row?.name, row?.title, row?.created_at.slice(0, 16).replace('T', ' '), detail].filter(Boolean).join(' · '));
+  }
   async aiCached(kind: string, input: string) {
     return (await this.db.get<{ output: string }>('SELECT output FROM ai_cache WHERE kind=? AND input=?', kind, input))?.output;
   }
@@ -176,6 +200,7 @@ export class Store {
         return old;
       }
       if (user.balance - await this.reserved(id) < input.count) throw new AppError('الرصيد المتاح بعد حجز عمليات البحث لا يكفي.');
+      if (await this.dailyFetched(id) >= DAILY_PEOPLE) throw new AppError(dailyLimit, 429);
       if (count(await this.db.get<{ n: number }>("SELECT count(*) n FROM searches WHERE user_id=? AND status IN ('queued','awaiting_provider')", id)) >= 2) throw new AppError('لديك عمليتا بحث قيد التنفيذ. انتظر اكتمالهما.', 429);
       if (count(await this.db.get<{ n: number }>('SELECT count(*) n FROM reservations')) >= 1000) throw new AppError('قائمة البحث ممتلئة مؤقتًا. حاول لاحقًا.', 503);
       const sid = randomUUID();
@@ -322,6 +347,7 @@ export class Store {
     await this.transaction(async () => {
       await this.db.run('UPDATE users SET password_hash=? WHERE id=?', passwordHash(newPassword), id);
       await this.db.run('DELETE FROM sessions WHERE user_id=?', id);
+      await this.revokeResets(id);
     });
     return this.createSession(id);
   }
@@ -330,8 +356,11 @@ export class Store {
     await this.db.run('INSERT INTO reset_tokens(token_hash,user_id,expires_at,used_at) VALUES(?,?,?,NULL)', hash(token), userId, new Date(Date.now() + ttlMs).toISOString());
     return token;
   }
+  // Only the newest reset link works: a new link, a used one or a password change cancels the others.
+  private revokeResets(userId: string) { return this.db.run('UPDATE reset_tokens SET used_at=? WHERE user_id=? AND used_at IS NULL', now(), userId); }
   async createReset(adminId: string, userId: string) {
     await this.admin(adminId);
+    await this.revokeResets(userId);
     const target = await this.user(userId), token = await this.resetToken(userId, 3600000);
     await this.audit(adminId, 'رابط استعادة الوصول', target.name);
     return token;
@@ -353,6 +382,7 @@ export class Store {
       await this.user(row.user_id);
       await this.db.run('UPDATE users SET password_hash=? WHERE id=?', passwordHash(password), row.user_id);
       await this.db.run('DELETE FROM sessions WHERE user_id=?', row.user_id);
+      await this.revokeResets(row.user_id);
       return this.createSession(row.user_id);
     });
   }

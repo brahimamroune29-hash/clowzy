@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { testStore } from './pg';
-import { weekBoundaries,weekBoundariesSchema,overviewOnly } from '../src/lib/overview';
+import { weekBoundaries,overviewOnly } from '../src/lib/overview';
+import { weekBoundariesSchema } from '../src/lib/schemas';
 import { seedPerformanceFixture } from '../scripts/performance/fixture';
 
 test('dashboard stays bounded with 1000 members and 100000 contacts, without losing totals',async t=>{

@@ -37,7 +37,7 @@ revoke update, delete on clowzy.ledger, clowzy.audit, clowzy.contacts, clowzy.ex
 - الاتصال مشفّر ويتحقق من شهادة الخادم واسمه بشهادة Supabase الجذرية الرسمية (src/lib/supabase-ca.ts، صالحة حتى 2031-04-26).
 - كل تغيير في رصيد مشترك يجري في معاملة تقفل صفّه أولًا، فالطلبات المتزامنة من أي خادم تُطبَّق بالتتابع. الحجز وبدء البحث يُحفظان معًا أو لا يُحفظ أيهما.
 - ترحيلات قاعدة قائمة (تُطبَّق مرة بصلاحية المالك، والقاعدة الجديدة تأخذها من schema.sql):
-  - 30 سبتمبر 2026، ذاكرة «أخرى»: `create table clowzy.ai_cache (kind text not null, input text not null, output text not null, created_at text not null, primary key (kind, input));` (الصلاحيات تأتي من default privileges)، و`alter table clowzy.provider_runs add column read_errors integer not null default 0;` (أخطاء قراءة النتائج المتتالية).
+  - 30 سبتمبر 2026، ذاكرة «أخرى»: `create table clowzy.ai_cache (kind text not null, input text not null, output text not null, created_at text not null, primary key (kind, input));` (الصلاحيات تأتي من default privileges)، و`alter table clowzy.provider_runs add column read_errors integer not null default 0;` (أخطاء قراءة النتائج المتتالية)، و`create table clowzy.rate_hits (key text not null, window_start bigint not null, count integer not null, primary key (key, window_start));` (حد محاولات الدخول المشترك)، و`alter table clowzy.provider_runs add column fetched integer not null default 0;` (السقف اليومي).
 - فحص التزامن الحقيقي على القاعدة (لا تقدر عليه قاعدة الاختبار داخل العملية): DATABASE_URL=... npx tsx scripts/check-concurrency.ts. ينشئ بيانات مؤقتة ويحذفها بصلاحيات التطبيق وحدها.
 
 ## النشر (Vercel)
@@ -60,7 +60,8 @@ revoke update, delete on clowzy.ledger, clowzy.audit, clowzy.contacts, clowzy.ex
 
 ## حدود معروفة
 
-- حدود الطلبات وتباعد طلبات المزوّد محفوظة في ذاكرة كل خادم. على Vercel لكل نسخة حدودها الخاصة.
+- حد محاولات الدخول (30 في الدقيقة لكل عنوان) في القاعدة ومشترك بين النسخ. بقية حدود الطلبات وتباعد طلبات المزوّد في ذاكرة كل خادم، ورفض المزوّد للإرسال (429) يُعاد مرة.
+- سقف يومي لكل مشترك: ألف شخص يُجلبون من المزوّد في 24 ساعة (DAILY_PEOPLE في store.ts).
 - البحث يتقدم عندما تُفتح صفحة النتائج، ولا يوجد عامل خلفي. الطلب ذو الاستجابة المفقودة لا يُرسل مجددًا تلقائيًا.
 - إرسال الدعوات بالبريد غير متصل. المالك ينسخ الرابط يدويًا.
 - ملف CSV لم يُجرَّب داخل حساب GoHighLevel حي.

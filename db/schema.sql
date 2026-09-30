@@ -50,7 +50,8 @@ create table clowzy.reservations (
 create table clowzy.provider_runs (
   search_id text primary key references clowzy.searches(id), phase text not null, people text not null default '[]',
   file text, scanned integer not null default 0, submitted integer not null default 0,
-  submitted_at bigint, message text not null default '', updated_at bigint not null, read_errors integer not null default 0
+  submitted_at bigint, message text not null default '', updated_at bigint not null, read_errors integer not null default 0,
+  fetched integer not null default 0 -- people actually returned by the provider (the daily cap); scanned may be raised to stop paging
 );
 create table clowzy.provider_cursors (
   user_id text not null references clowzy.users(id), query_key text not null, stage integer not null default 0, token text,
@@ -63,6 +64,11 @@ create table clowzy.provider_seen (
 -- «أخرى»: one AI mapping per kind ('sector' | 'title') and normalized text, so the same words never pay twice.
 create table clowzy.ai_cache (
   kind text not null, input text not null, output text not null, created_at text not null, primary key (kind, input)
+);
+
+-- Login attempts per key and minute, shared by every server instance (store.hit).
+create table clowzy.rate_hits (
+  key text not null, window_start bigint not null, count integer not null, primary key (key, window_start)
 );
 
 create index reservations_owner on clowzy.reservations(user_id);

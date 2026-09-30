@@ -228,6 +228,10 @@ test('journey: no credits left -> the search is refused before anything is spent
   const r = await member('search', form(1));
   assert.equal(r.status, 400);
   assert.equal(fake.submits(), 0);
+  const count = await member('search/count', { ...form(1), sector: 'محلات العطور' });
+  assert.equal(count.status, 400, 'no count (and no paid AI mapping) for a member who cannot search');
+  assert.match(count.data.error, /رصيدك صفر/);
+  assert.equal(fake.calls.length, 0, 'nothing reached the provider or the AI');
 });
 
 test('journey: a member cannot see or export another member\'s results', async t => {
