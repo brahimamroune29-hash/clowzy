@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises';
 import { z } from 'zod';
 import { SUBMIT_MULTIPLE, type Candidate, type Resolved } from './contracts';
 import { cityNames, countryLabel, englishName, placeOf } from './places';
@@ -84,14 +85,26 @@ export class IcypeasClient {
   private async request(path: string, body: unknown, paid = false): Promise<Record<string, unknown>> {
     if (!this.key) throw new IcypeasError('مزوّد البيانات غير مهيأ على الخادم. تواصل مع مالك المنصة.', 503);
     let res: Response;
-    try {
-      res = await this.transport('https://app.icypeas.com/api/' + path, {
-        method: 'POST', headers: { Authorization: this.key, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-        signal: AbortSignal.timeout(20000), redirect: 'error', cache: 'no-store',
-      });
-    } catch { throw new IcypeasError('انقطع الاتصال بمزوّد البيانات. حاول بعد قليل.', 502, paid); }
+    for (let attempt = 1; ; attempt++) {
+      try {
+        res = await this.transport('https://app.icypeas.com/api/' + path, {
+          method: 'POST', headers: { Authorization: this.key, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+          signal: AbortSignal.timeout(20000), redirect: 'error', cache: 'no-store',
+        });
+      } catch (e) {
+        // The provider's host is sometimes unreachable (2 of 3 connects timed out on 2026-09-30). A connection that never
+        // opened sent nothing: retried once, and never "uncertain". Any other network error on a paid call may have arrived.
+        const unsent = ['UND_ERR_CONNECT_TIMEOUT', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'].includes((e as { cause?: { code?: string } })?.cause?.code ?? '');
+        if (unsent && attempt === 1) continue;
+        throw new IcypeasError('انقطع الاتصال بمزوّد البيانات. حاول بعد قليل.', 502, paid && !unsent);
+      }
+      // A 429 is a refusal (nothing created): once more after the provider's 1-per-second spacing, e.g. two servers at once.
+      if (res.status === 429 && attempt === 1) { await res.body?.cancel(); await sleep(1100); continue; }
+      break;
+    }
     if (!res.ok) {
-      const message = res.status === 401 ? 'مفتاح مزوّد البيانات غير صالح.' : res.status === 429 ? 'مزوّد البيانات مشغول حاليًا. حاول بعد دقيقة.' : `تعذّر طلب مزوّد البيانات (HTTP ${res.status}).`;
+      if (![401, 429].includes(res.status)) console.warn('Icypeas HTTP', res.status, path);
+      const message = res.status === 401 ? 'مفتاح مزوّد البيانات غير صالح.' : res.status === 429 ? 'مزوّد البيانات مشغول حاليًا. حاول بعد دقيقة.' : 'تعذّر طلب مزوّد البيانات. حاول بعد قليل.';
       throw new IcypeasError(message, 502, paid && (res.status >= 500 || res.status === 408), res.status >= 400 && res.status < 500 && ![401, 408, 429].includes(res.status));
     }
     const data = await res.json().catch(() => null) as Record<string, unknown> | null;
@@ -136,7 +149,7 @@ export class IcypeasClient {
   }
   // One read (a batch has at most BATCH rows). Read-only; safe to repeat. Candidates come from finished rows only and
   // include only emails Icypeas rates ultra_sure / very_sure (<1% expected bounce). Malformed rows are skipped, not fatal.
-  async results(file: string, leads: Lead[]): Promise<{ done: boolean; candidates: Candidate[] }> {
+  async results(file: string, leads: Lead[]): Promise<{ done: boolean; candidates: Candidate[]; unpaid: Lead[] }> {
     const raw = await this.request('bulk-single-searchs/read', { mode: 'bulk', file, limit: BATCH });
     const rows = Array.isArray(raw.items) ? raw.items : [];
     const items = rows.map(i => itemSchema.safeParse(i)).flatMap(r => r.success ? [r.data] : []);
@@ -154,6 +167,8 @@ export class IcypeasClient {
         source: 'clowzy', email_status: 'VERIFIED',
       });
     }
-    return { done: finished.length + malformed >= leads.length, candidates }; // a malformed row counts as finished without email
+    // Rows the provider could not pay for (its balance ran out after the batch was accepted) were never searched.
+    const unpaid = finished.filter(i => i.status === 'INSUFFICIENT_FUNDS').flatMap(i => leads[Number(i.userData?.externalId)] ?? []);
+    return { done: finished.length + malformed >= leads.length, candidates, unpaid }; // a malformed row counts as finished without email
   }
 }

@@ -50,7 +50,7 @@ create table clowzy.reservations (
 create table clowzy.provider_runs (
   search_id text primary key references clowzy.searches(id), phase text not null, people text not null default '[]',
   file text, scanned integer not null default 0, submitted integer not null default 0,
-  submitted_at bigint, message text not null default '', updated_at bigint not null
+  submitted_at bigint, message text not null default '', updated_at bigint not null, read_errors integer not null default 0
 );
 create table clowzy.provider_cursors (
   user_id text not null references clowzy.users(id), query_key text not null, stage integer not null default 0, token text,

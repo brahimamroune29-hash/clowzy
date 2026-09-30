@@ -163,7 +163,8 @@ export class Store {
     await this.db.run('INSERT INTO ai_cache(kind,input,output,created_at) VALUES(?,?,?,?) ON CONFLICT DO NOTHING', kind, input, output, now());
   }
   async reserved(id: string) {
-    return count(await this.db.get<{ n: number }>('SELECT COALESCE(sum(amount),0) AS n FROM reservations WHERE user_id=?', id));
+    // What open searches can still charge: requested minus already delivered (and charged), not the whole request.
+    return count(await this.db.get<{ n: number }>('SELECT COALESCE(sum(GREATEST(s.requested-s.delivered,0)),0)::int AS n FROM reservations r JOIN searches s ON s.id=r.search_id WHERE r.user_id=?', id));
   }
   enqueueSearch(id: string, raw: Resolved): Promise<Search> {
     const input = resolvedSchema.parse(raw);

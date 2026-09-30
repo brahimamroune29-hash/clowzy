@@ -2,7 +2,12 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PGlite, type Transaction } from '@electric-sql/pglite';
 import { Db, type Driver, type Row } from '../src/lib/db';
+import { randomUUID } from 'node:crypto';
 import { Store } from '../src/lib/store';
+import { audienceOf } from '../src/lib/audience';
+import type { Resolved } from '../src/lib/contracts';
+import type { IcypeasClient } from '../src/lib/icypeas';
+import { LiveSearch } from '../src/lib/live-search';
 
 const schema = readFileSync(join(process.cwd(), 'db', 'schema.sql'), 'utf8');
 // A fresh in-process Postgres per test with the production schema, behind the same Db as production.
@@ -29,3 +34,10 @@ export function hookDb(store: Store, onQuery: (text: string) => void | Promise<v
   const db = store.db as unknown as { driver: Driver };
   db.driver = wrap(db.driver);
 }
+
+// Shared fixtures for the provider tests (icypeas, lifecycle): a Saudi tech audience, provider leads and result rows.
+export const input = (count = 2): Resolved => audienceOf(JSON.stringify({ sector: 'التقنية والبرمجيات', countries: ['SA'], city: '', title: '', size: 'all', count, confirmed: true, requestId: randomUUID() }));
+export const lead = (id: string) => ({ firstname: 'Person', lastname: id, profileUrl: 'https://www.linkedin.com/in/' + id, lastJobTitle: 'CEO', address: 'Riyadh, Riyadh, Saudi Arabia', lastCompanyName: 'Company ' + id, lastCompanyWebsite: 'https://www.company-' + id + '.example/about', lastCompanyIndustry: 'Software Development', lastCompanySize: 12 });
+export const item = (i: number, email: string | null, certainty = 'ultra_sure', status = email ? 'DEBITED' : 'DEBITED_NOT_FOUND') => ({ _id: 'item' + i, status, userData: { externalId: String(i) }, results: { emails: email ? [{ email, certainty }] : [] } });
+// No spacing between provider calls, and slots of its own (the production ones are shared per process).
+export const live = (store: Store, client: IcypeasClient) => new LiveSearch(store, client, { read: 0, bulk: 0 }, { read: 0, bulk: 0 });

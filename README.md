@@ -37,7 +37,7 @@ revoke update, delete on clowzy.ledger, clowzy.audit, clowzy.contacts, clowzy.ex
 - الاتصال مشفّر ويتحقق من شهادة الخادم واسمه بشهادة Supabase الجذرية الرسمية (src/lib/supabase-ca.ts، صالحة حتى 2031-04-26).
 - كل تغيير في رصيد مشترك يجري في معاملة تقفل صفّه أولًا، فالطلبات المتزامنة من أي خادم تُطبَّق بالتتابع. الحجز وبدء البحث يُحفظان معًا أو لا يُحفظ أيهما.
 - ترحيلات قاعدة قائمة (تُطبَّق مرة بصلاحية المالك، والقاعدة الجديدة تأخذها من schema.sql):
-  - 30 سبتمبر 2026، ذاكرة «أخرى»: `create table clowzy.ai_cache (kind text not null, input text not null, output text not null, created_at text not null, primary key (kind, input));` (الصلاحيات تأتي من default privileges).
+  - 30 سبتمبر 2026، ذاكرة «أخرى»: `create table clowzy.ai_cache (kind text not null, input text not null, output text not null, created_at text not null, primary key (kind, input));` (الصلاحيات تأتي من default privileges)، و`alter table clowzy.provider_runs add column read_errors integer not null default 0;` (أخطاء قراءة النتائج المتتالية).
 - فحص التزامن الحقيقي على القاعدة (لا تقدر عليه قاعدة الاختبار داخل العملية): DATABASE_URL=... npx tsx scripts/check-concurrency.ts. ينشئ بيانات مؤقتة ويحذفها بصلاحيات التطبيق وحدها.
 
 ## النشر (Vercel)

@@ -4,15 +4,10 @@ import { randomUUID } from 'node:crypto';
 import { cursorKey, freeMail, IcypeasClient, IcypeasError, peopleQuery, personKey, safeWebsite } from '../src/lib/icypeas';
 import { LiveSearch } from '../src/lib/live-search';
 import { Store } from '../src/lib/store';
-import { expectedEmails, type Resolved } from '../src/lib/contracts';
-import { audienceOf, SECTOR_INDUSTRIES } from '../src/lib/audience';
-import { hookDb, testStore } from './pg';
+import { expectedEmails } from '../src/lib/contracts';
+import { SECTOR_INDUSTRIES } from '../src/lib/audience';
+import { hookDb, input, item, lead, live, testStore } from './pg';
 
-const input = (count = 2): Resolved => audienceOf(JSON.stringify({ sector: 'التقنية والبرمجيات', countries: ['SA'], city: '', title: '', size: 'all', count, confirmed: true, requestId: randomUUID() }));
-const lead = (id: string) => ({ firstname: 'Person', lastname: id, profileUrl: 'https://www.linkedin.com/in/' + id, lastJobTitle: 'CEO', address: 'Riyadh, Riyadh, Saudi Arabia', lastCompanyName: 'Company ' + id, lastCompanyWebsite: 'https://www.company-' + id + '.example/about', lastCompanyIndustry: 'Software Development', lastCompanySize: 12 });
-const item = (i: number, email: string | null, certainty = 'ultra_sure', status = email ? 'DEBITED' : 'DEBITED_NOT_FOUND') => ({ _id: 'item' + i, status, userData: { externalId: String(i) }, results: { emails: email ? [{ email, certainty }] : [] } });
-const fresh = () => ({ gaps: { read: 0, bulk: 0 }, slots: { read: 0, bulk: 0 } });
-const live = (store: Store, client: IcypeasClient, o = fresh()) => new LiveSearch(store, client, o.gaps, o.slots);
 
 // pages: find-people pages, a page's token points at the next page ('t1' -> pages[1]). files: result rows per bulk submission.
 function mockTransport(o: { pages?: { leads: unknown[]; token?: string }[]; broad?: { leads: unknown[]; token?: string }[]; files?: unknown[][]; bulkThrow?: boolean; bulkHttp?: number; bulkBody?: unknown; onRead?: (n: number) => Promise<void>; http?: number; expired?: string } = {}) {
@@ -142,7 +137,7 @@ test('a batch that never completes is closed after the deadline and the reservat
 
 test('one results read per poll, spaced by the shared account budget', async () => {
   const m = mockTransport({ files: [[item(0, null, 'x', 'IN_PROGRESS')]] });
-  const { store, user } = await setup(), search = live(store, m.client, { gaps: { read: 60000, bulk: 0 }, slots: { read: 0, bulk: 0 } });
+  const { store, user } = await setup(), search = new LiveSearch(store, m.client, { read: 60000, bulk: 0 }, { read: 0, bulk: 0 });
   try {
     const first = await search.start(user.id, input());
     await eligible(store); await search.poll(user.id, first.id); await eligible(store); await search.poll(user.id, first.id);
@@ -341,7 +336,7 @@ test('disabling a member while their search starts leaves it cancelled, with not
 
 test('an expired batch closed by one poll cannot be claimed by another: no paid pages after the search is finished', async () => {
   const deferred = () => { let resolve!: () => void; const p = new Promise<void>(r => { resolve = r; }); return { p, resolve }; };
-  const releaseA = deferred(), releaseB = deferred(), claimSeen = deferred();
+  const releaseA = deferred(), releaseB = deferred();
   const ids = (from: number) => Array.from({ length: 7 }, (_, i) => lead('p' + (from + i)));
   const m = mockTransport({ pages: [{ leads: ids(0), token: 't1' }, { leads: ids(7), token: 't2' }, { leads: ids(14) }],
     files: [[item(0, 'p0@company-p0.example'), item(1, 'p1@company-p1.example'), ...[2, 3, 4, 5, 6].map(i => item(i, null))]],
@@ -352,12 +347,9 @@ test('an expired batch closed by one poll cannot be claimed by another: no paid 
   const { store, user } = await setup(), search = live(store, m.client);
   try {
     const first = await search.start(user.id, input(2));
-    hookDb(store, async text => {
-      if (text.includes("SET phase='delivering'")) claimSeen.resolve();
-      if (text.startsWith('UPDATE searches SET status=CASE')) releaseB.resolve();        // A is closing the search
-      if (text.startsWith('DELETE FROM reservations WHERE search_id')) await claimSeen.p; // while B's claim is in flight
-    });
-    await store.db.run('UPDATE provider_runs SET submitted_at=0,updated_at=0'); // older than the batch deadline
+    // B's read returns while A is closing the search; B's claim (claim + delivery are one transaction) then finds it closed.
+    hookDb(store, async text => { if (text.startsWith('UPDATE searches SET status=CASE')) releaseB.resolve(); });
+    await store.db.run('UPDATE provider_runs SET submitted_at=0,updated_at=0,read_errors=9'); // past the deadline, 9 failed reads in a row: A's failure closes it
     const pA = search.poll(user.id, first.id);
     while (m.count('bulk-single-searchs/read') < 1) await new Promise(r => setTimeout(r, 5));
     await eligible(store); // a second tab polls
