@@ -1,12 +1,15 @@
 export async function api<T>(path: string, data?: unknown): Promise<T> {
-  const response = await fetch('/api/' + path, {
-    method: data === undefined ? 'GET' : 'POST',
-    headers: data === undefined ? undefined : {'Content-Type':'application/json'},
-    body: data === undefined ? undefined : JSON.stringify(data),
-    cache:'no-store',
-  });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || 'تعذّر إكمال الطلب.');
+  let response: Response;
+  try {
+    response = await fetch('/api/' + path, {
+      method: data === undefined ? 'GET' : 'POST',
+      headers: data === undefined ? undefined : {'Content-Type':'application/json'},
+      body: data === undefined ? undefined : JSON.stringify(data),
+      cache:'no-store',
+    });
+  } catch { throw new Error('تعذّر الاتصال بالخادم. تحقّق من الإنترنت وحاول مجددًا.'); }
+  const result = await response.json().catch(() => null); // e.g. an HTML error page during a redeploy
+  if (!response.ok || !result) throw new Error(result?.error || 'تعذّر إكمال الطلب.');
   return result as T;
 }
 export function date(value: string) {

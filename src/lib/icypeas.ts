@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { Candidate, SearchInput } from './contracts';
+import { SUBMIT_MULTIPLE, type Candidate, type SearchInput } from './contracts';
 
 // status: HTTP status for the API response. uncertain: a paid request may have reached Icypeas.
 // rejected: Icypeas refused this exact request (validation / 4xx), e.g. an expired pagination token.
@@ -30,18 +30,23 @@ const cityNames: Record<string, string> = {
 };
 export const BATCH = 100; // people per email submission: one results read covers a whole batch (reads return <= 100 rows)
 export const PAGE = 25; // people per find-people page (0.02 credit each); constant so a saved cursor stays valid across searches
-export const SUBMIT_MULTIPLE = 5; // approved: submit at most 5x the requested emails for email discovery
 export const submitCap = (count: number) => count * SUBMIT_MULTIPLE;
-export const fetchCap = (count: number) => count * 4 * SUBMIT_MULTIPLE; // people returned per search incl. ones already seen
+// People returned per search incl. ones already seen (paid pages, 0.02 credit each): kept at the pre-10x budget, apart from the attempts.
+export const fetchCap = (count: number) => count * 20;
 
 export const STAGES = 2;
-export function peopleQuery(input: SearchInput, stage = 0) {
-  const city = cityNames[input.city.trim()] || input.city.trim(), title = input.title.trim(), [cc, country] = countryCodes[input.country];
+export type Audience = Pick<SearchInput, 'sector' | 'country' | 'city' | 'title' | 'size'>;
+export function peopleQuery(input: Audience, stage = 0) {
+  const typed = input.city.trim(), city = Object.hasOwn(cityNames, typed) ? cityNames[typed] : typed, title = input.title.trim(), [cc, country] = countryCodes[input.country];
   if (/[؀-ۿ]/.test(city + title)) throw new IcypeasError('اكتب المدينة والمسمى الوظيفي بالإنجليزية، أو اتركهما فارغين.', 400);
   const [min, max] = input.size === 'all' ? [] : input.size.split('-').map(Number);
   const strict = city ? `${city}, ${cc}` : cc;
+  // Arabic-localized profiles read "<province> <city> <country>" (e.g. 'مكة جدة السعودية') and match as ordered phrases, so the
+  // broad stage adds "<city> <country>" for each Arabic spelling of the city: never the province alone ('مكة' also matches Jeddah)
+  // nor another country ('دبي السعودية': 3 people). Free counts on 2026-09-30, Jeddah e-commerce broad stage: 113 -> 228 people.
+  const arabic = Object.keys(cityNames).filter(k => city && cityNames[k].toLowerCase() === city.toLowerCase()).map(k => `${k} ${input.country.replace(/[\u064B-\u0652]/g, '')}`);
   return {
-    location: stage === 0 ? { include: [strict] } : { include: [city ? `${city}, ${country}` : country], exclude: [strict] },
+    location: stage === 0 ? { include: [strict] } : { include: [city ? `${city}, ${country}` : country, ...arabic], exclude: [strict] },
     'currentCompany.industry': { include: industries[input.sector] },
     ...(title ? { currentJobTitle: { include: [title] } } : {}),
     ...(input.size !== 'all' ? { 'currentCompany.headcount': { '>=': min, '<=': max } } : {}),
@@ -60,7 +65,12 @@ const itemSchema = z.object({
   results: z.object({ emails: z.array(z.object({ email: z.string(), certainty: z.string().nullish() })).nullish() }).nullish(),
 });
 const pending = ['NONE', 'SCHEDULED', 'IN_PROGRESS'];
-const domainOf = (lead: Lead) => (lead.lastCompanyWebsite || lead.lastCompanyName || '').replace(/^https?:\/\/(www\.)?/i, '').replace(/\/.*$/, '').trim();
+// Link pages, social networks and store builders host many companies: their domain is not the company's, so search by name.
+const sharedHost = /(^|\.)(linktr\.ee|lnk\.bio|linkin\.bio|bio\.link|beacons\.ai|taplink\.cc|instagram\.com|instagr\.am|facebook\.com|fb\.com|fb\.me|x\.com|twitter\.com|t\.co|tiktok\.com|snapchat\.com|linkedin\.com|youtube\.com|youtu\.be|wa\.me|wa\.link|whatsapp\.com|t\.me|goo\.gl|google\.com|business\.site|blogspot\.com|wordpress\.com|wixsite\.com|myshopify\.com|salla\.sa|zid\.store|youcan\.shop|expandcart\.com|wuilt\.com|zyda\.com|odoo\.com)$/i;
+const domainOf = (lead: Lead) => {
+  const site = (lead.lastCompanyWebsite || '').replace(/^https?:\/\/(www\.)?/i, '').replace(/[/?#].*$/, '').replace(/:\d+$/, '').trim();
+  return site && !sharedHost.test(site) ? site : (lead.lastCompanyName || '').trim();
+};
 export const leadName = (lead: Lead) => [lead.firstname, lead.lastname].filter(Boolean).join(' ').trim();
 const nameKey = (name: string, company: string) => (name + '|' + company).trim().toLowerCase();
 export const personKey = (lead: Lead) => lead.profileUrl?.trim().toLowerCase() || nameKey(leadName(lead), lead.lastCompanyName || '');
@@ -85,10 +95,27 @@ export class IcypeasClient {
     }
     const data = await res.json().catch(() => null) as Record<string, unknown> | null;
     if (!data) throw new IcypeasError('استجابة غير مقروءة من مزوّد البيانات.', 502, paid);
-    if (data.success === false) throw new IcypeasError('رفض مزوّد البيانات الطلب. راجع المعايير أو رصيد المزوّد.', 502, false, true);
+    if (data.success === false) {
+      // Icypeas refuses a bulk submit unless the account balance covers 1 credit per submitted row.
+      if (JSON.stringify(data.validationErrors ?? '').includes('InsufficientCredits')) {
+        console.warn('Icypeas: insufficient credits on the provider account; top it up.');
+        throw new IcypeasError('رصيد مزوّد البيانات لا يكفي لإكمال البحث الآن. تواصل مع مالك المنصة.', 503); // not "rejected": keep the member's cursor
+      }
+      throw new IcypeasError('رفض مزوّد البيانات الطلب. راجع المعايير أو رصيد المزوّد.', 502, false, true);
+    }
     return data;
   }
   async verify() { await this.request('find-people/count', { query: { location: { include: ['SA'] } } }); return { ok: true }; }
+  // Free: people matching the search across both stages (stage 1 excludes stage 0), shown before the member pays for anything.
+  async count(input: Audience) {
+    const queries = Array.from({ length: STAGES }, (_, stage) => peopleQuery(input, stage)); // validates before any call
+    const totals = await Promise.all(queries.map(async query => {
+      const n = z.number().int().nonnegative().safeParse((await this.request('find-people/count', { query })).total);
+      if (!n.success) throw new IcypeasError('تغيّرت صيغة نتائج مزوّد البيانات. يلزم مراجعة الربط.');
+      return n.data;
+    }));
+    return { total: totals.reduce((a, b) => a + b, 0), strict: totals[0] };
+  }
   // One page of PAGE people (0.02 Icypeas credit each). token: continue where the previous page stopped.
   async people(input: SearchInput, token?: string | null, stage = 0): Promise<{ leads: Lead[]; returned: number; token: string | null }> {
     const raw = await this.request('find-people', { query: peopleQuery(input, stage), pagination: { size: PAGE, ...(token ? { token } : {}) } });

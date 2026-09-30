@@ -6,7 +6,7 @@ import { ChartPieSlice, ClockCounterClockwise, Coins, GearSix, House, List, Magn
 import type { Snapshot } from '@/lib/contracts';
 import { api,number } from '@/lib/client';
 import { overviewOnly,weekBoundaries } from '@/lib/overview';
-import { Brand } from './ui';
+import { Brand, ThemeToggle } from './ui';
 import Auth from './auth';
 import { TermsGate, TermsPage } from './terms';
 import { Dashboard, SearchView, LeadsView, HistoryView, CreditsView, SettingsView } from './member-views';
@@ -64,7 +64,7 @@ export default function Platform(){
       <Link href="/settings" className={'nav-item '+(pathname==='/settings'?'active':'')} onClick={()=>setMenu(false)}><GearSix size={21} weight="light"/><span>إعدادات الحساب</span></Link>
       <div className="profile"><span className="avatar">{data.user.name.split(' ').map(x=>x[0]).slice(0,2).join('')}</span><div><strong>{data.user.name}</strong><small>{admin?'مالك المنصة':'مشترك'}</small></div><button className="icon-button" aria-label="تسجيل الخروج" onClick={logout}><SignOut size={20}/></button></div></div>
     </aside>
-    <div className="main-area"><header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-only" aria-label="فتح القائمة" onClick={()=>setMenu(true)}><List size={24}/></button><span>{admin?'إدارة المنصة':'مساحة العمل'}</span><span className="slash">/</span><strong>{label}</strong></div><div className="topbar-tools"><span className="topbar-avatar">{data.user.name[0]}</span></div></header>
+    <div className="main-area"><header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-only" aria-label="فتح القائمة" onClick={()=>setMenu(true)}><List size={24}/></button><span>{admin?'إدارة المنصة':'مساحة العمل'}</span><span className="slash">/</span><strong>{label}</strong></div><div className="topbar-tools"><ThemeToggle/><span className="topbar-avatar">{data.user.name[0]}</span></div></header>
     <main className="page-content" key={pathname}>{page}</main><footer className="app-footer"><span>clowzy — مساحة الفرص</span><Link href="/terms">شروط الاستخدام</Link></footer></div>
     {toast&&<div className={'toast '+(toast.error?'toast-error':'')} role="status">{toast.error?<WarningCircle size={22}/>:<CheckCircle size={22}/>}<span>{toast.message}</span><button className="icon-button" aria-label="إغلاق التنبيه" onClick={()=>setToast(null)}><X size={17}/></button></div>}
   </div>;

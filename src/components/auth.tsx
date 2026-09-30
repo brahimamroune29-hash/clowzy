@@ -3,7 +3,7 @@ import { useEffect,useState } from 'react';
 import Link from 'next/link';
 import { Check, LockKey, Sparkle, UsersThree, EnvelopeSimple } from '@phosphor-icons/react';
 import { api } from '@/lib/client';
-import { Brand, Button, Field, Notice } from './ui';
+import { Brand, Button, Field, Notice, ThemeToggle } from './ui';
 export default function Auth({onLogin,token,reset=false}:{onLogin:()=>Promise<void>;token?:string;reset?:boolean}) {
   const [email,setEmail]=useState(''),[password,setPassword]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),[help,setHelp]=useState(false);
   const [invitation,setInvitation]=useState<{name:string;email:string}|null>(null);
@@ -27,7 +27,7 @@ export default function Auth({onLogin,token,reset=false}:{onLogin:()=>Promise<vo
         {help&&<Notice>اطلب من مالك المنصة رابط استعادة الوصول من صفحة المشتركين. </Notice>}
         <Button loading={busy} type="submit" arrow disabled={!!token&&!reset&&!invitation}>{token?'تفعيل الوصول':'تسجيل الدخول'}</Button>
       </form>
-    </div><div className="auth-footer"><LockKey size={16}/><span>مساحة خاصة. الدخول متاح بالدعوة.</span><Link href="/terms">شروط الاستخدام</Link><span className="version">clowzy / 01</span></div></section>
+    </div><div className="auth-footer"><LockKey size={16}/><span>مساحة خاصة. الدخول متاح بالدعوة.</span><Link href="/terms">شروط الاستخدام</Link><span className="version"><ThemeToggle/></span></div></section>
     <section className="auth-art"><div className="art-top"><span>ابدأ بالعميل المناسب</span><span>clowzy / WORKSPACE</span></div>
       <div className="connection-art"><div className="orbit orbit-one"/><div className="orbit orbit-two"/><div className="orbit orbit-three"/><div className="art-core"><CirclesLogo/></div>
         <div className="floating-card float-one"><span className="small-icon"><UsersThree size={23}/></span><div><strong>جمهور يناسب خدمتك</strong><small>استهداف واضح، من البداية</small></div><span className="card-check"><Check size={14}/></span></div>

@@ -1,0 +1,6 @@
+.env*
+.data
+.vercel
+docs
+tests
+*.tsbuildinfo

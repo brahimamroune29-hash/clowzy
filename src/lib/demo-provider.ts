@@ -1,4 +1,6 @@
-import { Candidate, countries, LeadProvider, SearchInput, sectors } from './contracts';
+import { Candidate, countries, sectors } from './contracts';
+
+// Synthetic sample contacts for tests and fixtures only; the platform no longer serves demo data.
 
 const cities: Record<string, string[]> = {
   السعودية: ['الرياض', 'جدة', 'الدمام'], الإمارات: ['دبي', 'أبوظبي', 'الشارقة'],
@@ -21,12 +23,3 @@ export const demoCatalog: Candidate[] = sectors.flatMap((sector, si) => countrie
   source: 'كتالوج تجريبي محلي', email_status: 'demo',
 }))));
 
-export const demoProvider = {
-  name: 'كتالوج تجريبي محلي',
-  search(f: SearchInput) {
-    return demoCatalog.filter(c => c.sector === f.sector && c.country === f.country
-      && (!f.city || c.city.includes(f.city))
-      && (!f.title || c.title.includes(f.title))
-      && (f.size === 'all' || c.size === f.size));
-  },
-} satisfies LeadProvider;

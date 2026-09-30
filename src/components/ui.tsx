@@ -1,6 +1,6 @@
 'use client';
-import { useEffect, useRef, useId } from 'react';
-import { ArrowUpLeft, CircleNotch, X, MagnifyingGlass, CheckCircle, WarningCircle } from '@phosphor-icons/react';
+import { useEffect, useLayoutEffect, useRef, useId } from 'react';
+import { ArrowUpLeft, CircleNotch, X, MagnifyingGlass, CheckCircle, WarningCircle, Moon, Sun } from '@phosphor-icons/react';
 export function Brand({compact=false}:{compact?:boolean}) {
   return <div className="brand"><span className="brand-mark" aria-hidden="true">c</span><span className="brand-text" dir="ltr">clowzy</span>{!compact && <span className="brand-caption">مساحة الفرص</span>}</div>;
 }
@@ -23,3 +23,12 @@ export function PageHeading({eyebrow,title,description,children}:{eyebrow:string
   return <div className="page-heading"><div><span className="eyebrow">{eyebrow}</span><h1>{title}</h1><p>{description}</p></div><div className="heading-action">{children}</div></div>;
 }
 export function Field({label,children,hint}:{label:string;children:React.ReactNode;hint?:string}) {return <label className="field"><span>{label}</span>{children}{hint&&<small>{hint}</small>}</label>;}
+// Same rule as the pre-paint script in layout.tsx: saved choice, else the system setting.
+function savedTheme(){let t:string|null=null;try{t=localStorage.getItem('theme');}catch{}return t==='light'||t==='dark'?t:matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}
+export function ThemeToggle() {
+  // React Strict Mode (development only) clears data-theme on its remount; re-apply before paint. No-op in production.
+  useLayoutEffect(()=>{document.documentElement.dataset.theme||=savedTheme();},[]);
+  function toggle(){const next=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=next;try{localStorage.setItem('theme',next);}catch{}}
+  // The label names the target theme; CSS shows only the pair that matches the current theme.
+  return <button type="button" className="icon-button" onClick={toggle} title="الوضع الفاتح أو الداكن"><Moon className="when-light" size={20} aria-hidden/><span className="when-light visually-hidden">التحويل إلى الوضع الداكن</span><Sun className="when-dark" size={20} aria-hidden/><span className="when-dark visually-hidden">التحويل إلى الوضع الفاتح</span></button>;
+}
