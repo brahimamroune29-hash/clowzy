@@ -1,0 +1,17 @@
+# Hourly: the site answers, and the API reaches the database (a well-formed unknown invitation is a 410 only then).
+# A failed run emails the repository owner (GitHub's default for failed scheduled workflows).
+name: uptime
+on:
+  schedule: [{ cron: '17 * * * *' }]
+  workflow_dispatch:
+permissions: {}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Site and database answer
+        run: |
+          code() { curl -s -o /dev/null -w '%{http_code}' --max-time 30 --retry 2 "$1"; }
+          test "$(code https://clowzy.vercel.app/)" = 200
+          test "$(code 'https://clowzy.vercel.app/api/invitation?token=000000000000000000000000000000000000000000000000')" = 410

@@ -52,6 +52,11 @@ select has_table_privilege('clowzy_app', 'clowzy.rate_hits', 'SELECT,INSERT,UPDA
 
 - فحص التزامن الحقيقي على القاعدة (لا تقدر عليه قاعدة الاختبار داخل العملية): DATABASE_URL=... npx tsx scripts/check-concurrency.ts. ينشئ بيانات مؤقتة ويحذفها بصلاحيات التطبيق وحدها.
 
+## النسخ الاحتياطي والمراقبة (GitHub Actions، المستودع الخاص brahimamroune29-hash/clowzy)
+
+- .github/workflows/backup.yml: كل ليلة 02:00 UTC نسخة من مخطط clowzy بدور قراءة فقط clowzy_backup (سر BACKUP_DATABASE_URL عبر مجمّع الجلسات، المنفذ 5432)، تُحفظ 30 يومًا ملفًا خاصًا في صفحة التشغيل. الاستعلام اليومي يمنع توقف مشروع Supabase المجاني. الاسترجاع: pg_restore --no-owner -d <قاعدة فارغة> clowzy.dump (جُرّب في 30 سبتمبر 2026: 15 جدولًا، الأعداد مطابقة).
+- .github/workflows/uptime.yml: كل ساعة يتحقق من الصفحة ومن وصول الخادم إلى القاعدة؛ الفشل يصل بريدًا لصاحب المستودع.
+
 ## النشر (Vercel)
 
 - مشروع Vercel اسمه clowzy، ودوال الخادم في منطقة fra1 قرب قاعدة eu-central-1 (vercel.json).
