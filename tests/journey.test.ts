@@ -1,3 +1,4 @@
+import { SECTOR_INDUSTRIES } from '../src/lib/audience';
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -32,6 +33,8 @@ function provider(o: Fake = {}) {
     if (String(url).startsWith('https://openrouter.ai/')) {
       if (o.ai === 'down') return Response.json({}, { status: 500 });
       const asked = body.messages[1].content as string;
+      if (String(body.messages[0].content).startsWith('You are the assistant')) return Response.json({ choices: [{ message: { content: JSON.stringify({ reply: 'جهّزت لك البحث.',
+        search: { mode: 'people', field: 'الصحة والطب', specialty: 'عيادات الأسنان', other: '', countries: ['AE', 'ZZ'], city: 'Dubai', title: 'مدير العيادة أو المدير الطبي', size: 'all', count: 4 } }) } }] });
       const content = asked.startsWith('Sector:') ? { industries: [{ name: 'Retail Health and Personal Care Products', ar: 'متاجر العناية الشخصية' }, { name: 'Cosmetics', ar: 'مستحضرات التجميل' }] } : { titles: ['Warehouse Manager'] };
       return Response.json({ choices: [{ message: { content: JSON.stringify(content) } }] });
     }
@@ -62,10 +65,10 @@ function provider(o: Fake = {}) {
 function browser() {
   let cookie = '';
   const ip = '10.0.' + Math.floor(Math.random() * 250) + '.' + Math.floor(Math.random() * 250);
-  return async function call(path: string, body?: unknown) {
+  return async function call(path: string, body?: unknown, lang = 'ar') {
     const method = body === undefined ? 'GET' : 'POST';
     const req = new NextRequest(APP + '/api/' + path, { method, body: body === undefined ? undefined : JSON.stringify(body),
-      headers: { host: 'clowzy.test', origin: APP, 'content-type': 'application/json', 'x-forwarded-for': ip, ...(cookie ? { cookie } : {}) } });
+      headers: { host: 'clowzy.test', origin: APP, 'content-type': 'application/json', 'x-forwarded-for': ip, 'x-lang': lang, ...(cookie ? { cookie } : {}) } });
     const res = await (method === 'GET' ? GET : POST)(req, { params: Promise.resolve({ path: path.split('?')[0].split('/') }) });
     const set = res.headers.get('set-cookie');
     if (set) cookie = set.split(';')[0];
@@ -108,7 +111,7 @@ test('journey: invited member searches, gets the requested emails, pays one cred
   const fake = provider();
   assert.equal((await browser()('auth/accept', { token, password: 'another-password' })).status, 410); // the link works once
   const count = await member('search/count', form(3));
-  assert.deepEqual(count.data, { total: 30, strict: 30, industryLabels: ['التقنية والبرمجيات'] });
+  assert.deepEqual(count.data, { total: 30, strict: 30, industryLabels: ['التقنية والبرمجيات'], industries: SECTOR_INDUSTRIES['التقنية والبرمجيات'] }, 'English pages show the provider names');
   const input = form(3), started = await member('search', input);
   assert.equal(started.status, 200);
   assert.equal((await member('search', input)).data.id, started.data.id); // a double click is the same search
@@ -287,4 +290,18 @@ test('journey: the AI is unavailable -> «أخرى» explains it; listed options
   assert.equal(other.status, 503);
   assert.match(other.data.error, /«أخرى»/);
   assert.equal((await member('search/count', form(2))).status, 200);
+});
+
+test('journey: the assistant turns a description into a checked search; an English page reads the server in English', async t => {
+  const { member } = await setup(t);
+  provider();
+  const r = await member('assist', { messages: [{ role: 'user', content: 'عيادات أسنان في دبي، أبغى المدير' }] });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.reply, 'جهّزت لك البحث.');
+  assert.deepEqual([r.data.search.specialty, r.data.search.countries, r.data.search.city, r.data.search.count], ['عيادات الأسنان', ['AE'], 'Dubai', 4], 'an invalid country code is dropped');
+  assert.equal((await member('assist', { messages: [] })).status, 400);
+  const english = await member('search/count', { ...form(2), city: 'الخبر الشمالية' }, 'en');
+  assert.equal(english.status, 400);
+  assert.equal(english.data.error, 'Type the city in English, pick a main city, or leave it empty.');
+  assert.match((await member('search/count', { ...form(2), city: 'الخبر الشمالية' })).data.error, /اكتب المدينة/, 'Arabic stays the default');
 });

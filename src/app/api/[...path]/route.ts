@@ -8,6 +8,8 @@ import { LiveSearch } from '@/lib/live-search';
 import { resolveAudience } from '@/lib/audience';
 import { contactsCsv } from '@/lib/csv';
 import { accessError, bodyLimit, clientIp, isHttps } from '@/lib/access';
+import { assist } from '@/lib/ai';
+import { englishBody } from '@/lib/en';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -49,7 +51,7 @@ function authenticated(token: string) {
   response.cookies.set('wasl_session', token, { httpOnly: true, sameSite: 'strict', secure: isHttps(process.env.APP_URL), path: '/', maxAge: 7 * 86400 });
   return response;
 }
-async function handle(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
+async function answer(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
   try {
     guard(req);
     const path = (await params).path.join('/');
@@ -117,7 +119,18 @@ async function handle(req: NextRequest, { params }: { params: Promise<{ path: st
       if (!providerInfo().configured) throw new AppError('مزوّد البيانات غير مهيأ على الخادم. تواصل مع مالك المنصة.',503);
       if (user.balance < 1) throw new AppError('رصيدك صفر. تواصل مع مالك المنصة لإضافة رصيد قبل البحث.'); // no paid AI mapping for a search that cannot run
       const audience = await resolveAudience(store,input); // «أخرى» is mapped here, so the member sees what will be searched
-      return json({...await new IcypeasClient().count(audience),industryLabels:audience.industryLabels});
+      return json({...await new IcypeasClient().count(audience),industryLabels:audience.industryLabels,industries:audience.industries});
+    }
+    if (path === 'assist') {
+      const {messages}=z.object({messages:z.array(z.object({role:z.enum(['user','assistant']),content:z.string().trim().min(1).max(1200)})).min(1).max(8)}).parse(b);
+      // About $0.002 a message, at most ~$0.012: 12 a minute and 150 a day per member bound one account to ~$2 a day.
+      await store.hit('assist:'+user.id, 12);
+      await store.hit('assist-day:'+user.id, 150, 86400000, 'وصلت حد المساعد اليومي. حاول غدًا.');
+      if (!process.env.OPENROUTER_API_KEY?.trim()) throw new AppError('المساعد غير متاح الآن. حاول بعد قليل.', 503);
+      return json(await assist(messages, req.headers.get('x-lang') === 'en' ? 'en' : 'ar').catch(e => {
+        console.warn('Assistant failed:', e instanceof Error ? e.message : 'unknown');
+        throw new AppError('المساعد غير متاح الآن. حاول بعد قليل.', 503);
+      }));
     }
     if (path === 'search/poll') {
       const {searchId}=z.object({searchId:z.string().uuid()}).parse(b);
@@ -176,5 +189,12 @@ async function handle(req: NextRequest, { params }: { params: Promise<{ path: st
     console.error('Local API failure:', error instanceof Error ? error.message : 'unknown');
     return json({error:'حدث خطأ غير متوقع. حاول مجددًا.'},500);
   }
+}
+// The page's language (x-lang, src/lib/client.ts): an English page gets the errors and search messages in English.
+async function handle(req: NextRequest, context: { params: Promise<{ path: string[] }> }) {
+  const res = await answer(req, context);
+  if (req.headers.get('x-lang') !== 'en' || !res.headers.get('content-type')?.includes('json')) return res;
+  const headers = new Headers(res.headers); headers.delete('content-length');
+  return new NextResponse(JSON.stringify(englishBody(await res.json())), { status: res.status, headers });
 }
 export { handle as GET, handle as POST };

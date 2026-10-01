@@ -92,3 +92,21 @@ export const labelsEn: Record<string, string> = {
   'مدير المشاريع': 'Project manager', 'مدير المنتج': 'Product manager', 'مدير خدمة العملاء': 'Customer service manager', 'مدير الفرع أو المتجر': 'Branch or store manager',
   'مدير العيادة أو المدير الطبي': 'Clinic manager or medical director',
 };
+
+// The assistant (src/lib/ai.ts): a short answer, and a search form when the member described who they want to reach.
+export type AssistMessage = { role: 'user' | 'assistant'; content: string };
+export type AssistReply = { reply: string; search?: { mode: 'people' | 'companies'; field: string; specialty: string; other: string; countries: string[];
+  city: string; title: string; size: 'all' | '1-10' | '11-50' | '51-200'; count: number } };
+// The assistant's suggestion -> search form values (a specialty, a whole field, or the member's own words). Checked in the
+// browser too: it may arrive in a link (?ai=), so nothing is trusted; the server checks the search itself.
+const sizes = ['all', '1-10', '11-50', '51-200'] as const;
+export function assistForm(raw: unknown, max: number) {
+  const s = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>, text = (v: unknown) => typeof v === 'string' ? v.trim().slice(0, 60) : '';
+  const countries = Array.isArray(s.countries) ? s.countries.filter((c): c is string => typeof c === 'string' && /^[A-Z]{2}$/.test(c)).slice(0, 10) : [];
+  const count = typeof s.count === 'number' && Number.isFinite(s.count) ? Math.round(s.count) : 0;
+  return {
+    mode: s.mode === 'companies' ? 'companies' as const : 'people' as const, sector: text(s.specialty) || text(s.field) || text(s.other) || undefined,
+    countries: countries.length ? countries : undefined, city: countries.length === 1 ? text(s.city) : '', title: s.mode === 'companies' ? '' : text(s.title),
+    size: sizes.find(x => x === s.size) ?? 'all', count: count > 0 ? Math.max(1, Math.min(count, max)) : undefined,
+  };
+}

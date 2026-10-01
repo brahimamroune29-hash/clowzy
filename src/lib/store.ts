@@ -166,12 +166,13 @@ export class Store {
   }
   // Requests per key (e.g. 'auth:<ip>') in the current minute, counted in the database so every server instance shares it.
   // ponytail: fixed one-minute windows (up to 2x max across a minute boundary); a sliding window if that ever matters.
-  async hit(key: string, max: number) {
-    const window = Math.floor(Date.now() / 60000);
-    await this.db.run('DELETE FROM rate_hits WHERE window_start < ?', window - 1);
+  // Fixed windows (window_start: epoch ms) of any length: a minute for logins, a day for the assistant. Rows live two days.
+  async hit(key: string, max: number, windowMs = 60000, message = 'طلبات كثيرة. انتظر دقيقة وحاول مجددًا.') {
+    const now = Date.now();
+    await this.db.run('DELETE FROM rate_hits WHERE window_start < ?', now - 2 * 86400000);
     const row = await this.db.get<{ count: number }>(`INSERT INTO rate_hits(key,window_start,count) VALUES(?,?,1)
-      ON CONFLICT(key,window_start) DO UPDATE SET count=rate_hits.count+1 RETURNING count`, key, window);
-    if (row!.count > max) throw new AppError('طلبات كثيرة. انتظر دقيقة وحاول مجددًا.', 429);
+      ON CONFLICT(key,window_start) DO UPDATE SET count=rate_hits.count+1 RETURNING count`, key, now - now % windowMs);
+    if (row!.count > max) throw new AppError(message, 429);
   }
   async dailyFetched(userId: string) {
     return count(await this.db.get<{ n: number }>('SELECT COALESCE(sum(r.fetched),0)::int n FROM provider_runs r JOIN searches s ON s.id=r.search_id WHERE s.user_id=? AND s.created_at>?',

@@ -202,5 +202,7 @@ test('login attempts are counted per IP in the database, so every server instanc
     for(let i=0;i<20;i++) await store.hit('auth:1.2.3.4',20);
     await assert.rejects(store.hit('auth:1.2.3.4',20),(e:AppError)=>e.status===429);
     await store.hit('auth:5.6.7.8',20);
+    for(let i=0;i<2;i++) await store.hit('assist-day:u',2,86400000,'حد اليوم');
+    await assert.rejects(store.hit('assist-day:u',2,86400000,'حد اليوم'),(e:AppError)=>e.status===429&&e.message==='حد اليوم','a day-long window counts across minutes');
   } finally {await store.close();}
 });
