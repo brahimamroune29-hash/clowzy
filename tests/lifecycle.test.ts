@@ -19,6 +19,7 @@ function mock(o: Hooks) {
   const transport: typeof fetch = async (url, init) => {
     const path = String(url).replace('https://app.icypeas.com/api/', ''), body = JSON.parse(String(init?.body));
     calls.push({ path, body });
+    if (path === 'find-companies') return Response.json({ success: true, leads: [] }); // the company fallback finds none here
     if (path === 'find-people') {
       const n = ++pages; if (o.onPage) await o.onPage(n);
       const page = o.pages[body.pagination?.token ? Number(body.pagination.token.slice(1)) : 0] ?? { leads: [] };

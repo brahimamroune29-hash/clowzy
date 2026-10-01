@@ -23,6 +23,7 @@ function mockTransport(o: { pages?: { leads: unknown[]; token?: string }[]; broa
     calls.push({ path, body });
     if (o.http) return Response.json({}, { status: o.http });
     if (path === 'find-people/count') return Response.json({ success: true, total: 5 });
+    if (path === 'find-companies') return Response.json({ success: true, leads: [] }); // the company fallback finds none here
     if (path === 'find-people') {
       if (o.expired && body.pagination?.token === o.expired) return Response.json({ success: false, validationErrors: ['token expired'] });
       const list = body.query?.profileLocation?.exclude ? (o.broad ?? []) : pages;
@@ -83,7 +84,7 @@ test('start is paid once per request; sure emails are delivered before probable 
     assert.deepEqual(m.calls.find(c => c.path === 'bulk-search')?.body.data, [['Person', 'a', 'company-a.example'], ['Person', 'b', 'company-b.example'], ['Person', 'c', 'company-c.example']]);
     await assert.rejects(search.poll(bob.id, first.id));
     await eligible(store); const done = await search.poll(user.id, first.id);
-    assert.equal(done.status, 'completed'); assert.equal(done.delivered, 2);
+    assert.equal(done.status, 'completed'); assert.equal(done.delivered, 2); assert.equal(m.count('find-companies'), 0, 'a full people search never falls back');
     assert.deepEqual((await store.snapshot(user.id)).contacts.map(c => c.email).sort(), ['a@company-a.example', 'c@company-c.example'], 'with more found than asked, the sure ones are delivered');
     assert.equal((await store.user(user.id)).balance, 8); assert.equal(await store.reserved(user.id), 0);
     const contact = (await store.snapshot(user.id)).contacts[0];
@@ -101,19 +102,21 @@ test('a probable email (95% sure, paid by the provider anyway) is delivered and 
     'sure first, and the sure address of a person with both; personal mailboxes and unknown or missing certainty are refused');
   assert.equal(emailTrust('PROBABLE'), 'مؤكد ٩٥٪'); assert.equal(emailTrust('VERIFIED'), 'مؤكد ٩٩٪');
 });
-test('short batches top up from the next people page, never submitting more than 10x the requested count', async () => {
-  const pages = [{ leads: ['a', 'b', 'c', 'd'].map(lead), token: 't1' }, { leads: ['e', 'f', 'g', 'h', 'i', 'j', 'k', 'l'].map(lead) }];
+test('short batches top up from the next people page, never submitting more than 20x the requested count, then try the companies', async () => {
+  const people = 'abcdefghijklmnopqrstuvwxyz'.split('');
+  const pages = [{ leads: people.slice(0, 4).map(lead), token: 't1' }, { leads: people.slice(4).map(lead) }];
   const nf = (n: number) => Array.from({ length: n }, (_, i) => item(i, null));
-  const m = mockTransport({ pages, files: [nf(4), nf(4), [item(0, 'i@company-i.example'), item(1, null)]] });
+  const m = mockTransport({ pages, files: [nf(4), nf(4), nf(4), nf(4), nf(4)] });
   const { store, user } = await setup(), search = live(store, m.client);
   try {
     const first = await search.start(user.id, input(1));
     let final = first;
-    for (let i = 0; i < 5 && final.status === 'awaiting_provider'; i++) { await eligible(store); final = await search.poll(user.id, first.id); }
+    for (let i = 0; i < 8 && final.status === 'awaiting_provider'; i++) { await eligible(store); final = await search.poll(user.id, first.id); }
     assert.equal(m.calls.filter(c => c.path === 'find-people')[1]?.body.pagination?.token, 't1');
     const sent = m.calls.filter(c => c.path === 'bulk-search').flatMap(c => c.body.data ?? []);
-    assert.equal(sent.length, 10, 'cap: 10 people for 1 requested email');
-    assert.equal(final.status, 'completed'); assert.equal(final.delivered, 1); assert.equal((await store.user(user.id)).balance, 9);
+    assert.equal(sent.length, 20, 'cap: 20 people for 1 requested email (26 available; a person without an email costs nothing)');
+    assert.equal(m.count('find-companies'), 2, 'then the companies themselves (none here), both stages');
+    assert.equal(final.status, 'partial'); assert.equal(final.delivered, 0); assert.equal((await store.user(user.id)).balance, 10);
   } finally { await store.close(); }
 });
 
@@ -464,14 +467,14 @@ test('a search that ends short says why (people checked, verified emails found) 
   const cases: [number, Parameters<typeof mockTransport>[0], string][] = [
     [1, { pages: abc, files: [[item(0, null), item(1, null), item(2, null)]] }, 'بحثنا عن بريد 3 من الأشخاص المطابقين، ولم نجد بريدًا موثّقًا لأيّ منهم. ' + tried],
     [3, { pages: abc, files: [[item(0, 'a@company-a.example'), item(1, 'a@company-a.example'), item(2, null)]] }, 'بحثنا عن بريد 3 من الأشخاص المطابقين، ووجدنا بريدًا موثّقًا لـ 2 منهم، منها 1 مكرر مستبعد. ' + tried],
-    [1, { pages: [{ leads: Array.from({ length: 12 }, (_, i) => lead('p' + i)), token: 't1' }, { leads: [lead('z')] }], files: [4, 4, 2].map(n => Array.from({ length: n }, (_, i) => item(i, null))) },
-      'بحثنا عن بريد 10 من الأشخاص المطابقين، ولم نجد بريدًا موثّقًا لأيّ منهم. أعد البحث بالمعايير نفسها لتجربة أشخاص آخرين، أو وسّعها لنتائج أكثر.'],
+    [1, { pages: [{ leads: Array.from({ length: 22 }, (_, i) => lead('p' + i)), token: 't1' }, { leads: [lead('z')] }], files: [4, 4, 4, 4, 4].map(n => Array.from({ length: n }, (_, i) => item(i, null))) },
+      'بحثنا عن بريد 20 من الأشخاص المطابقين، ولم نجد بريدًا موثّقًا لأيّ منهم. أعد البحث بالمعايير نفسها لتجربة أشخاص آخرين، أو وسّعها لنتائج أكثر.'],
   ];
   for (const [count, opts, expected] of cases) {
     const m = mockTransport(opts), { store, user } = await setup(), search = live(store, m.client);
     try {
       let final = await search.start(user.id, input(count));
-      for (let i = 0; i < 5 && final.status === 'awaiting_provider'; i++) { await eligible(store); final = await search.poll(user.id, final.id); }
+      for (let i = 0; i < 8 && final.status === 'awaiting_provider'; i++) { await eligible(store); final = await search.poll(user.id, final.id); }
       assert.equal(final.status, 'partial'); assert.equal(final.message, expected);
       assert.equal((await store.snapshot(user.id)).searches[0].message, expected, 'the results page reads it from the snapshot');
     } finally { await store.close(); }
@@ -483,10 +486,10 @@ test('a search that ends short says why (people checked, verified emails found) 
   } finally { await empty.store.close(); }
 });
 
-test('the pre-search estimate: strict matches first at 18%, then broad ones at 8%, within the 10x people a search may try', () => {
+test('the pre-search estimate: strict matches first at 18%, then broad ones at 8%, within the 20x people a search may try', () => {
   assert.equal(expectedEmails(0, 15, 3), 1, 'production 776c4fd4: 15 broad-only people for 3 emails -> 1.2, so warn');
   assert.equal(expectedEmails(5, 10, 3), 1);
-  assert.equal(expectedEmails(93, 644, 10), 17, 'up to 100 people are tried: the 93 strict ones first');
+  assert.equal(expectedEmails(93, 644, 10), 25, 'up to 200 people are tried: the 93 strict ones first');
   assert.equal(expectedEmails(0, 5, 1), 0, 'under one expected email reads as "may find none", never rounded up to 1');
   assert.equal(expectedEmails(0, 0, 5), 0);
 });
@@ -510,8 +513,9 @@ test('a database error while explaining a short search does not fail the poll: t
   try {
     const first = await search.start(user.id, input(1));
     await eligible(store); await search.poll(user.id, first.id); await eligible(store); await search.poll(user.id, first.id); // batches 2 and 3: the cap
-    let fail = 1;
-    hookDb(store, text => { if (text.startsWith('SELECT stage,token,leftovers') && fail > 0) { fail--; throw new Error('connection reset'); } });
+    // Cursor reads on the last poll: the people search's next page, the companies fallback, then the shortfall message (fails).
+    let reads = 0;
+    hookDb(store, text => { if (text.startsWith('SELECT stage,token,leftovers') && ++reads === 3) throw new Error('connection reset'); });
     await eligible(store); const final = await search.poll(user.id, first.id);
     assert.equal(final.status, 'partial'); assert.equal(await store.reserved(user.id), 0);
   } finally { await store.close(); }

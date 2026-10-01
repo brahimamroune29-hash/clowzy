@@ -21,13 +21,15 @@ export function withCountries(raw: unknown) {
   return { ...raw, countries: [countryFromText(String(raw.country))].filter(Boolean) };
 }
 
-export const SUBMIT_MULTIPLE = 10; // approved 2026-09-30 (was 5): submit at most 10x the requested emails for email discovery
+// Submit at most 20x the requested emails for email discovery (owner, 2026-10-01; was 10): a person without an email costs
+// nothing, and Dubai dentists found 1 in 40. A people search still short then falls back to the companies' own emails.
+export const SUBMIT_MULTIPLE = 20;
 // Emails a search can expect, from pooled live very-sure rates (A/B 2026-09-28 + production searches 2026-09-30): people matched by
 // country code 8 of 45 (18%), name-only matches 2 of 25 (8%). A search tries at most SUBMIT_MULTIPLE x the count, strict first.
 export function expectedEmails(strict: number, total: number, count: number, mode = 'people') {
-  // Companies: at most 20 tried per requested email (fetchCap); 8 of 25 Gulf real-estate companies showed an email on their own
+  // Companies: at most 25 tried per requested email (fetchCap); 8 of 25 Gulf real-estate companies showed an email on their own
   // site (2026-10-01), and the provider verifies most of those: about 3 in 10.
-  if (mode === 'companies') return Math.floor(Math.min(total, count * 20) * 0.3 + 1e-9);
+  if (mode === 'companies') return Math.floor(Math.min(total, count * 25) * 0.3 + 1e-9);
   const first = Math.min(strict, count * SUBMIT_MULTIPLE), rest = Math.min(total - strict, count * SUBMIT_MULTIPLE - first);
   return Math.floor(first * 0.18 + rest * 0.08 + 1e-9); // rounded down: under one expected email reads as "may find none"
 }

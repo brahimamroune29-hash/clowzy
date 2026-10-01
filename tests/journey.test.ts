@@ -38,6 +38,7 @@ function provider(o: Fake = {}) {
     if (o.down) throw new TypeError('fetch failed');
     const list = body.query?.profileLocation?.exclude ? broad : strict;
     if (path === 'find-people/count') return Response.json({ success: true, total: list.length });
+    if (path === 'find-companies') return Response.json({ success: true, leads: [] }); // the company fallback finds none here
     if (path === 'find-people') {
       const from = body.pagination?.token ? Number(body.pagination.token.slice(1)) : 0, to = from + body.pagination.size;
       return Response.json({ success: true, total: list.length, leads: list.slice(from, to), ...(to < list.length ? { pagination: { token: 'p' + to } } : {}) });
@@ -75,7 +76,7 @@ function browser() {
 type Call = ReturnType<typeof browser>;
 
 async function setup(t: TestContext, credits = 20) {
-  clock += 3600000; // a fresh minute for the in-memory rate limits of every test
+  clock += 86400000; // a fresh day per test: rate limits, and the shared provider spacing (a long test may tick past an hour)
   t.mock.timers.enable({ apis: ['Date'], now: clock });
   const store = holder.waslStore = await testStore();
   t.after(() => store.close());

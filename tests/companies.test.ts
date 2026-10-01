@@ -17,6 +17,7 @@ function mock(o: { pages?: unknown[][]; files?: unknown[][]; emails?: Record<str
   const transport: typeof fetch = async (url, init) => {
     const path = String(url).replace('https://app.icypeas.com/api/', ''), body = JSON.parse(String(init?.body));
     calls.push({ path, body });
+    if (path === 'find-people') return Response.json({ success: true, leads: [] }); // nobody: a people search falls back at once
     if (path === 'find-companies/count') return Response.json({ success: true, total: body.query?.location?.exclude ? 40 : 60 });
     if (path === 'find-companies') {
       const n = body.pagination?.token ? Number(body.pagination.token.slice(1)) : 0, pages = o.pages ?? [[company('a'), company('b')]];
@@ -81,7 +82,25 @@ test('reading the sites of one page is cut at 10 seconds: a site that never answ
   assert.deepEqual([result.returned, result.leads.length], [2, 0], 'the page is kept (paid), its silent sites give no email');
 });
 
+test('a people search short of its count is completed with the companies\' own verified emails, once, labelled as such', async () => {
+  const store = await testStore(), user = await store.addUser('Alice', 'alice@example.com', 'secure-password', 'member', 10);
+  try {
+    const m = mock({ files: [[item(0, 'info@a.example', 'very_sure', 'FOUND'), item(1, null, 'ultra_sure', 'NOT_FOUND')]] });
+    const people = audienceOf(JSON.stringify({ ...JSON.parse(JSON.stringify(companies(2))), mode: 'people', title: 'مدير التسويق' }));
+    const first = await live(store, m.client).start(user.id, people);
+    assert.equal(m.count('find-people'), 2, 'the people first (both stages, nobody)');
+    assert.equal(m.calls.find(c => c.path === 'bulk-search')?.body.task, 'email-verification', 'then the companies of the same filters');
+    await store.db.run('UPDATE provider_runs SET updated_at=0');
+    const done = await live(store, m.client).poll(user.id, first.id);
+    assert.equal(done.delivered, 1); assert.equal(done.status, 'partial');
+    assert.equal((await store.snapshot(user.id)).contacts[0].kind, 'company');
+    assert.equal(done.message, 'بحثنا عن بريد 0 من الأشخاص المطابقين، ثم كمّلنا بإيميلات الشركات نفسها بعد فحص 2 منها، فوصلك 1 من 2. لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو المسمى الوظيفي.');
+    assert.equal(m.count('find-people'), 2, 'never back to the people after the fallback');
+    assert.equal((await store.user(user.id)).balance, 9);
+  } finally { await store.close(); }
+});
+
 test('the expected count for companies follows the companies rate', () => {
-  assert.equal(expectedEmails(0, 1000, 10, 'companies'), 60, '20 companies tried per requested email, about 3 in 10 with a verified site email');
+  assert.equal(expectedEmails(0, 1000, 10, 'companies'), 75, '25 companies tried per requested email, about 3 in 10 with a verified site email');
   assert.equal(expectedEmails(0, 5, 10, 'companies'), 1);
 });

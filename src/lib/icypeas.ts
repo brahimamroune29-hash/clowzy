@@ -21,8 +21,9 @@ const plain = (s: string) => s.replace(/[\u064B-\u0652]/g, '');
 export const BATCH = 100; // people per email submission: one results read covers a whole batch (reads return <= 100 rows)
 export const PAGE = 25; // people per find-people page (0.02 credit each); constant so a saved cursor stays valid across searches
 export const submitCap = (count: number) => count * SUBMIT_MULTIPLE;
-// People returned per search incl. ones already seen (paid pages, 0.02 credit each): kept at the pre-10x budget, apart from the attempts.
-export const fetchCap = (count: number) => count * 20;
+// People (or companies) returned per search incl. ones already seen (paid pages, 0.02 credit each): a little above the attempts,
+// since some returned people are skipped (no company domain, another country, already tried).
+export const fetchCap = (count: number) => count * 25;
 
 export const STAGES = 2;
 export type Audience = Pick<Resolved, 'countries' | 'city' | 'size' | 'industries' | 'titles'> & Partial<Pick<Resolved, 'mode'>>;

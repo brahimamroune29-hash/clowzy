@@ -4,7 +4,9 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { DAILY_PEOPLE, dailyLimit, Store } from './store';
 import { BATCH, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadName, personKey, queryOf, STAGES, submitCap } from './icypeas';
 
-type Run = { search_id: string; phase: string; people: string; file: string | null; scanned: number; fetched: number; submitted: number; submitted_at: number | null; message: string; updated_at: number; read_errors: number };
+type Run = { search_id: string; phase: string; people: string; file: string | null; scanned: number; fetched: number; submitted: number; submitted_at: number | null; message: string; updated_at: number; read_errors: number; mode: 'companies' | null; people_checked: number };
+// The audience a run continues with: the stored filters, switched to companies once a people search has fallen back.
+const inputOf = (filters: string, run?: Pick<Run, 'mode'>): Resolved => ({ ...audienceOf(filters), ...(run?.mode ? { mode: run.mode } : {}) });
 type Slots = { read: number; bulk: number };
 // ponytail: process-wide spacing for Icypeas account limits (results read 30/min, bulk submit 1/s); per server instance, so two
 // instances can collide: a refused submit (429) is retried once (icypeas.ts), a refused read waits for the next poll. Move the
@@ -48,7 +50,7 @@ export class LiveSearch {
   private async view(userId: string, id: string): Promise<Search> {
     const search = await this.store.getSearch(userId, id), run = await this.run(id);
     // checked: people sent for email discovery so far (the live progress the results page shows while searching).
-    return { ...search, checked: run?.submitted ?? 0, message: run?.message || (search.status === 'awaiting_provider' ? 'جارٍ البحث والتحقق من الإيميلات.' : '') };
+    return { ...search, checked: (run?.people_checked ?? 0) + (run?.submitted ?? 0), message: run?.message || (search.status === 'awaiting_provider' ? 'جارٍ البحث والتحقق من الإيميلات.' : '') };
   }
   private stop(userId: string, id: string, message: string, uncertain = false) {
     return this.store.transaction(async () => {
@@ -59,8 +61,10 @@ export class LiveSearch {
     });
   }
   // Why a search ended short and what to do next, so an empty result never reads as a silent failure.
-  private async shortfall(userId: string, search: Search, checked: number) {
-    const input = audienceOf(search.filters), companies = input.mode === 'companies';
+  private async shortfall(userId: string, search: Search, run: Run) {
+    const input = audienceOf(search.filters), companies = input.mode === 'companies', checked = run.mode ? run.people_checked : run.submitted;
+    if (run.mode && run.submitted) return `بحثنا عن بريد ${run.people_checked} من الأشخاص المطابقين، ثم كمّلنا بإيميلات الشركات نفسها بعد فحص ${run.submitted} منها، فوصلك ${search.delivered} من ${search.requested}. `
+      + 'لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو المسمى الوظيفي.'; // a fallback that found no company email reads as the people search
     const widen = companies ? 'لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو أضف دولًا.' : 'لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو المسمى الوظيفي.';
     if (!checked) return (companies ? 'لم نجد شركات جديدة مطابقة تعرض بريدها على موقعها حاليًا. ' : 'لا يوجد أشخاص جدد مطابقون لهذه المعايير حاليًا. ') + widen;
     const cursor = await this.store.cursor(userId, cursorKey(input));
@@ -74,11 +78,22 @@ export class LiveSearch {
     if (!message) {
       const search = await this.store.getSearch(userId, id);
       // Best effort: the search is already closed and released; a failed read only leaves the page's generic text.
-      if (search.delivered < search.requested) message = await this.shortfall(userId, search, (await this.run(id))?.submitted ?? 0)
+      if (search.delivered < search.requested) message = await this.shortfall(userId, search, (await this.run(id))!)
         .catch(e => { console.warn('Shortfall message skipped:', e instanceof Error ? e.message : 'unknown'); return ''; });
     }
     await this.patch(id, { phase: 'finished', message });
     return this.view(userId, id);
+  }
+  // The natural end of a search (no more people, or the attempts cap). A people search short of its count falls back, once, to
+  // the companies' own verified emails for the same filters (owner's rule, 2026-10-01), labelled «إيميل الشركة» for the member.
+  private async end(userId: string, id: string, input: Resolved, closeOnly = false) {
+    if (!closeOnly && input.mode === 'people') {
+      const search = await this.store.getSearch(userId, id);
+      if (search.delivered < search.requested && await this.store.db.run(
+        "UPDATE provider_runs SET mode='companies',people_checked=submitted,scanned=0,submitted=0,people='[]',updated_at=? WHERE search_id=? AND mode IS NULL", Date.now(), id))
+        return this.advance(userId, id, { ...input, mode: 'companies' });
+    }
+    return this.finish(userId, id);
   }
   // A batch past its deadline is closed with what was delivered, through the same claim as a delivery: if another
   // request is delivering it (or already closed it), that request decides.
@@ -104,8 +119,8 @@ export class LiveSearch {
       await this.store.saveCursor(userId, queryKey, c.stage, c.token, JSON.stringify([...leads, ...rest]));
     });
   }
-  private async pause(userId: string, id: string, batch: Lead[]) {
-    await this.patch(id, { phase: 'paused', people: JSON.stringify(batch), message: batch.some(l => l.email) || audienceOf((await this.store.getSearch(userId, id)).filters).mode === 'companies' ? 'نواصل قراءة مواقع الشركات المطابقة…' : 'نواصل البحث عن أشخاص مطابقين…' });
+  private async pause(userId: string, id: string, batch: Lead[], input: Resolved) {
+    await this.patch(id, { phase: 'paused', people: JSON.stringify(batch), message: input.mode === 'companies' ? 'نواصل قراءة مواقع الشركات المطابقة…' : 'نواصل البحث عن أشخاص مطابقين…' });
     return this.view(userId, id);
   }
   // Called only by the request that owns the 'searching' phase (start, the poll that delivered, or the poll that resumed it).
@@ -121,7 +136,7 @@ export class LiveSearch {
       while (want > 0 && batch.length < want) {
         if (!pool.length) {
           if (scanned >= fetchCap(search.requested) || wrapped) break;
-          if (pages >= PAGES_PER_CALL || this.elapsed() > (input.mode === 'companies' ? COMPANIES_COLLECT_MS : COLLECT_MS)) return this.pause(userId, id, batch);
+          if (pages >= PAGES_PER_CALL || this.elapsed() > (input.mode === 'companies' ? COMPANIES_COLLECT_MS : COLLECT_MS)) return this.pause(userId, id, batch, input);
           if (await this.store.dailyFetched(userId) >= DAILY_PEOPLE) { // the member's daily provider work: send who was picked, then stop
             if (batch.length) break;
             return this.finish(userId, id, 'حُسب فقط ما وصل. ' + dailyLimit);
@@ -145,9 +160,9 @@ export class LiveSearch {
           await this.patch(id, { scanned, fetched, people: JSON.stringify(batch) });
         });
       }
-      if (!batch.length) return this.finish(userId, id);
+      if (!batch.length) return this.end(userId, id, input);
       while (!takeSlot(this.slots, 'bulk', this.gaps.bulk)) { await this.patch(id, {}); await sleep(this.gaps.bulk); }
-      if (this.elapsed() > SUBMIT_MS) return this.pause(userId, id, batch); // checked once the slot is ours: the submit starts now
+      if (this.elapsed() > SUBMIT_MS) return this.pause(userId, id, batch, input); // checked once the slot is ours: the submit starts now
       await this.patch(id, { phase: 'submitting', people: JSON.stringify(batch) });
       if ((await this.store.getSearch(userId, id)).status !== 'awaiting_provider' || (await this.run(id))?.phase !== 'submitting') { await this.release(userId, queryKey, batch); return this.view(userId, id); }
       sent = true;
@@ -185,7 +200,7 @@ export class LiveSearch {
   async poll(userId: string, id: string, closeOnly = false): Promise<Search> {
     const search = await this.store.getSearch(userId, id), run = await this.run(id);
     if (!run || search.status !== 'awaiting_provider') return this.view(userId, id);
-    const stale = Date.now() - run.updated_at > STALE, input = audienceOf(search.filters);
+    const stale = Date.now() - run.updated_at > STALE, input = inputOf(search.filters, run);
     // Paused, or interrupted while picking people: nothing was sent, and the picked people are saved with the run.
     if (run.phase === 'paused' || (run.phase === 'searching' && stale)) {
       if (!await this.store.db.run("UPDATE provider_runs SET phase='searching',updated_at=? WHERE search_id=? AND phase=? AND updated_at=?", Date.now(), id, run.phase, run.updated_at)) return this.view(userId, id);
@@ -229,7 +244,7 @@ export class LiveSearch {
       }
       // advance() fetches no page past fetchCap, but still tries people already fetched (the member's leftovers).
       if (!closeOnly && delivered < search.requested && (await this.run(id))!.submitted < submitCap(search.requested)) return this.advance(userId, id, input);
-      return this.finish(userId, id);
+      return this.end(userId, id, input, closeOnly);
     } catch (e) {
       // Reads are repeatable and a failed delivery rolled back whole: the next poll retries. Only a batch past its deadline
       // whose reads keep failing (READ_ERRORS in a row) is closed with what was delivered.

@@ -54,6 +54,9 @@ select has_table_privilege('clowzy_app', 'clowzy.rate_hits', 'SELECT,INSERT,UPDA
 
 ```sql
 alter table clowzy.contacts add column if not exists kind text not null default 'person';
+-- تكملة بحث الأشخاص الناقص بإيميلات الشركات نفسها:
+alter table clowzy.provider_runs add column if not exists mode text;
+alter table clowzy.provider_runs add column if not exists people_checked integer not null default 0;
 ```
 
 - فحص التزامن الحقيقي على القاعدة (لا تقدر عليه قاعدة الاختبار داخل العملية): DATABASE_URL=... npx tsx scripts/check-concurrency.ts. ينشئ بيانات مؤقتة ويحذفها بصلاحيات التطبيق وحدها.
