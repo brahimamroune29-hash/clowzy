@@ -1,13 +1,25 @@
 import { countryFromText } from './places';
 
-// What the member picks from. The server maps each label to exact provider names (src/lib/audience.ts);
-// anything else typed under «أخرى» is mapped by the AI there.
-export const sectors = ['التقنية والبرمجيات', 'العقارات', 'الصحة والعيادات', 'عيادات الأسنان', 'التجارة الإلكترونية', 'التجزئة والمتاجر', 'المطاعم والمقاهي',
-  'الأغذية والمشروبات', 'البناء والمقاولات', 'الهندسة والعمارة', 'التسويق والإعلان', 'الإعلام والإنتاج', 'التصميم والجرافيك', 'التعليم والتدريب',
-  'السياحة والضيافة', 'الفعاليات والمعارض', 'الخدمات المهنية', 'المحاماة والخدمات القانونية', 'المحاسبة والخدمات المالية', 'البنوك والاستثمار', 'التأمين',
-  'السيارات', 'النقل والخدمات اللوجستية', 'الأزياء والموضة', 'التجميل والعناية الشخصية', 'اللياقة والصحة العامة', 'الصيدليات والأدوية',
-  'النفط والغاز والطاقة', 'الاتصالات', 'الموارد البشرية والتوظيف', 'الأمن والحماية', 'الأثاث والديكور', 'الزراعة', 'الجملة والاستيراد والتصدير',
-  'الصناعة', 'الجمعيات والمنظمات غير الربحية', 'الجهات الحكومية'] as const;
+// What the member picks from: a main field, then one of its specialties or the whole field. The server maps each label to
+// exact provider names (src/lib/audience.ts); anything typed under «أخرى» is mapped by the AI there.
+export const fields = {
+  'الصحة والطب': ['الصحة والعيادات', 'عيادات الأسنان', 'المستشفيات', 'المختبرات الطبية', 'العيون والبصريات', 'الصحة النفسية', 'الصيدليات والأدوية',
+    'الأجهزة الطبية', 'الطب البيطري', 'اللياقة والصحة العامة'],
+  'التقنية والاتصالات': ['التقنية والبرمجيات', 'الاتصالات'],
+  'العقارات والبناء': ['العقارات', 'البناء والمقاولات', 'الهندسة والعمارة', 'الأثاث والديكور'],
+  'التجارة والمتاجر': ['التجارة الإلكترونية', 'التجزئة والمتاجر', 'الجملة والاستيراد والتصدير', 'الأزياء والموضة', 'التجميل والعناية الشخصية', 'السيارات'],
+  'المطاعم والضيافة': ['المطاعم والمقاهي', 'الأغذية والمشروبات', 'السياحة والضيافة', 'الفعاليات والمعارض'],
+  'التسويق والإعلام': ['التسويق والإعلان', 'الإعلام والإنتاج', 'التصميم والجرافيك'],
+  'المال والخدمات المهنية': ['المحاسبة والخدمات المالية', 'البنوك والاستثمار', 'التأمين', 'الخدمات المهنية', 'المحاماة والخدمات القانونية', 'الموارد البشرية والتوظيف'],
+  'التعليم والتدريب': ['المدارس', 'الجامعات والكليات', 'مراكز التدريب', 'معاهد اللغات', 'التعليم الإلكتروني'],
+  'الصناعة والطاقة والنقل': ['الصناعة', 'النفط والغاز والطاقة', 'الزراعة', 'النقل والخدمات اللوجستية', 'الأمن والحماية'],
+  'الحكومة والمنظمات': ['الجهات الحكومية', 'الجمعيات والمنظمات غير الربحية'],
+} as const;
+export type FieldName = keyof typeof fields;
+export type Specialty = (typeof fields)[FieldName][number];
+export const sectors = Object.values(fields).flat() as Specialty[];
+// The field a stored sector belongs to (itself when the whole field was chosen), or '' for the member's own words.
+export const fieldOf = (sector: string) => (Object.keys(fields) as FieldName[]).find(f => f === sector || (fields[f] as readonly string[]).includes(sector)) ?? '';
 export const titles = ['المالك أو المؤسس', 'الرئيس التنفيذي أو المدير العام', 'مدير التسويق', 'مسؤول التسويق الرقمي', 'مدير المبيعات', 'مدير تطوير الأعمال',
   'مدير العمليات', 'المدير المالي', 'مدير الموارد البشرية', 'مدير تقنية المعلومات', 'مدير المشتريات', 'مدير المشاريع', 'مدير المنتج',
   'مدير خدمة العملاء', 'مدير الفرع أو المتجر', 'مدير العيادة أو المدير الطبي'] as const;
@@ -36,7 +48,7 @@ export function expectedEmails(strict: number, total: number, count: number, mod
 export type Role = 'admin' | 'member';
 export type User = { id: string; name: string; email: string; role: Role; active: number; balance: number; created_at: string; terms_accepted_at: string | null };
 // How sure the provider is that the email exists: VERIFIED <1% expected bounce, PROBABLE <5% (Icypeas certainties).
-export const emailTrust = (status: string) => status === 'PROBABLE' ? 'مؤكد ٩٥٪' : status === 'VERIFIED' ? 'مؤكد ٩٩٪' : status;
+export const emailTrust = (status: string, en = false) => status === 'PROBABLE' ? (en ? 'Verified 95%' : 'مؤكد ٩٥٪') : status === 'VERIFIED' ? (en ? 'Verified 99%' : 'مؤكد ٩٩٪') : status;
 export type Contact = { kind?: 'person' | 'company'; id: string; user_id: string; search_id: string; name: string; email: string; company: string; title: string; sector: string; country: string; city: string; website: string; size: string; source: string; email_status: string; created_at: string };
 export type Search = { id: string; user_id: string; filters: string; title: string; requested: number; delivered: number; duplicates: number; status: string; created_at: string; message?: string; checked?: number };
 export type Ledger = { id: string; amount: number; kind: string; reason: string; created_at: string; balance_after: number };
@@ -55,3 +67,28 @@ export type Snapshot = {
   admin?: { users: AdminUser[]; invitations: Invitation[]; audit: AuditEvent[]; totals: { delivered: number; searches: number; exports: number; used: number; members?: number; activeMembers?: number } };
 };
 export type Candidate = Omit<Contact, 'id' | 'user_id' | 'search_id' | 'created_at'>;
+
+// English names of what the member picks from (Arabic is the stored value; English is for display only).
+export const labelsEn: Record<string, string> = {
+  'الصحة والطب': 'Health & medicine', 'التقنية والاتصالات': 'Technology & telecom', 'العقارات والبناء': 'Real estate & construction',
+  'التجارة والمتاجر': 'Retail & trade', 'المطاعم والضيافة': 'Food & hospitality', 'التسويق والإعلام': 'Marketing & media',
+  'المال والخدمات المهنية': 'Finance & professional services', 'التعليم والتدريب': 'Education & training',
+  'الصناعة والطاقة والنقل': 'Industry, energy & transport', 'الحكومة والمنظمات': 'Government & non-profits',
+  'الصحة والعيادات': 'Clinics & health care', 'عيادات الأسنان': 'Dental clinics', 'المستشفيات': 'Hospitals', 'المختبرات الطبية': 'Medical laboratories',
+  'العيون والبصريات': 'Eye care & optics', 'الصحة النفسية': 'Mental health', 'الصيدليات والأدوية': 'Pharmacies & pharma', 'الأجهزة الطبية': 'Medical devices',
+  'الطب البيطري': 'Veterinary', 'اللياقة والصحة العامة': 'Fitness & wellness', 'التقنية والبرمجيات': 'Software & IT', 'الاتصالات': 'Telecommunications',
+  'العقارات': 'Real estate', 'البناء والمقاولات': 'Construction & contracting', 'الهندسة والعمارة': 'Engineering & architecture', 'الأثاث والديكور': 'Furniture & interiors',
+  'التجارة الإلكترونية': 'E-commerce', 'التجزئة والمتاجر': 'Retail stores', 'الجملة والاستيراد والتصدير': 'Wholesale & import/export', 'الأزياء والموضة': 'Fashion & apparel',
+  'التجميل والعناية الشخصية': 'Beauty & personal care', 'السيارات': 'Automotive', 'المطاعم والمقاهي': 'Restaurants & cafés', 'الأغذية والمشروبات': 'Food & beverages',
+  'السياحة والضيافة': 'Travel & hospitality', 'الفعاليات والمعارض': 'Events & exhibitions', 'التسويق والإعلان': 'Marketing & advertising', 'الإعلام والإنتاج': 'Media & production',
+  'التصميم والجرافيك': 'Design & graphics', 'المحاسبة والخدمات المالية': 'Accounting & finance', 'البنوك والاستثمار': 'Banking & investment', 'التأمين': 'Insurance',
+  'الخدمات المهنية': 'Professional services', 'المحاماة والخدمات القانونية': 'Law & legal services', 'الموارد البشرية والتوظيف': 'HR & recruitment',
+  'المدارس': 'Schools', 'الجامعات والكليات': 'Universities & colleges', 'مراكز التدريب': 'Training centers', 'معاهد اللغات': 'Language institutes', 'التعليم الإلكتروني': 'E-learning',
+  'الصناعة': 'Manufacturing', 'النفط والغاز والطاقة': 'Oil, gas & energy', 'الزراعة': 'Agriculture', 'النقل والخدمات اللوجستية': 'Transport & logistics', 'الأمن والحماية': 'Security',
+  'الجهات الحكومية': 'Government', 'الجمعيات والمنظمات غير الربحية': 'Non-profits',
+  'المالك أو المؤسس': 'Owner or founder', 'الرئيس التنفيذي أو المدير العام': 'CEO or general manager', 'مدير التسويق': 'Marketing manager',
+  'مسؤول التسويق الرقمي': 'Digital marketing lead', 'مدير المبيعات': 'Sales manager', 'مدير تطوير الأعمال': 'Business development manager', 'مدير العمليات': 'Operations manager',
+  'المدير المالي': 'Finance manager', 'مدير الموارد البشرية': 'HR manager', 'مدير تقنية المعلومات': 'IT manager', 'مدير المشتريات': 'Procurement manager',
+  'مدير المشاريع': 'Project manager', 'مدير المنتج': 'Product manager', 'مدير خدمة العملاء': 'Customer service manager', 'مدير الفرع أو المتجر': 'Branch or store manager',
+  'مدير العيادة أو المدير الطبي': 'Clinic manager or medical director',
+};

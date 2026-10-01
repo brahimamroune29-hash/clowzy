@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { audienceOf, resolveAudience, SECTOR_INDUSTRIES, TITLE_VARIANTS, type AiMapper } from '../src/lib/audience';
+import { audienceOf, fieldIndustries, resolveAudience, SECTOR_INDUSTRIES, TITLE_VARIANTS, type AiMapper } from '../src/lib/audience';
 import { INDUSTRIES } from '../src/lib/industries';
-import { gulf, sectors, titles, type SearchInput } from '../src/lib/contracts';
+import { type FieldName, fieldOf, fields, gulf, sectors, titles, type SearchInput } from '../src/lib/contracts';
 import { peopleQuery, IcypeasError } from '../src/lib/icypeas';
 import { countryFromText, isCountry } from '../src/lib/places';
 import { AppError } from '../src/lib/store';
@@ -15,6 +15,13 @@ const noAi: AiMapper = { sector: async () => { throw new Error('AI must not be c
 test('every listed sector and title maps to exact Icypeas names; the lists the member sees match the server tables', () => {
   assert.ok(sectors.length >= 30, 'about 30 sectors');
   assert.deepEqual(Object.keys(SECTOR_INDUSTRIES), [...sectors]);
+  for (const field of Object.keys(fields) as FieldName[]) {
+    const all = fieldIndustries(field);
+    assert.ok(all.length >= 1 && all.length <= 40, field + ': a whole field fits one search (at most 40 provider names)');
+    for (const n of all) assert.ok(INDUSTRIES.includes(n), field + ': ' + n);
+    assert.equal(fieldOf(field), field); for (const s of fields[field]) assert.equal(fieldOf(s), field);
+  }
+  assert.equal(fieldOf('محلات العطور'), '', 'the member\'s own words belong to no field');
   for (const [sector, names] of Object.entries(SECTOR_INDUSTRIES)) for (const n of names) assert.ok(INDUSTRIES.includes(n), sector + ': ' + n);
   assert.deepEqual(Object.keys(TITLE_VARIANTS), [...titles]);
   for (const variants of Object.values(TITLE_VARIANTS)) assert.ok(variants.some(v => /^[A-Za-z]/.test(v)) && variants.some(v => /[؀-ۿ]/.test(v)), 'Arabic and English titles together');
@@ -72,6 +79,9 @@ test('a typed sector maps to exact industry names only; nonsense or an AI outage
     assert.deepEqual(english.industryLabels, ['متاجر الهدايا'], 'members read Arabic only: a label without Arabic falls back to their own words');
     const listed = await resolveAudience(store, form({ sector: 'عيادات الأسنان' }), noAi);
     assert.deepEqual(listed.industries, ['Dentists']);
+    const whole = await resolveAudience(store, form({ sector: 'التعليم والتدريب' }), noAi);
+    assert.ok(whole.industries.includes('Higher Education') && whole.industries.includes('Education'), 'a whole field (and the old single sector of that name) searches all of it');
+    assert.deepEqual(audienceOf(JSON.stringify({ sector: 'الصحة والطب', countries: ['SA'], city: '', title: '', size: 'all', count: 1, confirmed: true, requestId: randomUUID() })).industries, fieldIndustries('الصحة والطب'));
   } finally { await store.close(); }
 });
 

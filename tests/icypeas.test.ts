@@ -503,6 +503,7 @@ test('starting a new search closes the member\'s abandoned ones with what came b
     const fresh = await search.start(user.id, { ...input(1), sector: 'العقارات' });
     assert.equal((await store.getSearch(user.id, old.id)).status, 'partial', 'closed, not continued');
     assert.equal(m.count('bulk-search'), 2, 'the old search\'s batch + the new search\'s batch only');
+    assert.equal(m.count('find-companies'), 0, 'an abandoned search closes without the companies fallback');
     assert.equal(fresh.status, 'awaiting_provider');
   } finally { await store.close(); }
 });

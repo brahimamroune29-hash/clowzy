@@ -24,7 +24,9 @@ const checkPassword = (password: string, encoded: string) => {
 let dummyHash: string | undefined;
 // Provider work (people fetched) per member per 24 h: members pay per delivered email, the provider per person fetched.
 // ponytail: counted by each search's start time, and a running search may pass it by one page (two can run at once).
-export const DAILY_PEOPLE = 1000;
+// People and companies fetched per member per day (0.02 provider credit each, so at most 50 credits): owner's 1,000 of 2026-09-30,
+// raised 2026-10-01 so one search for 50 can try its 25x people and then 25x companies (the full-count rule).
+export const DAILY_PEOPLE = 2500;
 export const dailyLimit = 'بلغت حد البحث اليومي لحسابك. يمكنك البحث مجددًا بعد 24 ساعة من أول بحث اليوم، أو تواصل مع مالك المنصة.';
 const userFields = 'id,name,email,role,active,balance,created_at,terms_accepted_at';
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
@@ -92,7 +94,7 @@ export class Store {
     const user = await this.user(id);
     const [contacts, searches, ledger, exports] = await Promise.all([
       this.db.all<Contact>('SELECT * FROM contacts WHERE user_id=? ORDER BY created_at DESC,id', id),
-      this.db.all<Search>('SELECT s.*,r.message,r.submitted AS checked FROM searches s LEFT JOIN provider_runs r ON r.search_id=s.id WHERE s.user_id=? ORDER BY s.created_at DESC', id),
+      this.db.all<Search>('SELECT s.*,r.message,r.people_checked+r.submitted AS checked FROM searches s LEFT JOIN provider_runs r ON r.search_id=s.id WHERE s.user_id=? ORDER BY s.created_at DESC', id),
       this.db.all<Ledger>('SELECT id,amount,kind,reason,created_at,balance_after FROM ledger WHERE user_id=? ORDER BY created_at DESC,seq DESC LIMIT 200', id),
       this.db.all<ExportEvent>('SELECT id,row_count,created_at FROM exports WHERE user_id=? ORDER BY created_at DESC LIMIT 100', id),
     ]);

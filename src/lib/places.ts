@@ -54,3 +54,21 @@ export const countryLabel = (code: string) => shortNames[code] ?? new Intl.Displ
 // (السودان vs جنوب السودان). Empty when unknown.
 export const countryFromText = (text: string) => countryNames().get(norm(text)) || '';
 export const englishName = (code: string) => new Intl.DisplayNames(['en'], { type: 'region' }).of(code) ?? code;
+
+// Countries matching what the member is typing: any word of the Arabic or English name or a short form, with or without «ال»;
+// the Gulf first, then by name. Built once, lazily (the browser computes it from Intl).
+let catalog: { code: string; words: string[] }[] | undefined;
+const bare = (s: string) => norm(s).replace(/^ال/, '');
+export function countrySuggestions(text: string, limit = 6): string[] {
+  const q = bare(text);
+  if (!q) return [];
+  if (!catalog) {
+    const words = new Map<string, Set<string>>();
+    for (const [name, code] of countryNames()) if (/^[a-z ]+$|[؀-ۿ]/.test(name)) words.set(code, new Set([...(words.get(code) ?? []), name]));
+    catalog = [...words].map(([code, names]) => ({ code, words: [...names, countryLabel(code)].flatMap(n => [norm(n), ...norm(n).split(' ')]).map(w => w.replace(/^ال/, '')) }));
+  }
+  const gulfFirst = ['SA', 'AE', 'QA', 'KW', 'BH', 'OM'];
+  return catalog.filter(c => c.words.some(w => w.startsWith(q)))
+    .sort((a, b) => (gulfFirst.indexOf(b.code) >= 0 ? 1 : 0) - (gulfFirst.indexOf(a.code) >= 0 ? 1 : 0) || gulfFirst.indexOf(a.code) - gulfFirst.indexOf(b.code) || countryLabel(a.code).localeCompare(countryLabel(b.code), 'ar'))
+    .slice(0, limit).map(c => c.code);
+}

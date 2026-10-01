@@ -228,18 +228,19 @@ test('a stale submit after earlier deliveries closes the search with what arrive
 });
 
 // Members pay only for delivered emails; the provider is paid for every person fetched. A daily cap keeps one member from
-// spending the provider account on searches that deliver little (owner's decision 2026-09-30: 1,000 people a day).
-test('a member\'s provider work is capped at 1,000 people a day: new searches are refused, a running one stops', async () => {
+// spending the provider account on searches that deliver little (owner's 1,000 of 2026-09-30, 2,500 since the full-count rule).
+test('a member\'s provider work is capped at 2,500 people a day: new searches are refused, a running one stops', async () => {
   const m = mock({ pages: [{ leads: Array.from({ length: 25 }, (_, i) => lead('p' + i)), token: 't1' }, { leads: Array.from({ length: 25 }, (_, i) => lead('q' + i)) }] });
   const { store, user } = await setup(50);
   try {
-    const earlier = await live(store, m.client).start(user.id, input(1)); // earlier today: 990 people fetched
-    await store.db.run('UPDATE provider_runs SET fetched=990 WHERE search_id=?', earlier.id);
+    const earlier = await live(store, m.client).start(user.id, input(1)); // earlier today: 2,490 people fetched
+    await store.db.run('UPDATE provider_runs SET fetched=2490 WHERE search_id=?', earlier.id);
     await store.db.run("UPDATE searches SET status='completed' WHERE id=?", earlier.id); await store.db.run('DELETE FROM reservations');
     const before = m.count('find-people'), s = await live(store, m.client).start(user.id, input(20));
     assert.equal(m.count('find-people'), before + 1, 'one page reaches the cap, none past it');
     assert.equal(s.status, 'awaiting_provider', 'the people picked before the cap are still searched');
     await assert.rejects(live(store, m.client).start(user.id, input(1)), (e: Error) => /حد البحث اليومي/.test(e.message));
+    assert.equal(m.count('find-companies'), 0, 'the daily cap never falls back to the companies');
   } finally { await store.close(); }
 });
 

@@ -166,7 +166,7 @@ export class LiveSearch {
       await this.patch(id, { phase: 'submitting', people: JSON.stringify(batch) });
       if ((await this.store.getSearch(userId, id)).status !== 'awaiting_provider' || (await this.run(id))?.phase !== 'submitting') { await this.release(userId, queryKey, batch); return this.view(userId, id); }
       sent = true;
-      const file = await this.client.submit(batch, `clowzy-${id}-${run.submitted}`);
+      const file = await this.client.submit(batch, `clowzy-${id}-${run.people_checked + run.submitted}`); // unique across the fallback's reset
       try {
         await this.store.db.run("UPDATE provider_runs SET phase='waiting',file=?,submitted=submitted+?,submitted_at=?,message='',updated_at=? WHERE search_id=?", file, batch.length, Date.now(), Date.now(), id);
       } catch (e) { console.error('Paid Icypeas batch not saved; reconcile by hand:', { search: id, file }); throw e; }
@@ -175,7 +175,8 @@ export class LiveSearch {
       const error = e instanceof IcypeasError ? e : sent ? new IcypeasError('تعذّر حفظ نتيجة الطلب. لن نعيد الإرسال تلقائيًا.', 502, true)
         : new IcypeasError('تعذّر إكمال البحث الآن. حاول مجددًا بعد قليل.', 503);
       if (!error.uncertain) await this.release(userId, queryKey, batch); // nothing reached the provider: offered again first
-      if ((await this.store.getSearch(userId, id)).delivered > 0) { await this.store.alert(userId, id, error.message); return this.finish(userId, id, error.message); }
+      // With emails delivered, or in the companies fallback (the people part ended normally), the search closes with what came.
+      if ((await this.store.getSearch(userId, id)).delivered > 0 || (await this.run(id))?.mode) { await this.store.alert(userId, id, error.message); return this.finish(userId, id, error.message); }
       await this.stop(userId, id, error.message, error.uncertain);
       return this.view(userId, id);
     }
@@ -213,7 +214,7 @@ export class LiveSearch {
       if (stale && run.phase === 'delivering') await this.store.db.run("UPDATE provider_runs SET phase='waiting',updated_at=? WHERE search_id=? AND phase='delivering' AND updated_at=?", Date.now(), id, run.updated_at);
       else if (stale && run.phase === 'submitting') { // may have reached the provider: never resent
         if (!await this.store.db.run("UPDATE provider_runs SET phase='finished',updated_at=? WHERE search_id=? AND phase='submitting' AND updated_at=?", Date.now(), id, run.updated_at)) return this.view(userId, id); // another poll handles it
-        console.warn('Icypeas submit interrupted; check the provider for this batch:', { search: id, batch: `clowzy-${id}-${run.submitted}` });
+        console.warn('Icypeas submit interrupted; check the provider for this batch:', { search: id, batch: `clowzy-${id}-${run.people_checked + run.submitted}` });
         if (search.delivered > 0) { await this.store.alert(userId, id, 'توقف إرسال دفعة قبل تأكيده؛ راجع حساب المزوّد.'); return this.finish(userId, id, 'توقف إرسال الدفعة الأخيرة قبل تأكيده. حُسب فقط ما وصل.'); }
         await this.stop(userId, id, 'توقف إرسال الطلب قبل تأكيده.', true); // the page adds that nothing was charged
       }

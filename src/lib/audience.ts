@@ -1,4 +1,4 @@
-import { type Resolved, type SearchInput, sectors, titles, withCountries } from './contracts';
+import { type FieldName, fields, type Resolved, type SearchInput, type Specialty, titles, withCountries } from './contracts';
 import { resolvedSchema } from './schemas';
 import { INDUSTRIES } from './industries';
 import { norm } from './places';
@@ -6,45 +6,60 @@ import { AppError, type Store } from './store';
 import { type AiMapper, openRouter } from './ai';
 
 // Listed sectors -> exact Icypeas industry names (checked against INDUSTRIES by tests/audience.test.ts).
-export const SECTOR_INDUSTRIES: Record<(typeof sectors)[number], string[]> = {
-  'التقنية والبرمجيات': ['Software Development', 'IT Services and IT Consulting', 'Information Technology & Services', 'Technology, Information and Internet', 'IT System Custom Software Development'],
-  'العقارات': ['Real Estate', 'Real Estate Agents and Brokers', 'Commercial Real Estate', 'Leasing Residential Real Estate', 'Leasing Non-residential Real Estate'],
+export const SECTOR_INDUSTRIES: Record<Specialty, string[]> = {
   'الصحة والعيادات': ['Hospitals and Health Care', 'Medical Practices', 'Hospitals', 'Outpatient Care Centers', 'Physicians'],
   'عيادات الأسنان': ['Dentists'],
-  'التجارة الإلكترونية': ['Online and Mail Order Retail', 'Internet Marketplace Platforms'],
-  'التجزئة والمتاجر': ['Retail', 'Retail Groceries', 'Retail Luxury Goods and Jewelry', 'Retail Office Supplies and Gifts', 'Retail Appliances, Electrical, and Electronic Equipment'],
-  'المطاعم والمقاهي': ['Restaurants', 'Food and Beverage Services', 'Caterers'],
-  'الأغذية والمشروبات': ['Food and Beverage Manufacturing', 'Food & Beverages', 'Food Production', 'Wholesale Food and Beverage', 'Food and Beverage Retail'],
+  'المستشفيات': ['Hospitals', 'Hospitals and Health Care'],
+  'المختبرات الطبية': ['Medical and Diagnostic Laboratories'],
+  'العيون والبصريات': ['Optometrists'],
+  'الصحة النفسية': ['Mental Health Care'],
+  'الصيدليات والأدوية': ['Retail Pharmacies', 'Pharmaceutical Manufacturing', 'Wholesale Drugs and Sundries'],
+  'الأجهزة الطبية': ['Medical Device', 'Medical Equipment Manufacturing'],
+  'الطب البيطري': ['Veterinary', 'Veterinary Services'],
+  'اللياقة والصحة العامة': ['Health, Wellness & Fitness', 'Wellness and Fitness Services'],
+  'التقنية والبرمجيات': ['Software Development', 'IT Services and IT Consulting', 'Information Technology & Services', 'Technology, Information and Internet', 'IT System Custom Software Development'],
+  'الاتصالات': ['Telecommunications', 'Telecommunications Carriers', 'Wireless Services'],
+  'العقارات': ['Real Estate', 'Real Estate Agents and Brokers', 'Commercial Real Estate', 'Leasing Residential Real Estate', 'Leasing Non-residential Real Estate'],
   'البناء والمقاولات': ['Construction', 'Building Construction', 'Civil Engineering', 'Specialty Trade Contractors', 'Residential Building Construction', 'Nonresidential Building Construction'],
   'الهندسة والعمارة': ['Engineering Services', 'Architecture and Planning', 'Mechanical Or Industrial Engineering'],
+  'الأثاث والديكور': ['Furniture', 'Interior Design', 'Furniture and Home Furnishings Manufacturing', 'Retail Furniture and Home Furnishings'],
+  'التجارة الإلكترونية': ['Online and Mail Order Retail', 'Internet Marketplace Platforms'],
+  'التجزئة والمتاجر': ['Retail', 'Retail Groceries', 'Retail Luxury Goods and Jewelry', 'Retail Office Supplies and Gifts', 'Retail Appliances, Electrical, and Electronic Equipment'],
+  'الجملة والاستيراد والتصدير': ['Wholesale', 'Import & Export', 'Wholesale Import and Export', 'International Trade and Development'],
+  'الأزياء والموضة': ['Apparel & Fashion', 'Retail Apparel and Fashion', 'Apparel Manufacturing', 'Fashion Accessories Manufacturing'],
+  'التجميل والعناية الشخصية': ['Cosmetics', 'Personal Care Services', 'Personal Care Product Manufacturing', 'Retail Health and Personal Care Products'],
+  'السيارات': ['Automotive', 'Retail Motor Vehicles', 'Vehicle Repair and Maintenance', 'Motor Vehicle Parts Manufacturing'],
+  'المطاعم والمقاهي': ['Restaurants', 'Food and Beverage Services', 'Caterers'],
+  'الأغذية والمشروبات': ['Food and Beverage Manufacturing', 'Food & Beverages', 'Food Production', 'Wholesale Food and Beverage', 'Food and Beverage Retail'],
+  'السياحة والضيافة': ['Hospitality', 'Travel Arrangements', 'Leisure, Travel & Tourism', 'Hotels and Motels'],
+  'الفعاليات والمعارض': ['Events Services'],
   'التسويق والإعلان': ['Marketing Services', 'Advertising Services', 'Public Relations and Communications Services'],
   'الإعلام والإنتاج': ['Media Production', 'Broadcast Media Production and Distribution', 'Online Audio and Video Media', 'Movies, Videos, and Sound'],
   'التصميم والجرافيك': ['Design Services', 'Graphic Design', 'Design'],
-  'التعليم والتدريب': ['Education', 'Professional Training and Coaching', 'Education Management', 'E-Learning Providers', 'Primary and Secondary Education', 'Higher Education'],
-  'السياحة والضيافة': ['Hospitality', 'Travel Arrangements', 'Leisure, Travel & Tourism', 'Hotels and Motels'],
-  'الفعاليات والمعارض': ['Events Services'],
-  'الخدمات المهنية': ['Professional Services', 'Business Consulting and Services'],
-  'المحاماة والخدمات القانونية': ['Law Practice', 'Legal Services'],
   'المحاسبة والخدمات المالية': ['Accounting', 'Financial Services'],
   'البنوك والاستثمار': ['Banking', 'Investment Management', 'Investment Banking', 'Venture Capital and Private Equity Principals', 'Capital Markets'],
   'التأمين': ['Insurance', 'Insurance Agencies and Brokerages', 'Insurance Carriers'],
-  'السيارات': ['Automotive', 'Retail Motor Vehicles', 'Vehicle Repair and Maintenance', 'Motor Vehicle Parts Manufacturing'],
-  'النقل والخدمات اللوجستية': ['Transportation, Logistics, Supply Chain and Storage', 'Truck Transportation', 'Freight and Package Transportation', 'Warehousing and Storage'],
-  'الأزياء والموضة': ['Apparel & Fashion', 'Retail Apparel and Fashion', 'Apparel Manufacturing', 'Fashion Accessories Manufacturing'],
-  'التجميل والعناية الشخصية': ['Cosmetics', 'Personal Care Services', 'Personal Care Product Manufacturing', 'Retail Health and Personal Care Products'],
-  'اللياقة والصحة العامة': ['Health, Wellness & Fitness', 'Wellness and Fitness Services'],
-  'الصيدليات والأدوية': ['Retail Pharmacies', 'Pharmaceutical Manufacturing', 'Wholesale Drugs and Sundries'],
-  'النفط والغاز والطاقة': ['Oil and Gas', 'Oil, Gas, and Mining', 'Oil Extraction', 'Renewable Energy Power Generation', 'Utilities', 'Electric Power Generation'],
-  'الاتصالات': ['Telecommunications', 'Telecommunications Carriers', 'Wireless Services'],
+  'الخدمات المهنية': ['Professional Services', 'Business Consulting and Services'],
+  'المحاماة والخدمات القانونية': ['Law Practice', 'Legal Services'],
   'الموارد البشرية والتوظيف': ['Human Resources Services', 'Staffing and Recruiting', 'Executive Search Services'],
-  'الأمن والحماية': ['Security and Investigations', 'Security Guards and Patrol Services', 'Security Systems Services'],
-  'الأثاث والديكور': ['Furniture', 'Interior Design', 'Furniture and Home Furnishings Manufacturing', 'Retail Furniture and Home Furnishings'],
-  'الزراعة': ['Agriculture', 'Farming'],
-  'الجملة والاستيراد والتصدير': ['Wholesale', 'Import & Export', 'Wholesale Import and Export', 'International Trade and Development'],
+  'المدارس': ['Primary and Secondary Education'],
+  'الجامعات والكليات': ['Higher Education'],
+  'مراكز التدريب': ['Professional Training and Coaching', 'Technical and Vocational Training'],
+  'معاهد اللغات': ['Language Schools'],
+  'التعليم الإلكتروني': ['E-Learning Providers', 'E-learning'],
   'الصناعة': ['Manufacturing', 'Industrial Machinery Manufacturing'],
-  'الجمعيات والمنظمات غير الربحية': ['Non-profit Organizations', 'Non-profit Organization Management', 'Civic and Social Organizations'],
+  'النفط والغاز والطاقة': ['Oil and Gas', 'Oil, Gas, and Mining', 'Oil Extraction', 'Renewable Energy Power Generation', 'Utilities', 'Electric Power Generation'],
+  'الزراعة': ['Agriculture', 'Farming'],
+  'النقل والخدمات اللوجستية': ['Transportation, Logistics, Supply Chain and Storage', 'Truck Transportation', 'Freight and Package Transportation', 'Warehousing and Storage'],
+  'الأمن والحماية': ['Security and Investigations', 'Security Guards and Patrol Services', 'Security Systems Services'],
   'الجهات الحكومية': ['Government Administration'],
+  'الجمعيات والمنظمات غير الربحية': ['Non-profit Organizations', 'Non-profit Organization Management', 'Civic and Social Organizations'],
 };
+// A whole field searches all its specialties' provider names; «التعليم والتدريب» adds the general education ones (it was a
+// single sector before the fields, and old searches still name it).
+const extra: Partial<Record<FieldName, string[]>> = { 'التعليم والتدريب': ['Education', 'Education Management'] };
+export const fieldIndustries = (field: FieldName) => [...new Set([...(fields[field] as readonly Specialty[]).flatMap(s => SECTOR_INDUSTRIES[s]), ...(extra[field] ?? [])])];
+const listed = (sector: string) => Object.hasOwn(SECTOR_INDUSTRIES, sector) ? SECTOR_INDUSTRIES[sector as Specialty] : Object.hasOwn(fields, sector) ? fieldIndustries(sector as FieldName) : undefined;
 // Listed titles -> what profiles say, Arabic and English together (Arabic alone finds a fraction: 896 vs 3,311 in Saudi Arabia).
 export const TITLE_VARIANTS: Record<(typeof titles)[number], string[]> = {
   'المالك أو المؤسس': ['Owner', 'Founder', 'Co-Founder', 'مالك', 'مؤسس'],
@@ -87,8 +102,9 @@ const aiDown = (kind: string, e: unknown) => {
 type AudienceForm = Pick<SearchInput, 'sector' | 'countries' | 'city' | 'title' | 'size'> & Partial<Pick<SearchInput, 'mode'>>;
 export async function resolveAudience<T extends AudienceForm>(store: Store, input: T, ai: AiMapper = openRouter): Promise<T & Pick<Resolved, 'industries' | 'industryLabels' | 'titles'>> {
   let industries: string[], industryLabels: string[];
-  if (Object.hasOwn(SECTOR_INDUSTRIES, input.sector)) {
-    industries = SECTOR_INDUSTRIES[input.sector as keyof typeof SECTOR_INDUSTRIES]; industryLabels = [input.sector];
+  const table = listed(input.sector);
+  if (table) {
+    industries = table; industryLabels = [input.sector];
   } else {
     const pick = (list: { name: string; ar: string }[]) => list.filter((x, i) => known.has(x.name) && list.findIndex(y => y.name === x.name) === i).slice(0, 5);
     const picked = pick(await cached(store, 'sector', input.sector, () => ai.sector(input.sector)).catch(e => { throw aiDown('sector', e); }));
@@ -112,7 +128,7 @@ export function audienceOf(filters: string): Resolved {
   const sector = raw.sector || '', title = (raw.title || '').trim();
   return resolvedSchema.parse({
     ...raw,
-    industries: raw.industries ?? SECTOR_INDUSTRIES[sector as keyof typeof SECTOR_INDUSTRIES] ?? [],
+    industries: raw.industries ?? listed(sector) ?? [],
     industryLabels: raw.industryLabels ?? [sector],
     titles: raw.titles ?? (Object.hasOwn(TITLE_VARIANTS, title) ? TITLE_VARIANTS[title as keyof typeof TITLE_VARIANTS] : title ? [title] : []),
   });
