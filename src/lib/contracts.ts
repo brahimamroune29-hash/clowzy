@@ -24,7 +24,10 @@ export function withCountries(raw: unknown) {
 export const SUBMIT_MULTIPLE = 10; // approved 2026-09-30 (was 5): submit at most 10x the requested emails for email discovery
 // Emails a search can expect, from pooled live very-sure rates (A/B 2026-09-28 + production searches 2026-09-30): people matched by
 // country code 8 of 45 (18%), name-only matches 2 of 25 (8%). A search tries at most SUBMIT_MULTIPLE x the count, strict first.
-export function expectedEmails(strict: number, total: number, count: number) {
+export function expectedEmails(strict: number, total: number, count: number, mode = 'people') {
+  // Companies: at most 20 tried per requested email (fetchCap); 8 of 25 Gulf real-estate companies showed an email on their own
+  // site (2026-10-01), and the provider verifies most of those: about 3 in 10.
+  if (mode === 'companies') return Math.floor(Math.min(total, count * 20) * 0.3 + 1e-9);
   const first = Math.min(strict, count * SUBMIT_MULTIPLE), rest = Math.min(total - strict, count * SUBMIT_MULTIPLE - first);
   return Math.floor(first * 0.18 + rest * 0.08 + 1e-9); // rounded down: under one expected email reads as "may find none"
 }
@@ -32,7 +35,7 @@ export type Role = 'admin' | 'member';
 export type User = { id: string; name: string; email: string; role: Role; active: number; balance: number; created_at: string; terms_accepted_at: string | null };
 // How sure the provider is that the email exists: VERIFIED <1% expected bounce, PROBABLE <5% (Icypeas certainties).
 export const emailTrust = (status: string) => status === 'PROBABLE' ? 'مؤكد ٩٥٪' : status === 'VERIFIED' ? 'مؤكد ٩٩٪' : status;
-export type Contact = { id: string; user_id: string; search_id: string; name: string; email: string; company: string; title: string; sector: string; country: string; city: string; website: string; size: string; source: string; email_status: string; created_at: string };
+export type Contact = { kind?: 'person' | 'company'; id: string; user_id: string; search_id: string; name: string; email: string; company: string; title: string; sector: string; country: string; city: string; website: string; size: string; source: string; email_status: string; created_at: string };
 export type Search = { id: string; user_id: string; filters: string; title: string; requested: number; delivered: number; duplicates: number; status: string; created_at: string; message?: string; checked?: number };
 export type Ledger = { id: string; amount: number; kind: string; reason: string; created_at: string; balance_after: number };
 export type ExportEvent = { id: string; row_count: number; created_at: string };

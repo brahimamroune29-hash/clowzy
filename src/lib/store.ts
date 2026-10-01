@@ -205,7 +205,7 @@ export class Store {
       if (count(await this.db.get<{ n: number }>('SELECT count(*) n FROM reservations')) >= 1000) throw new AppError('قائمة البحث ممتلئة مؤقتًا. حاول لاحقًا.', 503);
       const sid = randomUUID();
       await this.db.run('INSERT INTO searches(id,user_id,request_id,filters,title,requested,status,created_at) VALUES(?,?,?,?,?,?,?,?)',
-        sid, id, input.requestId, JSON.stringify(input), input.sector + ' · ' + (input.city || placesTitle(input.countries)), input.count, 'queued', now());
+        sid, id, input.requestId, JSON.stringify(input), (input.mode === 'companies' ? 'شركات · ' : '') + input.sector + ' · ' + (input.city || placesTitle(input.countries)), input.count, 'queued', now());
       await this.db.run('INSERT INTO reservations(search_id,user_id,amount) VALUES(?,?,?)', sid, id, input.count);
       return this.getSearch(id, sid);
     });
@@ -229,8 +229,8 @@ export class Store {
       seen.add(email);
       if (current + delivered >= search.requested) break;
       const cid = randomUUID(), c: Candidate = { ...candidate, email };
-      await this.db.run('INSERT INTO contacts(id,user_id,search_id,name,email,company,title,sector,country,city,website,size,source,email_status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        cid, search.user_id, search.id, c.name, c.email, c.company, c.title, c.sector, c.country, c.city, c.website, c.size, c.source, c.email_status, now());
+      await this.db.run('INSERT INTO contacts(id,user_id,search_id,kind,name,email,company,title,sector,country,city,website,size,source,email_status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        cid, search.user_id, search.id, c.kind ?? 'person', c.name, c.email, c.company, c.title, c.sector, c.country, c.city, c.website, c.size, c.source, c.email_status, now());
       await this.credit(search.user_id, -1, 'debit', 'بريد جديد من ' + sector, 'delivery:' + cid);
       delivered++;
     }

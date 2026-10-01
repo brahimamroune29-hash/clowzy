@@ -50,6 +50,12 @@ commit;
 select has_table_privilege('clowzy_app', 'clowzy.rate_hits', 'SELECT,INSERT,UPDATE,DELETE') and has_table_privilege('clowzy_app', 'clowzy.ai_cache', 'SELECT,INSERT'); -- true قبل النشر
 ```
 
+- ترحيل 1 أكتوبر 2026 (بحث الشركات) قبل نشر الكود الذي يكتب العمود؛ الصفوف القديمة تأخذ 'person':
+
+```sql
+alter table clowzy.contacts add column if not exists kind text not null default 'person';
+```
+
 - فحص التزامن الحقيقي على القاعدة (لا تقدر عليه قاعدة الاختبار داخل العملية): DATABASE_URL=... npx tsx scripts/check-concurrency.ts. ينشئ بيانات مؤقتة ويحذفها بصلاحيات التطبيق وحدها.
 
 ## النسخ الاحتياطي والمراقبة (GitHub Actions، المستودع الخاص brahimamroune29-hash/clowzy)

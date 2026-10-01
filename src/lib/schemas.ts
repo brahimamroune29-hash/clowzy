@@ -4,6 +4,7 @@ import { isCountry } from './places';
 // Request and storage validation: server-side only, so the validation library stays out of the browser bundle.
 const text = (max: number) => z.string().trim().max(max);
 export const searchSchema = z.object({
+  mode: z.enum(['people', 'companies']).default('people'), // people inside companies, or the companies' own emails
   sector: text(60).min(2), // a listed sector, or the member's own words
   countries: z.array(z.string().refine(isCountry)).min(1).max(10),
   city: text(60).default(''),

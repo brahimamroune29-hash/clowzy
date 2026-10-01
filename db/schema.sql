@@ -27,6 +27,7 @@ create table clowzy.contacts (
   name text not null, email text not null, company text not null, title text not null, sector text not null,
   country text not null, city text not null, website text not null, size text not null,
   source text not null, email_status text not null, created_at text not null,
+  kind text not null default 'person', -- 'company': a company's own email (companies search)
   unique (user_id, email)
 );
 create table clowzy.ledger (

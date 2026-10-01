@@ -30,16 +30,17 @@ export function SearchProgress({search,reload}:{search:Search;reload:()=>Promise
     return()=>{active=false;clearTimeout(timer);};
   },[search.id,search.delivered,reload,retry]);
   const {checked,delivered}=progress;
+  const companies=(JSON.parse(search.filters) as {mode?:string}).mode==='companies';
   return <section className="searching">
     <div className="radar" aria-hidden="true"><span className="ring"/><span className="ring"/><span className="ring"/><span className="core"><MagnifyingGlass size={26} weight="light"/></span></div>
     <div className="searching-body">
       <h3>نبحث عن عملائك الآن</h3>
       <ol className="search-steps">
-        <li className={checked?'done':'active'}>نبحث عن أشخاص يطابقون معاييرك</li>
-        <li className={checked?'active':''}>نتحقق من بريد كل شخص</li>
+        <li className={checked?'done':'active'}>{companies?'نبحث عن شركات تطابق معاييرك ونقرأ مواقعها':'نبحث عن أشخاص يطابقون معاييرك'}</li>
+        <li className={checked?'active':''}>{companies?'نتحقق من بريد كل شركة':'نتحقق من بريد كل شخص'}</li>
         <li className={delivered?'done':''}>نحفظ البريد الموثّق في حسابك</li>
       </ol>
-      <div role="status">{checked>0&&<p className="search-live">نتحقق من بريد {checked} من الأشخاص المطابقين · وجدنا {delivered} من {search.requested} حتى الآن</p>}<p className="search-message">{message}</p></div>
+      <div role="status">{checked>0&&<p className="search-live">نتحقق من بريد {checked} من {companies?'الشركات المطابقة':'الأشخاص المطابقين'} · وجدنا {delivered} من {search.requested} حتى الآن</p>}<p className="search-message">{message}</p></div>
       <div className="searching-foot"><Button variant="ghost" onClick={()=>setRetry(n=>n+1)}>متابعة الحالة</Button><small>لن نعيد إرسال طلب البحث. كريدت المنصة يُخصم عند حفظ بريد جديد فقط.</small></div>
     </div>
   </section>;

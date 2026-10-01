@@ -84,7 +84,7 @@ const aiDown = (kind: string, e: unknown) => {
 };
 
 // Form -> the audience a search runs with. Listed options map from the tables; typed ones go through the AI, checked.
-type AudienceForm = Pick<SearchInput, 'sector' | 'countries' | 'city' | 'title' | 'size'>;
+type AudienceForm = Pick<SearchInput, 'sector' | 'countries' | 'city' | 'title' | 'size'> & Partial<Pick<SearchInput, 'mode'>>;
 export async function resolveAudience<T extends AudienceForm>(store: Store, input: T, ai: AiMapper = openRouter): Promise<T & Pick<Resolved, 'industries' | 'industryLabels' | 'titles'>> {
   let industries: string[], industryLabels: string[];
   if (Object.hasOwn(SECTOR_INDUSTRIES, input.sector)) {
@@ -95,7 +95,7 @@ export async function resolveAudience<T extends AudienceForm>(store: Store, inpu
     if (!picked.length) throw new AppError(`لم نجد مجالًا مهنيًا يطابق «${input.sector}». جرّب كلمات أوضح أو اختر من القائمة.`, 400);
     industries = picked.map(x => x.name); industryLabels = picked.map(x => arabic.test(x.ar) ? x.ar.trim().slice(0, 80) : input.sector); // members read Arabic only
   }
-  const title = input.title.trim();
+  const title = input.mode === 'companies' ? '' : input.title.trim(); // a company has no job title: never sent to the AI
   let titles: string[] = [];
   if (Object.hasOwn(TITLE_VARIANTS, title)) titles = TITLE_VARIANTS[title as keyof typeof TITLE_VARIANTS];
   else if (arabic.test(title)) { // the Arabic words always search; the AI adds the English forms when it answers

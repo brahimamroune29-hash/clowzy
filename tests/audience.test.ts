@@ -9,7 +9,7 @@ import { countryFromText, isCountry } from '../src/lib/places';
 import { AppError } from '../src/lib/store';
 import { testStore } from './pg';
 
-const form = (o: Partial<SearchInput> = {}): SearchInput => ({ sector: 'التقنية والبرمجيات', countries: ['SA'], city: '', title: '', size: 'all', count: 5, confirmed: true, requestId: randomUUID(), ...o });
+const form = (o: Partial<SearchInput> = {}): SearchInput => ({ mode: 'people', sector: 'التقنية والبرمجيات', countries: ['SA'], city: '', title: '', size: 'all', count: 5, confirmed: true, requestId: randomUUID(), ...o });
 const noAi: AiMapper = { sector: async () => { throw new Error('AI must not be called for a listed option'); }, title: async () => { throw new Error('AI must not be called'); } };
 
 test('every listed sector and title maps to exact Icypeas names; the lists the member sees match the server tables', () => {

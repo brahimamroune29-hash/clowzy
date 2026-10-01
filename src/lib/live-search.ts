@@ -2,7 +2,7 @@ import type { Resolved, Search } from './contracts';
 import { audienceOf } from './audience';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { DAILY_PEOPLE, dailyLimit, Store } from './store';
-import { BATCH, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadName, peopleQuery, personKey, STAGES, submitCap } from './icypeas';
+import { BATCH, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadName, personKey, queryOf, STAGES, submitCap } from './icypeas';
 
 type Run = { search_id: string; phase: string; people: string; file: string | null; scanned: number; fetched: number; submitted: number; submitted_at: number | null; message: string; updated_at: number; read_errors: number };
 type Slots = { read: number; bulk: number };
@@ -22,9 +22,13 @@ const STALE = 90000; // no request lives this long (maxDuration 60 s): a run unt
 // no paid submit after 25 s (a submit can take ~31 s: a 10.5 s connect timeout, then one 20 s retry). Past that the search
 // pauses with its picked people saved, and the next poll resumes it.
 const PAGES_PER_CALL = 3, COLLECT_MS = 20000, SUBMIT_MS = 25000;
+// A companies page also reads the sites (up to 10 s, icypeas.ts SCRAPE_MS): no new one after 8 s, so the worst page (provider
+// connect timeout and retry, ~31 s, then 10 s reading) still ends before 60 s.
+const COMPANIES_COLLECT_MS = 8000;
 // Batch sizing assumes an optimistic 30% find rate (measured ~20-23% on GCC samples, outputs/gulf-email-provider-research-2026-09-26.md):
 // smaller first batches mean fewer found-but-undelivered emails paid for; later batches top up within the submit cap.
-const EXPECTED_FIND_RATE = 0.3;
+// Companies: the batch holds emails already read from the sites, and the provider verifies most of them.
+const EXPECTED_FIND_RATE = { people: 0.3, companies: 0.8 };
 
 // Search = batches: take people from this member's cursor for these filters (leftovers, then next pages) -> submit
 // for email discovery -> read results -> deliver, repeated until the requested count, the submit cap, or no new people.
@@ -56,12 +60,14 @@ export class LiveSearch {
   }
   // Why a search ended short and what to do next, so an empty result never reads as a silent failure.
   private async shortfall(userId: string, search: Search, checked: number) {
-    const widen = 'لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو المسمى الوظيفي.';
-    if (!checked) return 'لا يوجد أشخاص جدد مطابقون لهذه المعايير حاليًا. ' + widen;
-    const cursor = await this.store.cursor(userId, cursorKey(audienceOf(search.filters)));
+    const input = audienceOf(search.filters), companies = input.mode === 'companies';
+    const widen = companies ? 'لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو أضف دولًا.' : 'لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو المسمى الوظيفي.';
+    if (!checked) return (companies ? 'لم نجد شركات جديدة مطابقة تعرض بريدها على موقعها حاليًا. ' : 'لا يوجد أشخاص جدد مطابقون لهذه المعايير حاليًا. ') + widen;
+    const cursor = await this.store.cursor(userId, cursorKey(input));
     const found = search.delivered + search.duplicates, dup = search.duplicates ? `، منها ${search.duplicates} مكرر مستبعد` : '';
-    return `بحثنا عن بريد ${checked} من الأشخاص المطابقين، ${found ? `ووجدنا بريدًا موثّقًا لـ ${found} منهم${dup}` : 'ولم نجد بريدًا موثّقًا لأيّ منهم'}. `
-      + (!cursor.stage && !cursor.token && cursor.leftovers === '[]' ? 'جرّبنا كل المطابقين المتاحين. ' + widen : 'أعد البحث بالمعايير نفسها لتجربة أشخاص آخرين، أو وسّعها لنتائج أكثر.');
+    return (companies ? `تحققنا من بريد ${checked} من الشركات المطابقة، ${found ? `وصحّ بريد ${found} منها${dup}` : 'ولم يصح أيّ منها'}. `
+      : `بحثنا عن بريد ${checked} من الأشخاص المطابقين، ${found ? `ووجدنا بريدًا موثّقًا لـ ${found} منهم${dup}` : 'ولم نجد بريدًا موثّقًا لأيّ منهم'}. `)
+      + (!cursor.stage && !cursor.token && cursor.leftovers === '[]' ? 'جرّبنا كل المطابقين المتاحين. ' + widen : `أعد البحث بالمعايير نفسها لتجربة ${companies ? 'شركات أخرى' : 'أشخاص آخرين'}، أو وسّعها لنتائج أكثر.`);
   }
   private async finish(userId: string, id: string, message = '') {
     await this.store.finishSearch(id);
@@ -84,8 +90,9 @@ export class LiveSearch {
     });
   }
   private async page(input: Resolved, token: string | null, stage: number) {
-    try { return await this.client.people(input, token, stage); }
-    catch (e) { if (token && e instanceof IcypeasError && e.rejected) return this.client.people(input, null, stage); throw e; } // only a refused (expired) token restarts the stage
+    const fetch = (t: string | null) => input.mode === 'companies' ? this.client.companies(input, t, stage) : this.client.people(input, t, stage);
+    try { return await fetch(token); }
+    catch (e) { if (token && e instanceof IcypeasError && e.rejected) return fetch(null); throw e; } // only a refused (expired) token restarts the stage
   }
   // People picked but never sent (a clean failure, an abandoned search): released, and put back at the front of the member's list.
   private async release(userId: string, queryKey: string, leads: Lead[]) {
@@ -98,7 +105,7 @@ export class LiveSearch {
     });
   }
   private async pause(userId: string, id: string, batch: Lead[]) {
-    await this.patch(id, { phase: 'paused', people: JSON.stringify(batch), message: 'نواصل البحث عن أشخاص مطابقين…' });
+    await this.patch(id, { phase: 'paused', people: JSON.stringify(batch), message: batch.some(l => l.email) || audienceOf((await this.store.getSearch(userId, id)).filters).mode === 'companies' ? 'نواصل قراءة مواقع الشركات المطابقة…' : 'نواصل البحث عن أشخاص مطابقين…' });
     return this.view(userId, id);
   }
   // Called only by the request that owns the 'searching' phase (start, the poll that delivered, or the poll that resumed it).
@@ -108,13 +115,13 @@ export class LiveSearch {
     try {
       const search = await this.store.getSearch(userId, id), run = (await this.run(id))!;
       batch = JSON.parse(run.people) as Lead[]; // picked (and claimed) by an earlier request of this search, not sent yet
-      const want = Math.min(BATCH, submitCap(search.requested) - run.submitted, Math.ceil((search.requested - search.delivered) / EXPECTED_FIND_RATE));
+      const want = Math.min(BATCH, submitCap(search.requested) - run.submitted, Math.ceil((search.requested - search.delivered) / EXPECTED_FIND_RATE[input.mode]));
       const cursor = await this.store.cursor(userId, queryKey);
       let pool = JSON.parse(cursor.leftovers) as Lead[], token = cursor.token, stage = cursor.stage, wrapped = false, scanned = run.scanned, fetched = run.fetched, pages = 0;
       while (want > 0 && batch.length < want) {
         if (!pool.length) {
           if (scanned >= fetchCap(search.requested) || wrapped) break;
-          if (pages >= PAGES_PER_CALL || this.elapsed() > COLLECT_MS) return this.pause(userId, id, batch);
+          if (pages >= PAGES_PER_CALL || this.elapsed() > (input.mode === 'companies' ? COMPANIES_COLLECT_MS : COLLECT_MS)) return this.pause(userId, id, batch);
           if (await this.store.dailyFetched(userId) >= DAILY_PEOPLE) { // the member's daily provider work: send who was picked, then stop
             if (batch.length) break;
             return this.finish(userId, id, 'حُسب فقط ما وصل. ' + dailyLimit);
@@ -159,7 +166,7 @@ export class LiveSearch {
     }
   }
   async start(userId: string, input: Resolved): Promise<Search> {
-    peopleQuery(input); // Validate filters before reserving credits or contacting the provider.
+    queryOf(input); // Validate filters before reserving credits or contacting the provider.
     // Close this member's abandoned or interrupted searches first, so they do not hold credits or pending slots.
     const stale = await this.store.db.all<{ search_id: string }>(`SELECT r.search_id FROM provider_runs r JOIN searches s ON s.id=r.search_id WHERE s.user_id=? AND s.status='awaiting_provider'
       AND ((r.phase='waiting' AND r.submitted_at<?) OR (r.phase<>'waiting' AND r.updated_at<?))`, userId, Date.now() - BATCH_DEADLINE, Date.now() - STALE);

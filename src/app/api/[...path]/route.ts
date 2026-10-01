@@ -112,7 +112,7 @@ async function handle(req: NextRequest, { params }: { params: Promise<{ path: st
       return json(await new LiveSearch(store).start(user.id,await resolveAudience(store,input)));
     }
     if (path === 'search/count') {
-      const input = searchSchema.pick({ sector:true, countries:true, city:true, title:true, size:true }).parse(withCountries(b));
+      const input = searchSchema.pick({ mode:true, sector:true, countries:true, city:true, title:true, size:true }).parse(withCountries(b));
       rateLimit('count:' + user.id, 60); // ponytail: in-memory, like the other limits; each call is 2 free provider requests, plus one paid AI call per new «أخرى» text (then cached)
       if (!providerInfo().configured) throw new AppError('مزوّد البيانات غير مهيأ على الخادم. تواصل مع مالك المنصة.',503);
       if (user.balance < 1) throw new AppError('رصيدك صفر. تواصل مع مالك المنصة لإضافة رصيد قبل البحث.'); // no paid AI mapping for a search that cannot run
