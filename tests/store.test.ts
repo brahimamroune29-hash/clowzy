@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { AppError, Store } from '../src/lib/store';
 import { contactsCsv,cell } from '../src/lib/csv';
-import { Candidate,Resolved } from '../src/lib/contracts';
+import { Candidate,Resolved,TERMS_VERSION,termsCurrent } from '../src/lib/contracts';
 import { searchSchema } from '../src/lib/schemas';
 import { audienceOf } from '../src/lib/audience';
 import { testStore } from './pg';
@@ -163,14 +163,38 @@ test('search contract requires confirmation and bounded integer count',()=>{
   assert.equal(searchSchema.safeParse({...input(),count:1.5}).success,false);
   assert.equal(searchSchema.safeParse(input()).success,true);
 });
-test('terms: a new account has not accepted; acceptance is recorded once',async()=>{
+test('terms: a new account has not accepted; acceptance is recorded once per version, and newer terms ask again',async()=>{
   const s=await testStore();
   try {
     const u=await s.addUser('Member','terms@example.com','secure-password-123');
-    assert.equal((await s.user(u.id)).terms_accepted_at,null);
+    assert.ok(TERMS_VERSION<=new Date().toISOString(),'a TERMS_VERSION in the future would refuse every acceptance until then');
+    assert.equal(termsCurrent(await s.user(u.id)),false);
     await s.acceptTerms(u.id);const first=(await s.user(u.id)).terms_accepted_at;
-    assert.ok(first);await s.acceptTerms(u.id);assert.equal((await s.user(u.id)).terms_accepted_at,first,'first acceptance time is kept');
+    assert.ok(termsCurrent(await s.user(u.id)));await s.acceptTerms(u.id);assert.equal((await s.user(u.id)).terms_accepted_at,first,'first acceptance time is kept');
+    await s.db.run('UPDATE users SET terms_accepted_at=? WHERE id=?','2026-09-28T10:00:00.000Z',u.id); // accepted the terms before TERMS_VERSION
+    assert.equal(termsCurrent(await s.user(u.id)),false,'the terms changed since');
+    await s.acceptTerms(u.id);assert.ok(termsCurrent(await s.user(u.id)));
   } finally {await s.close();}
+});
+test('owner recovery code: needs the current password, works once, and is replaced by a new one',async()=>{
+  const {store,admin,alice}=await setup();
+  try {
+    await assert.rejects(store.createRecoveryCode(admin.id,'wrong-password'));
+    await assert.rejects(store.createRecoveryCode(alice.id,'secure-password-123'),(e:AppError)=>e.status===403,'owner only');
+    const old=await store.createRecoveryCode(admin.id,'secure-password-123'),code=await store.createRecoveryCode(admin.id,'secure-password-123');
+    assert.match(code,/^[A-Z2-9]{4}(-[A-Z2-9]{4}){4}$/);
+    assert.equal((await store.overview(admin.id)).admin!.recovery,true);
+    await assert.rejects(store.recover('owner@example.com',old,'forgotten-password-1'),'a new code replaces the old one');
+    await assert.rejects(store.recover('alice@example.com',code,'forgotten-password-1'),'another account');
+    const before=await store.login('owner@example.com','secure-password-123');
+    const {token,code:next}=await store.recover(' Owner@Example.com ',code.toLowerCase().replaceAll('-',' '),'forgotten-password-1'); // typed loosely
+    assert.equal((await store.session(token)).id,admin.id);
+    await assert.rejects(store.session(before),'other sessions end');
+    await assert.rejects(store.login('owner@example.com','secure-password-123'));
+    await assert.rejects(store.recover('owner@example.com',code,'again-password-12'),'a used code is spent');
+    assert.notEqual(next,code);await store.recover('owner@example.com',next,'again-password-12');
+    await store.login('owner@example.com','again-password-12');
+  } finally {await store.close();}
 });
 test('owner snapshot, password change, profile and logout run on Postgres types',async()=>{
   const {store,admin,alice}=await setup();

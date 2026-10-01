@@ -24,7 +24,7 @@ export function SearchProgress({search,reload}:{search:Search;reload:()=>Promise
         const mark=(value.checked??0)+':'+value.delivered;
         if(mark!==seen){seen=mark;began=Date.now();}
         if(value.delivered>search.delivered)await reload(); // saved emails show in the table and balance at once; new props restart this loop
-      }catch(e){if(active)setMessage((e as Error).message);}
+      }catch(e){if((e as {status?:number}).status===403)await reload();if(active)setMessage((e as Error).message);} // 403 for newer terms: the reload shows them (and unmounts this)
       if(active && Date.now()-began<20*60*1000)timer=setTimeout(poll,6000);
       else if(active)setMessage(t('ما زال الطلب محفوظًا. اضغط «متابعة» لتحديثه، أو عد إليه من سجل البحث.','The request is still saved. Press “Refresh”, or come back from the history.'));
     }

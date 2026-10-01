@@ -23,6 +23,8 @@ const sentences: Record<string, string> = {
   'ألغِ عمليات البحث الجارية أولًا قبل تعيين رصيد أقل من المحجوز.': 'Cancel the running searches before setting a balance below what they hold.',
   'كلمة المرور الحالية غير صحيحة.': 'The current password is wrong.',
   'رابط الاستعادة غير صالح أو انتهت مدته.': 'This recovery link is invalid or expired.',
+  'البريد أو رمز الاسترجاع غير صحيح.': 'Wrong email or recovery code.',
+  'تعذّر قراءة رصيد مزوّد البيانات. راجع بريد حساب المزوّد على الخادم.': 'Could not read the data provider’s credits. Check the provider account email on the server.',
   'قاعدة البيانات غير مهيأة على الخادم. تواصل مع مالك المنصة.': 'The database is not set up on the server. Contact the platform owner.',
   'جارٍ البحث والتحقق من الإيميلات.': 'Searching and verifying emails.',
   'لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو المسمى الوظيفي.': 'For more results, widen the search: remove the company size, the city or the job title.',

@@ -47,6 +47,11 @@ export function expectedEmails(strict: number, total: number, count: number, mod
 }
 export type Role = 'admin' | 'member';
 export type User = { id: string; name: string; email: string; role: Role; active: number; balance: number; created_at: string; terms_accepted_at: string | null };
+// When the terms last changed in a way members must accept again (ISO UTC, same format as terms_accepted_at). Raise it with
+// the text in terms.tsx: every member who accepted before it sees the terms again before anything else (route.ts).
+// Never later than the deploy: acceptances would count as old until then (a test checks it is in the past).
+export const TERMS_VERSION = '2026-10-01T13:05:00.000Z';
+export const termsCurrent = (user: Pick<User, 'terms_accepted_at'>) => !!user.terms_accepted_at && user.terms_accepted_at >= TERMS_VERSION;
 // How sure the provider is that the email exists: VERIFIED <1% expected bounce, PROBABLE <5% (Icypeas certainties).
 export const emailTrust = (status: string, en = false) => status === 'PROBABLE' ? (en ? 'Verified 95%' : 'مؤكد ٩٥٪') : status === 'VERIFIED' ? (en ? 'Verified 99%' : 'مؤكد ٩٩٪') : status;
 export type Contact = { kind?: 'person' | 'company'; id: string; user_id: string; search_id: string; name: string; email: string; company: string; title: string; sector: string; country: string; city: string; website: string; size: string; source: string; email_status: string; created_at: string };
@@ -64,7 +69,7 @@ export type Snapshot = {
   provider?: { configured: boolean; maxCount: number }; // no provider name: members never see it
   user: User; contacts: Contact[]; searches: Search[]; ledger: Ledger[]; exports: ExportEvent[];
   summary?: OverviewStats;
-  admin?: { users: AdminUser[]; invitations: Invitation[]; audit: AuditEvent[]; totals: { delivered: number; searches: number; exports: number; used: number; members?: number; activeMembers?: number } };
+  admin?: { users: AdminUser[]; invitations: Invitation[]; audit: AuditEvent[]; recovery?: boolean; totals: { delivered: number; searches: number; exports: number; used: number; members?: number; activeMembers?: number } };
 };
 export type Candidate = Omit<Contact, 'id' | 'user_id' | 'search_id' | 'created_at'>;
 

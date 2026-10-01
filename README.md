@@ -57,6 +57,8 @@ alter table clowzy.contacts add column if not exists kind text not null default 
 -- تكملة بحث الأشخاص الناقص بإيميلات الشركات نفسها:
 alter table clowzy.provider_runs add column if not exists mode text;
 alter table clowzy.provider_runs add column if not exists people_checked integer not null default 0;
+-- رمز استرجاع المالك:
+alter table clowzy.users add column if not exists recovery_hash text;
 ```
 
 - فحص التزامن الحقيقي على القاعدة (لا تقدر عليه قاعدة الاختبار داخل العملية): DATABASE_URL=... npx tsx scripts/check-concurrency.ts. ينشئ بيانات مؤقتة ويحذفها بصلاحيات التطبيق وحدها.
@@ -65,6 +67,7 @@ alter table clowzy.provider_runs add column if not exists people_checked integer
 
 - .github/workflows/backup.yml: كل ليلة 02:00 UTC نسخة من مخطط clowzy بدور قراءة فقط clowzy_backup (سر BACKUP_DATABASE_URL عبر مجمّع الجلسات، المنفذ 5432)، تُحفظ 30 يومًا ملفًا خاصًا في صفحة التشغيل. الاستعلام اليومي يمنع توقف مشروع Supabase المجاني. الاسترجاع: pg_restore --no-owner -d <قاعدة فارغة> clowzy.dump (جُرّب في 30 سبتمبر 2026: 15 جدولًا، الأعداد مطابقة).
 - .github/workflows/uptime.yml: كل ساعة يتحقق من الصفحة ومن وصول الخادم إلى القاعدة؛ الفشل يصل بريدًا لصاحب المستودع.
+- .github/workflows/provider-credits.yml: كل 6 ساعات يقرأ رصيد حساب Icypeas، ويفشل تحت 200 فيصل بريد لصاحب المستودع. يحتاج سر ICYPEAS_API_KEY في المستودع. لوحة المالك تعرض الرصيد نفسه (أحمر تحت 200). بريد الحساب ثابت في icypeas.ts وفي هذا الملف.
 
 ## النشر (Vercel)
 
@@ -76,6 +79,8 @@ alter table clowzy.provider_runs add column if not exists people_checked integer
 
 - حسابات بكلمات مرور مجزأة، جلسات محفوظة على الخادم، وملف تعريف ارتباط HttpOnly.
 - دعوات تنتهي بعد 48 ساعة وتقبل مرة واحدة، برصيد يحدده المالك، ورابط استعادة وصول مدته ساعة.
+- رمز استرجاع للمالك من الإعدادات (بعد كلمة المرور الحالية، يظهر مرة واحدة ويُحفظ مجزّأ). من «نسيت كلمة المرور؟» يدخل المالك بريده والرمز ويختار كلمة جديدة؛ تنتهي الجلسات الأخرى ويظهر رمز جديد مكان المستخدم.
+- الشروط بإصدار (TERMS_VERSION في contracts.ts): رفعه مع تغيير النص يجعل كل مشترك وافق قبله يرى «تحدّثت شروط الاستخدام» وما تغيّر، ولا يصل لشيء قبل الموافقة.
 - الجمهور: 10 مجالات رئيسية لكل منها تخصصاته (contracts.ts fields) و16 مسمى، ودولة أو أكثر تُكتب ويقترح الموقع أسماءها («كل دول الخليج» بضغطة). «أخرى» للمجال والمسمى يربطها نموذج Claude عبر OpenRouter بأسماء المزوّد الدقيقة (يُتحقق منها ويُحفظ الجواب في ai_cache)، ويرى المشترك ما سيُبحث فيه قبل البدء. الجداول في src/lib/audience.ts.
 - البحث بمكان سكن الشخص (profileLocation)، ويُستبعد من عنوانه في بلد آخر، والبريد الشخصي (gmail وأمثاله) لا يُسلَّم. اسم المزوّد لا يظهر للمشترك.
 - البحث الحقيقي عبر Icypeas: عدّ مجاني للمطابقين مع تقدير للإيميلات المتوقعة قبل البحث، ودفعات حتى العدد المطلوب بسقف عشرين ضعفًا (من لا يوجد له بريد مجاني)، وتسليم المؤكد 99% و95% بعلامة لكل منهما. البحث الناقص يُكمَّل مرة واحدة بإيميلات الشركات نفسها.

@@ -1,0 +1,21 @@
+# Every 6 hours: the data provider account's credits. Under 200 (LOW_CREDITS, src/lib/icypeas.ts) the run fails, and a failed
+# scheduled run emails the repository owner. The log prints the credits either way. Secret: ICYPEAS_API_KEY (the server's key).
+# ponytail: the limit and the account email are copies of LOW_CREDITS and ACCOUNT_EMAIL in icypeas.ts; change them together.
+name: provider-credits
+on:
+  schedule: [{ cron: '41 */6 * * *' }]
+  workflow_dispatch:
+permissions: {}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Provider credits at least 200
+        env: { ICYPEAS_API_KEY: '${{ secrets.ICYPEAS_API_KEY }}' }
+        shell: bash # -eo pipefail: a failed request fails the run
+        run: |
+          credits=$(curl -sf --max-time 30 --retry 2 -X POST https://app.icypeas.com/api/a/actions/subscription-information \
+            -H "Authorization: $ICYPEAS_API_KEY" -H 'Content-Type: application/json' -d '{"email":"raheem@clowzy.io"}' | jq -er '.credits | numbers')
+          echo "Provider credits: $credits"
+          awk -v c="$credits" 'BEGIN { exit !(c >= 200) }'

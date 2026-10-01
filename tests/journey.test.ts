@@ -305,3 +305,45 @@ test('journey: the assistant turns a description into a checked search; an Engli
   assert.equal(english.data.error, 'Type the city in English, pick a main city, or leave it empty.');
   assert.match((await member('search/count', { ...form(2), city: 'الخبر الشمالية' })).data.error, /اكتب المدينة/, 'Arabic stays the default');
 });
+
+test('journey: newer terms -> the member accepts them again before anything else', async t => {
+  const { store, member } = await setup(t);
+  await store.db.run("UPDATE users SET terms_accepted_at='2026-09-28T10:00:00.000Z' WHERE email='sara@clinic.test'"); // accepted the old terms
+  assert.equal((await member('export', {})).status, 403);
+  const gated = await member('bootstrap?view=full');
+  assert.equal(gated.status, 200, 'the page still loads, to show the new terms');
+  assert.deepEqual([gated.data.user.email, gated.data.ledger, gated.data.contacts], ['sara@clinic.test', [], []], 'but none of the member\'s data');
+  assert.equal((await member('terms', {})).status, 200);
+  assert.notEqual((await member('export', {})).status, 403);
+  assert.equal((await me(member)).ledger.length, 1, 'the starting credits, once accepted');
+});
+
+test('journey: the owner forgets the password -> the recovery code from settings signs in once and gives a new code', async t => {
+  const { owner } = await setup(t);
+  assert.equal((await owner('admin/recovery-code', { password: 'wrong' })).status, 400);
+  const { code } = (await owner('admin/recovery-code', { password: 'owner-password-1' })).data;
+  assert.equal((await owner('bootstrap?view=overview')).data.admin.recovery, true);
+  const lost = browser();
+  assert.equal((await lost('auth/recover', { email: 'owner@clowzy.test', code: 'AAAA-AAAA-AAAA-AAAA-AAAA', password: 'new-owner-password' })).status, 401);
+  const r = await lost('auth/recover', { email: 'owner@clowzy.test', code, password: 'new-owner-password' });
+  assert.equal(r.status, 200);
+  assert.ok(r.data.code, 'the new code');
+  assert.equal((await lost('bootstrap?view=overview')).data.user.role, 'admin', 'signed in');
+  assert.equal((await owner('bootstrap?view=overview')).status, 401, 'the old session ended');
+  assert.equal((await lost('auth/recover', { email: 'owner@clowzy.test', code, password: 'other-owner-password' })).status, 401, 'used once');
+});
+
+test('journey: the owner sees the provider credits, flagged under 200', async t => {
+  const { owner } = await setup(t);
+  let credits = 975.1;
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    if (String(url).endsWith('/find-people/count')) return Response.json({ success: true, total: 1 });
+    assert.equal(JSON.parse(String(init.body)).email, 'raheem@clowzy.io');
+    return Response.json({ plan: 'Basic', status: 'paid', credits });
+  }) as typeof fetch;
+  assert.deepEqual((await owner('provider/verify', {})).data, { ok: true, credits: 975, low: false });
+  credits = 199.9;
+  assert.deepEqual((await owner('provider/verify', {})).data, { ok: true, credits: 199, low: true });
+  globalThis.fetch = (async (url: string) => String(url).endsWith('/find-people/count') ? Response.json({ success: true, total: 1 }) : Response.json({ validationErrors: [{ message: 'email' }] })) as typeof fetch;
+  assert.equal((await owner('provider/verify', {})).status, 502, 'a wrong account email is an error, not a balance of zero');
+});

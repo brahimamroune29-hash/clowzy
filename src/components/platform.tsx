@@ -3,7 +3,7 @@ import { useCallback,useEffect,useRef,useState } from 'react';
 import Link from 'next/link';
 import { usePathname,useRouter,useSearchParams } from 'next/navigation';
 import { Coins, GearSix, List, SignOut, X, CheckCircle, WarningCircle } from '@phosphor-icons/react';
-import type { Snapshot } from '@/lib/contracts';
+import { termsCurrent, type Snapshot } from '@/lib/contracts';
 import { api,number } from '@/lib/client';
 import { overviewOnly,weekBoundaries } from '@/lib/overview';
 import { Brand, Button, Notice, ThemeToggle } from './ui';
@@ -49,7 +49,7 @@ export default function Platform(){
   if(loading||loadedPath!==requestPath)return <div className="boot"><Brand/><p>{t('نجهّز مساحة عملك…','Preparing your workspace…')}</p><span className="loading-line"/></div>;
   if((pathname==='/invite'||pathname==='/reset')&&token)return <Auth onLogin={onLogin} token={token} reset={pathname==='/reset'}/>;
   if(!data)return <Auth onLogin={onLogin}/>;
-  if(data.user.role==='member'&&!data.user.terms_accepted_at)return <TermsGate onAccepted={refresh} onLogout={logout}/>;
+  if(data.user.role==='member'&&!termsCurrent(data.user))return <TermsGate again={!!data.user.terms_accepted_at} onAccepted={refresh} onLogout={logout}/>;
   const admin=data.user.role==='admin',viewProps={data,reload:refresh,notify};
   const nav=admin?[{href:'/admin',label:t('نظرة عامة','Overview')},{href:'/admin/members',label:t('المشتركون','Members')},{href:'/admin/activity',label:t('السجل','Activity')}]
     :[{href:'/dashboard',label:t('الرئيسية','Home')},{href:'/search',label:t('بحث جديد','New search')},{href:'/leads',label:t('عملائي','My contacts')},{href:'/history',label:t('سجل البحث','History')}];

@@ -18,6 +18,8 @@ export function providerInfo() {
 // 'عمان' for Oman: it also matches Amman.
 const broadArabic: Record<string, string> = { OM: 'سلطنة عمان' };
 const plain = (s: string) => s.replace(/[\u064B-\u0652]/g, '');
+const LOW_CREDITS = 200; // owner's choice 2026-10-01: about three 50-email searches left
+const ACCOUNT_EMAIL = 'raheem@clowzy.io'; // the Icypeas account behind ICYPEAS_API_KEY; repeated in provider-credits.yml
 export const BATCH = 100; // people per email submission: one results read covers a whole batch (reads return <= 100 rows)
 export const PAGE = 25; // people per find-people page (0.02 credit each); constant so a saved cursor stays valid across searches
 export const submitCap = (count: number) => count * SUBMIT_MULTIPLE;
@@ -140,7 +142,14 @@ export class IcypeasClient {
     }
     return data;
   }
-  async verify() { await this.request('find-people/count', { query: { location: { include: ['SA'] } } }); return { ok: true }; }
+  // The connection, and the provider account's credits (free route; owner's dashboard). The check every 6 hours
+  // (.github/workflows/provider-credits.yml) emails the owner under the same LOW_CREDITS.
+  async verify() {
+    await this.request('find-people/count', { query: { location: { include: ['SA'] } } });
+    const account = z.object({ credits: z.number() }).safeParse(await this.request('a/actions/subscription-information', { email: ACCOUNT_EMAIL }));
+    if (!account.success) throw new IcypeasError('تعذّر قراءة رصيد مزوّد البيانات. راجع بريد حساب المزوّد على الخادم.');
+    return { ok: true, credits: Math.floor(account.data.credits), low: account.data.credits < LOW_CREDITS };
+  }
   // Free: people matching the search across both stages (stage 1 excludes stage 0), shown before the member pays for anything.
   async count(input: Audience) {
     const queries = Array.from({ length: STAGES }, (_, stage) => queryOf(input, stage)); // validates before any call

@@ -7,7 +7,8 @@ create schema if not exists clowzy;
 create table clowzy.users (
   id text primary key, name text not null, email text unique not null, password_hash text not null,
   role text not null check (role in ('admin', 'member')), active integer not null default 1,
-  balance integer not null default 0 check (balance >= 0), created_at text not null, terms_accepted_at text
+  balance integer not null default 0 check (balance >= 0), created_at text not null, terms_accepted_at text,
+  recovery_hash text -- the owner's recovery code, hashed (store.ts createRecoveryCode)
 );
 create table clowzy.sessions (
   token_hash text primary key, user_id text not null references clowzy.users(id), expires_at text not null

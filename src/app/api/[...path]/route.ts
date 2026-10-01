@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { AppError, getStore } from '@/lib/store';
-import { withCountries } from '@/lib/contracts';
+import { termsCurrent, withCountries } from '@/lib/contracts';
 import { searchSchema, weekBoundariesSchema } from '@/lib/schemas';
 import { IcypeasClient, IcypeasError, providerInfo } from '@/lib/icypeas';
 import { LiveSearch } from '@/lib/live-search';
@@ -46,8 +46,8 @@ async function body(req: NextRequest) {
 function json(data: unknown, status = 200) {
   return NextResponse.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
 }
-function authenticated(token: string) {
-  const response = json({ ok: true });
+function authenticated(token: string, data: object = { ok: true }) {
+  const response = json(data);
   response.cookies.set('wasl_session', token, { httpOnly: true, sameSite: 'strict', secure: isHttps(process.env.APP_URL), path: '/', maxAge: 7 * 86400 });
   return response;
 }
@@ -81,6 +81,11 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
         const data = z.object({token:tokenField,password}).parse(b);
         return authenticated(await store.resetPassword(data.token, data.password));
       }
+      if (path === 'auth/recover') {
+        const data = z.object({email:z.email(),code:z.string().min(1).max(64),password}).parse(b);
+        const { token, code } = await store.recover(data.email, data.code, data.password);
+        return authenticated(token, { ok: true, code });
+      }
       if (path === 'auth/logout') {
         if (session) await store.logout(session);
         const response = json({ ok: true });
@@ -90,8 +95,12 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
     }
     const user = await store.session(session);
     rateLimit(user.id, 120);
-    // Members see no data and spend no credits before accepting the terms (the UI gate alone is not enough).
-    if (user.role === 'member' && !user.terms_accepted_at && path !== 'bootstrap' && path !== 'terms') throw new AppError('وافق على شروط الاستخدام أولًا.', 403);
+    // Members see no data and spend no credits before accepting the current terms (the UI gate alone is not enough):
+    // the page gets the account alone, to show the terms.
+    if (user.role === 'member' && !termsCurrent(user)) {
+      if (req.method === 'GET' && path === 'bootstrap') return json({ user, contacts: [], searches: [], ledger: [], exports: [] });
+      if (path !== 'terms') throw new AppError('وافق على شروط الاستخدام أولًا.', 403);
+    }
     if (req.method === 'GET' && path === 'bootstrap') {
       const view=z.enum(['overview','full']).parse(req.nextUrl.searchParams.get('view')||'overview');
       if(view==='full') return json({...await store.snapshot(user.id),provider:providerInfo()});
@@ -172,6 +181,10 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
       const data = z.object({userId:z.string().uuid(),active:z.boolean()}).parse(b);
       await store.setActive(user.id, data.userId, data.active);
       return json({ok:true});
+    }
+    if (path === 'admin/recovery-code') {
+      const data = z.object({password:z.string().min(1).max(128)}).parse(b);
+      return json({code:await store.createRecoveryCode(user.id,data.password)});
     }
     if (path === 'admin/reset') {
       const data = z.object({userId:z.string().uuid()}).parse(b);

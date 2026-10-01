@@ -2,12 +2,15 @@
 import { useState } from 'react';
 import { Check } from '@phosphor-icons/react';
 import { api } from '@/lib/client';
+import { TERMS_VERSION } from '@/lib/contracts';
 import Link from 'next/link';
 import { Brand, Button, Notice } from './ui';
 import { LangToggle, useLang, useT } from './lang';
 
 // ponytail: plain-language terms for launch; a lawyer in the target GCC markets should review them before scaling.
-const TERMS_VERSION = '2026-10-01';
+// A change members must accept again: edit the text, raise TERMS_VERSION (contracts.ts) and say what changed here.
+const changed = { ar: 'الجديد: إذا لم تكفِ إيميلات الأشخاص، نكمّل بإيميل الشركة نفسها بعد فحصه، بنفس السعر.',
+  en: 'What’s new: when people’s emails are not enough, we fill in with the company’s own verified email, at the same price.' };
 const sections: { ar: [string, string]; en: [string, string] }[] = [
   { ar: ['الخدمة', 'منصة لاكتشاف جهات اتصال مهنية وبريد عمل من مزوّدي بيانات تجاريين ومن مواقع الشركات نفسها، لأغراض التواصل التجاري بين الشركات.'],
     en: ['The service', 'A platform to find business contacts and work emails, from commercial data providers and the companies’ own websites, for business-to-business outreach.'] },
@@ -24,16 +27,17 @@ const sections: { ar: [string, string]; en: [string, string] }[] = [
 ];
 export function TermsText() {
   const { lang } = useLang(), t = useT();
-  return <div className="terms">{sections.map(s => { const [title, body] = s[lang]; return <section key={title}><h2>{title}</h2><p>{body}</p></section>; })}<small>{t('آخر تحديث: ', 'Last updated: ')}{TERMS_VERSION}</small></div>;
+  return <div className="terms">{sections.map(s => { const [title, body] = s[lang]; return <section key={title}><h2>{title}</h2><p>{body}</p></section>; })}<small>{t('آخر تحديث: ', 'Last updated: ')}{TERMS_VERSION.slice(0, 10)}</small></div>;
 }
 export function TermsPage() {
   const t = useT();
   return <main className="terms-page"><div className="auth-tools"><LangToggle/></div><Brand/><h1>{t('شروط الاستخدام', 'Terms of use')}</h1><TermsText/><Link href="/" className="text-link">{t('العودة إلى المنصة', 'Back to the platform')}</Link></main>;
 }
-export function TermsGate({ onAccepted, onLogout }: { onAccepted: () => Promise<void>; onLogout: () => Promise<void> }) {
-  const t = useT(), [agreed, setAgreed] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState('');
+// again: the member accepted older terms; they see what changed, then the whole text.
+export function TermsGate({ again, onAccepted, onLogout }: { again: boolean; onAccepted: () => Promise<void>; onLogout: () => Promise<void> }) {
+  const t = useT(), { lang } = useLang(), [agreed, setAgreed] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState('');
   async function accept() { setBusy(true); setError(''); try { await api('terms', {}); await onAccepted(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); } }
-  return <main className="terms-page"><div className="auth-tools"><LangToggle/></div><Brand/><h1>{t('قبل أن تبدأ', 'Before you start')}</h1><p>{t('اقرأ شروط الاستخدام ووافق عليها للمتابعة.', 'Read and accept the terms to continue.')}</p><TermsText/>
+  return <main className="terms-page"><div className="auth-tools"><LangToggle/></div><Brand/><h1>{again ? t('تحدّثت شروط الاستخدام', 'The terms have changed') : t('قبل أن تبدأ', 'Before you start')}</h1><p>{t('اقرأ شروط الاستخدام ووافق عليها للمتابعة.', 'Read and accept the terms to continue.')}</p>{again && <Notice>{changed[lang]}</Notice>}<TermsText/>
     {error && <Notice error>{error}</Notice>}
     <label className="check-label"><input type="checkbox" checked={agreed} onChange={e => setAgreed(e.target.checked)}/><span>{t('قرأت الشروط وأوافق عليها، وأتحمّل مسؤولية الالتزام بقوانين المراسلة في البلدان التي أتواصل معها.', 'I have read and accept the terms, and I am responsible for following the messaging laws of the countries I contact.')}</span></label>
     <Button loading={busy} disabled={!agreed} onClick={accept}>{t('أوافق وأتابع', 'Accept and continue')} <Check size={18}/></Button><Button variant="ghost" onClick={onLogout}>{t('تسجيل الخروج', 'Sign out')}</Button></main>;

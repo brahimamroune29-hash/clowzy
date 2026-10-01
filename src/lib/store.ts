@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { countryLabel } from './places';
 import { resolvedSchema, weekBoundariesSchema } from './schemas';
-import type { AdminUser, AuditEvent, Candidate, Contact, ExportEvent, Invitation, Ledger, Resolved, Search, Snapshot, User } from './contracts';
+import { TERMS_VERSION, type AdminUser, type AuditEvent, type Candidate, type Contact, type ExportEvent, type Invitation, type Ledger, type Resolved, type Search, type Snapshot, type User } from './contracts';
 import { Db, pgDriver } from './db';
 import { weekBoundaries } from './overview';
 
@@ -20,6 +20,11 @@ const checkPassword = (password: string, encoded: string) => {
   const actual = scryptSync(password, salt, 64), expected = Buffer.from(stored, 'hex');
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 };
+// The owner's way back in without email: 20 characters from 32 (100 bits, no 0/O/1/I), shown once as XXXX-XXXX-XXXX-XXXX-XXXX
+// and kept as a hash. Typed in any case, with or without the dashes.
+const codeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const recoveryCode = () => [...randomBytes(20)].map(b => codeAlphabet[b & 31]).join('').match(/.{4}/g)!.join('-');
+const codeHash = (code: string) => hash(code.toUpperCase().replace(/[^A-Z0-9]/g, ''));
 // Compared when the email is unknown, so a login takes as long whether or not the account exists.
 let dummyHash: string | undefined;
 // Provider work (people fetched) per member per 24 h: members pay per delivered email, the provider per person fetched.
@@ -158,6 +163,7 @@ export class Store {
             ORDER BY u.created_at DESC,u.id DESC`),
           invitations: [],
           audit: await this.db.all<AuditEvent>('SELECT id,action,detail,created_at FROM audit ORDER BY created_at DESC,id DESC LIMIT 4'),
+          recovery: !!await this.db.get('SELECT 1 FROM users WHERE id=? AND recovery_hash IS NOT NULL', id), // the settings page (an overview view)
           totals: { ...totals, ...memberCounts },
         };
       }
@@ -335,18 +341,22 @@ export class Store {
       await this.audit(adminId, active ? 'تفعيل الحساب' : 'تعطيل الحساب', target.name);
     });
   }
+  // The first acceptance of the current terms is kept; terms that changed since (TERMS_VERSION) are accepted anew.
   async acceptTerms(id: string) {
     await this.user(id);
-    await this.db.run('UPDATE users SET terms_accepted_at=? WHERE id=? AND terms_accepted_at IS NULL', now(), id);
+    await this.db.run('UPDATE users SET terms_accepted_at=? WHERE id=? AND (terms_accepted_at IS NULL OR terms_accepted_at < ?)', now(), id, TERMS_VERSION);
   }
   async updateProfile(id: string, name: string) {
     await this.user(id);
     await this.db.run('UPDATE users SET name=? WHERE id=?', name, id);
   }
+  private async checkCurrent(id: string, password: string) {
+    const row = (await this.db.get<{ password_hash: string }>('SELECT password_hash FROM users WHERE id=?', id))!;
+    if (!checkPassword(password, row.password_hash)) throw new AppError('كلمة المرور الحالية غير صحيحة.');
+  }
   async changePassword(id: string, oldPassword: string, newPassword: string) {
     await this.user(id);
-    const row = (await this.db.get<{ password_hash: string }>('SELECT password_hash FROM users WHERE id=?', id))!;
-    if (!checkPassword(oldPassword, row.password_hash)) throw new AppError('كلمة المرور الحالية غير صحيحة.');
+    await this.checkCurrent(id, oldPassword);
     await this.transaction(async () => {
       await this.db.run('UPDATE users SET password_hash=? WHERE id=?', passwordHash(newPassword), id);
       await this.db.run('DELETE FROM sessions WHERE user_id=?', id);
@@ -375,6 +385,29 @@ export class Store {
       const owner = await this.addUser(name, email, randomBytes(32).toString('hex'), 'admin');
       await this.audit(owner.id, 'إنشاء حساب المالك', name);
       return this.resetToken(owner.id, 86400000);
+    });
+  }
+  // A new code, after the current password: the old code stops working.
+  async createRecoveryCode(adminId: string, password: string) {
+    const owner = await this.admin(adminId);
+    await this.checkCurrent(adminId, password);
+    const code = recoveryCode();
+    await this.db.run('UPDATE users SET recovery_hash=? WHERE id=?', codeHash(code), adminId);
+    await this.audit(adminId, 'رمز استرجاع جديد', owner.name);
+    return code;
+  }
+  // Email + code -> a new password, every other session and reset link ended, and a new code shown once in place of the spent one.
+  recover(email: string, code: string, password: string) {
+    return this.transaction(async () => {
+      const next = recoveryCode();
+      // The conditional update is the claim: a code works once, even when sent twice at the same moment.
+      const row = await this.db.get<{ id: string; name: string }>("UPDATE users SET recovery_hash=?,password_hash=? WHERE email=? AND recovery_hash=? AND role='admin' AND active=1 RETURNING id,name",
+        codeHash(next), passwordHash(password), normalizeEmail(email), codeHash(code));
+      if (!row) throw new AppError('البريد أو رمز الاسترجاع غير صحيح.', 401);
+      await this.db.run('DELETE FROM sessions WHERE user_id=?', row.id);
+      await this.revokeResets(row.id);
+      await this.audit(row.id, 'استرجاع كلمة المرور برمز الاسترجاع', row.name);
+      return { token: await this.createSession(row.id), code: next };
     });
   }
   resetPassword(token: string, password: string) {

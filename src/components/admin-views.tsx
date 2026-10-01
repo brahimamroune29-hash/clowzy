@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useCallback,useEffect,useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { CheckCircle, Coins, Copy, EnvelopeSimple, LinkSimple, MagnifyingGlass, UsersThree, DownloadSimple, UserPlus, Pause, Play, Key } from '@phosphor-icons/react';
@@ -10,13 +10,15 @@ import { useT } from './lang';
 import type { ViewProps } from './platform';
 
 export function AdminDashboard({data}:ViewProps){
-  const t=useT(),[checking,setChecking]=useState(false),[connection,setConnection]=useState('');
-  async function verify(){setChecking(true);try{await api('provider/verify',{});setConnection(t('الاتصال بمزوّد البيانات يعمل.','The data provider connection works.'));}catch(e){setConnection((e as Error).message);}finally{setChecking(false);}}
+  const t=useT(),configured=!!data.provider?.configured,[checking,setChecking]=useState(configured),[check,setCheck]=useState<{credits?:number;low?:boolean;error?:string}|null>(null);
+  // Checked on every visit: the connection, and the provider account's credits (red under 200, the email alert's limit).
+  const verify=useCallback(()=>api<{credits:number;low:boolean}>('provider/verify',{}).then(r=>r,(e:Error)=>({error:e.message})).then(setCheck).finally(()=>setChecking(false)),[]);
+  useEffect(()=>{if(configured)void verify();},[configured,verify]);
   const admin=data.admin!;
   return <><PageHeading title={t('لوحة الإدارة','Admin')}><Link href="/admin/members?invite=1" className="button primary"><UserPlus size={19}/>{t('دعوة مشترك','Invite a member')}</Link></PageHeading>
   <div className="stats-strip">{[{label:t('المشتركون','Members'),value:admin.totals.members??admin.users.length,icon:UsersThree},{label:t('إيميلات مسلّمة','Emails delivered'),value:admin.totals.delivered,icon:EnvelopeSimple},{label:t('كريدت مستهلك','Credits used'),value:admin.totals.used,icon:Coins},{label:t('ملفات منزّلة','Downloads'),value:admin.totals.exports,icon:DownloadSimple}].map(({label,value,icon:Icon})=><div className="stat" key={label}><div className="stat-label"><span>{label}</span><Icon size={20} weight="light"/></div><div className="stat-value">{number(value)}</div></div>)}</div>
   <section className="panel table-panel"><div className="section-title"><h2>{t('المشتركون','Members')}</h2><Link className="text-link" href="/admin/members">{t('عرض الكل','See all')} <Forward/></Link></div><div className="table-scroll"><table><thead><tr><th>{t('المشترك','Member')}</th><th>{t('الرصيد','Credits')}</th><th>{t('الإيميلات','Emails')}</th><th>{t('الحالة','Status')}</th></tr></thead><tbody>{admin.users.slice(0,5).map(u=><tr key={u.id}><td><div className="contact-name"><span className="avatar">{u.name[0]}</span><span><strong>{u.name}</strong><small dir="ltr">{u.email}</small></span></div></td><td>{number(u.balance)}</td><td>{u.leads}</td><td><Badge tone={u.active?'green':'neutral'}>{u.active?t('نشط','Active'):t('معطل','Disabled')}</Badge></td></tr>)}</tbody></table></div></section>
-  <section className="panel"><div className="section-title"><h2>{t('مزوّد البيانات','Data provider')}</h2><Badge tone={data.provider?.configured?'green':'amber'}>{data.provider?.configured?t('مهيأ','Configured'):t('غير مهيأ','Not configured')}</Badge></div><Button variant="secondary" loading={checking} disabled={!data.provider?.configured} onClick={verify}>{t('فحص الاتصال','Check the connection')}</Button>{connection&&<Notice>{connection}</Notice>}</section>
+  <section className="panel"><div className="section-title"><h2>{t('مزوّد البيانات','Data provider')}</h2><Badge tone={data.provider?.configured?'green':'amber'}>{data.provider?.configured?t('مهيأ','Configured'):t('غير مهيأ','Not configured')}</Badge></div>{check?.credits!==undefined&&<div className="balance-callout"><span>{t('رصيد المزوّد','Provider credits')}</span><strong>{number(check.credits)}</strong></div>}{check?.low&&<Notice error>{t('الرصيد قريب من النفاد. اشحنه قبل أن تتوقف عمليات البحث.','Credits are running low. Top up before searches stop.')}</Notice>}<Button variant="secondary" loading={checking} disabled={!configured} onClick={()=>{setChecking(true);void verify();}}>{t('فحص الاتصال','Check the connection')}</Button>{check&&<Notice error={!!check.error}>{check.error??t('الاتصال بمزوّد البيانات يعمل.','The data provider connection works.')}</Notice>}</section>
   <section className="panel"><div className="section-title"><h2>{t('آخر نشاط','Recent activity')}</h2><Link href="/admin/activity" className="text-link">{t('السجل الكامل','Full log')} <Forward/></Link></div>{admin.audit.slice(0,4).map(a=><div className="audit-row" key={a.id}><span className="audit-dot"/><div><strong>{a.action}</strong><p>{a.detail}</p></div><time>{date(a.created_at)}</time></div>)}</section></>;
 }
 
