@@ -4,6 +4,7 @@ import { resolvedSchema, weekBoundariesSchema } from './schemas';
 import { TERMS_VERSION, type AdminUser, type AuditEvent, type Candidate, type Contact, type ExportEvent, type Invitation, type Ledger, type Resolved, type Search, type Snapshot, type User } from './contracts';
 import { Db, pgDriver } from './db';
 import { weekBoundaries } from './overview';
+import { crmEnabled } from './catalog';
 
 export class AppError extends Error {
   constructor(message: string, public status = 400) { super(message); }
@@ -73,9 +74,11 @@ export class Store {
     await this.db.run('INSERT INTO audit(id,actor_id,action,detail,created_at) VALUES(?,?,?,?,?)', randomUUID(), actor, action, detail, now());
   }
   async login(email: string, password: string) {
-    const row = await this.db.get<{ id: string; password_hash: string }>('SELECT id,password_hash FROM users WHERE email=?', normalizeEmail(email));
-    if (!checkPassword(password, row?.password_hash ?? (dummyHash ??= passwordHash(randomBytes(16).toString('hex')))) || !row) throw new AppError('البريد الإلكتروني أو كلمة المرور غير صحيحة.', 401);
-    return this.createSession((await this.user(row.id)).id);
+    return this.transaction(async () => {
+      const row = await this.db.get<{ id: string; password_hash: string }>('SELECT id,password_hash FROM users WHERE email=? FOR UPDATE', normalizeEmail(email));
+      if (!checkPassword(password, row?.password_hash ?? (dummyHash ??= passwordHash(randomBytes(16).toString('hex')))) || !row) throw new AppError('البريد الإلكتروني أو كلمة المرور غير صحيحة.', 401);
+      return this.createSession((await this.user(row.id)).id);
+    });
   }
   async createSession(id: string) {
     await this.user(id);
@@ -180,6 +183,11 @@ export class Store {
       ON CONFLICT(key,window_start) DO UPDATE SET count=rate_hits.count+1 RETURNING count`, key, now - now % windowMs);
     if (row!.count > max) throw new AppError(message, 429);
   }
+  async aiBudget(userId: string) {
+    // One allowance covers assistant messages and uncached custom filters, across all server instances.
+    await this.hit('assist:' + userId, 12);
+    await this.hit('assist-day:' + userId, 150, 86400000, 'وصلت حد المساعد اليومي. حاول غدًا.');
+  }
   async dailyFetched(userId: string) {
     return count(await this.db.get<{ n: number }>('SELECT COALESCE(sum(r.fetched),0)::int n FROM provider_runs r JOIN searches s ON s.id=r.search_id WHERE s.user_id=? AND s.created_at>?',
       userId, new Date(Date.now() - 86400000).toISOString()));
@@ -199,19 +207,25 @@ export class Store {
     // What open searches can still charge: requested minus already delivered (and charged), not the whole request.
     return count(await this.db.get<{ n: number }>('SELECT COALESCE(sum(GREATEST(s.requested-s.delivered,0)),0)::int AS n FROM reservations r JOIN searches s ON s.id=r.search_id WHERE r.user_id=?', id));
   }
+  async checkSearchCapacity(id: string, requested: number) {
+    const user = await this.user(id);
+    if (user.balance < 1) throw new AppError('رصيدك صفر. تواصل مع مالك المنصة لإضافة رصيد قبل البحث.');
+    if (user.balance - await this.reserved(id) < requested) throw new AppError('الرصيد المتاح بعد حجز عمليات البحث لا يكفي.');
+    if (await this.dailyFetched(id) >= DAILY_PEOPLE) throw new AppError(dailyLimit, 429);
+    // ponytail: one active search per member prevents competing cursor writes; per-audience leases if parallel searches are needed.
+    if (count(await this.db.get<{ n: number }>("SELECT count(*) n FROM searches WHERE user_id=? AND status IN ('queued','awaiting_provider')", id)) >= 1) throw new AppError('لديك بحث قيد التنفيذ. انتظر اكتماله.', 429);
+    if (count(await this.db.get<{ n: number }>('SELECT count(*) n FROM reservations')) >= 1000) throw new AppError('قائمة البحث ممتلئة مؤقتًا. حاول لاحقًا.', 503);
+  }
   enqueueSearch(id: string, raw: Resolved): Promise<Search> {
     const input = resolvedSchema.parse(raw);
     return this.transaction(async () => {
-      const user = await this.user(id, true);
+      await this.user(id, true);
       const old = await this.db.get<Search>('SELECT * FROM searches WHERE user_id=? AND request_id=?', id, input.requestId);
       if (old) {
         if (old.filters !== JSON.stringify(input)) throw new AppError('معرّف الطلب مستخدم لبحث مختلف.', 409);
         return old;
       }
-      if (user.balance - await this.reserved(id) < input.count) throw new AppError('الرصيد المتاح بعد حجز عمليات البحث لا يكفي.');
-      if (await this.dailyFetched(id) >= DAILY_PEOPLE) throw new AppError(dailyLimit, 429);
-      if (count(await this.db.get<{ n: number }>("SELECT count(*) n FROM searches WHERE user_id=? AND status IN ('queued','awaiting_provider')", id)) >= 2) throw new AppError('لديك عمليتا بحث قيد التنفيذ. انتظر اكتمالهما.', 429);
-      if (count(await this.db.get<{ n: number }>('SELECT count(*) n FROM reservations')) >= 1000) throw new AppError('قائمة البحث ممتلئة مؤقتًا. حاول لاحقًا.', 503);
+      await this.checkSearchCapacity(id, input.count);
       const sid = randomUUID();
       await this.db.run('INSERT INTO searches(id,user_id,request_id,filters,title,requested,status,created_at) VALUES(?,?,?,?,?,?,?,?)',
         sid, id, input.requestId, JSON.stringify(input), (input.mode === 'companies' ? 'شركات · ' : '') + input.sector + ' · ' + (input.city || placesTitle(input.countries)), input.count, 'queued', now());
@@ -227,13 +241,15 @@ export class Store {
   }
   // Inserts new contacts for this search and debits 1 credit each, up to the requested count; duplicates for this
   // member are counted, never charged. Returns the search's delivered total. Caller holds the member's row lock.
-  private async deliverInto(search: Search, candidates: Candidate[]) {
+  private async deliverInto(search: Search, candidates: Candidate[], origin: 'provider' | 'catalog') {
+    if (crmEnabled()) await this.db.run('LOCK TABLE catalog_suppressions IN SHARE MODE');
     const current = count(await this.db.get<{ n: number }>('SELECT delivered AS n FROM searches WHERE id=?', search.id));
     const sector = (JSON.parse(search.filters) as Resolved).sector, seen = new Set<string>();
     let delivered = 0, duplicates = 0;
     for (const candidate of candidates.slice(0, 1000)) {
       const email = normalizeEmail(candidate.email || '');
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) continue;
+      if (crmEnabled() && await this.db.get("SELECT 1 FROM catalog_suppressions WHERE email=? UNION ALL SELECT 1 FROM crm_exclusions WHERE user_id=? AND (value=? OR value=split_part(?::text,'@',2)) LIMIT 1",email,search.user_id,email,email)) continue;
       if (seen.has(email) || await this.db.get('SELECT 1 FROM contacts WHERE user_id=? AND email=?', search.user_id, email)) { duplicates++; continue; }
       seen.add(email);
       if (current + delivered >= search.requested) break;
@@ -241,6 +257,7 @@ export class Store {
       await this.db.run('INSERT INTO contacts(id,user_id,search_id,kind,name,email,company,title,sector,country,city,website,size,source,email_status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         cid, search.user_id, search.id, c.kind ?? 'person', c.name, c.email, c.company, c.title, c.sector, c.country, c.city, c.website, c.size, c.source, c.email_status, now());
       await this.credit(search.user_id, -1, 'debit', 'بريد جديد من ' + sector, 'delivery:' + cid);
+      if (crmEnabled()) await this.db.run('INSERT INTO crm_deliveries(contact_id,origin,created_at) VALUES(?,?,?)',cid,origin,now());
       delivered++;
     }
     await this.db.run('UPDATE searches SET delivered=delivered+?,duplicates=duplicates+? WHERE id=?', delivered, duplicates, search.id);
@@ -248,17 +265,21 @@ export class Store {
   }
   // Provider flow (live-search.ts): deliver one batch into a search that is still waiting on the provider.
   // Returns the search's delivered total, or null when the search is no longer waiting (closed, cancelled).
-  deliverBatch(userId: string, searchId: string, candidates: Candidate[]): Promise<number | null> {
+  deliverBatch(userId: string, searchId: string, candidates: Candidate[], origin: 'provider' | 'catalog' = 'provider'): Promise<number | null> {
     return this.transaction(async () => {
       await this.user(userId, true);
       const search = await this.db.get<Search>("SELECT * FROM searches WHERE id=? AND user_id=? AND status='awaiting_provider'", searchId, userId);
-      return search ? this.deliverInto(search, candidates) : null;
+      return search ? this.deliverInto(search, candidates, origin) : null;
     });
+  }
+  async notifySearch(searchId: string, message = '') {
+    if (crmEnabled()) await this.db.run("INSERT INTO crm_notifications(id,user_id,search_id,message,created_at) SELECT ?,user_id,id,title || ' · ' || CASE WHEN ?::text='' THEN delivered::text || '/' || requested::text ELSE ?::text END,? FROM searches WHERE id=? ON CONFLICT(search_id) DO NOTHING",randomUUID(),message,message,now(),searchId);
   }
   finishSearch(searchId: string) {
     return this.transaction(async () => {
-      await this.db.run("UPDATE searches SET status=CASE WHEN delivered>=requested THEN 'completed' ELSE 'partial' END WHERE id=? AND status='awaiting_provider'", searchId);
+      const changed = await this.db.run("UPDATE searches SET status=CASE WHEN delivered>=requested THEN 'completed' ELSE 'partial' END WHERE id=? AND status='awaiting_provider'", searchId);
       await this.db.run('DELETE FROM reservations WHERE search_id=?', searchId);
+      if (changed) await this.notifySearch(searchId);
     });
   }
   // True only for the one request that claims this person for the member: not already a contact, and not already
@@ -278,7 +299,7 @@ export class Store {
     await this.db.run(`INSERT INTO provider_cursors(user_id,query_key,stage,token,leftovers) VALUES(?,?,?,?,?)
       ON CONFLICT(user_id,query_key) DO UPDATE SET stage=excluded.stage,token=excluded.token,leftovers=excluded.leftovers`, userId, queryKey, stage, token, leftovers);
   }
-  async contactsForExport(userId: string, ids?: string[], searchId?: string) {
+  async contactsForExport(userId: string, ids?: string[], searchId?: string, record = true) {
     await this.user(userId);
     let contacts = await this.db.all<Contact>('SELECT * FROM contacts WHERE user_id=? ORDER BY created_at DESC', userId);
     if (searchId) contacts = contacts.filter(c => c.search_id === searchId);
@@ -288,7 +309,7 @@ export class Store {
       if (contacts.length !== chosen.size) throw new AppError('بعض النتائج غير موجودة في حسابك.', 403);
     }
     if (!contacts.length) throw new AppError('لا توجد نتائج لتنزيلها.');
-    await this.db.run('INSERT INTO exports(id,user_id,row_count,created_at) VALUES(?,?,?,?)', randomUUID(), userId, contacts.length, now());
+    if (record) await this.db.run('INSERT INTO exports(id,user_id,row_count,created_at) VALUES(?,?,?,?)', randomUUID(), userId, contacts.length, now());
     return contacts;
   }
   async invite(adminId: string, name: string, email: string, credits: number) {
@@ -355,14 +376,14 @@ export class Store {
     if (!checkPassword(password, row.password_hash)) throw new AppError('كلمة المرور الحالية غير صحيحة.');
   }
   async changePassword(id: string, oldPassword: string, newPassword: string) {
-    await this.user(id);
-    await this.checkCurrent(id, oldPassword);
-    await this.transaction(async () => {
+    return this.transaction(async () => {
+      await this.user(id, true);
+      await this.checkCurrent(id, oldPassword);
       await this.db.run('UPDATE users SET password_hash=? WHERE id=?', passwordHash(newPassword), id);
       await this.db.run('DELETE FROM sessions WHERE user_id=?', id);
       await this.revokeResets(id);
+      return this.createSession(id);
     });
-    return this.createSession(id);
   }
   private async resetToken(userId: string, ttlMs: number) {
     const token = randomBytes(24).toString('hex');
@@ -373,10 +394,13 @@ export class Store {
   private revokeResets(userId: string) { return this.db.run('UPDATE reset_tokens SET used_at=? WHERE user_id=? AND used_at IS NULL', now(), userId); }
   async createReset(adminId: string, userId: string) {
     await this.admin(adminId);
-    await this.revokeResets(userId);
-    const target = await this.user(userId), token = await this.resetToken(userId, 3600000);
-    await this.audit(adminId, 'رابط استعادة الوصول', target.name);
-    return token;
+    return this.transaction(async () => {
+      const target = await this.user(userId, true);
+      await this.revokeResets(userId);
+      const token = await this.resetToken(userId, 3600000);
+      await this.audit(adminId, 'رابط استعادة الوصول', target.name);
+      return token;
+    });
   }
   // Server-side setup only (scripts/create-owner.ts): the owner picks a password through a 24h one-time link.
   createOwner(name: string, email: string) {
@@ -389,12 +413,15 @@ export class Store {
   }
   // A new code, after the current password: the old code stops working.
   async createRecoveryCode(adminId: string, password: string) {
-    const owner = await this.admin(adminId);
-    await this.checkCurrent(adminId, password);
-    const code = recoveryCode();
-    await this.db.run('UPDATE users SET recovery_hash=? WHERE id=?', codeHash(code), adminId);
-    await this.audit(adminId, 'رمز استرجاع جديد', owner.name);
-    return code;
+    return this.transaction(async () => {
+      await this.user(adminId, true);
+      const owner = await this.admin(adminId);
+      await this.checkCurrent(adminId, password);
+      const code = recoveryCode();
+      await this.db.run('UPDATE users SET recovery_hash=? WHERE id=?', codeHash(code), adminId);
+      await this.audit(adminId, 'رمز استرجاع جديد', owner.name);
+      return code;
+    });
   }
   // Email + code -> a new password, every other session and reset link ended, and a new code shown once in place of the spent one.
   recover(email: string, code: string, password: string) {
@@ -412,6 +439,10 @@ export class Store {
   }
   resetPassword(token: string, password: string) {
     return this.transaction(async () => {
+      // Lock the account before reset tokens, like password changes and reset creation, to avoid lock-order deadlocks.
+      const target = await this.db.get<{ user_id: string }>('SELECT user_id FROM reset_tokens WHERE token_hash=?', hash(token));
+      if (!target) throw new AppError('رابط الاستعادة غير صالح أو انتهت مدته.', 410);
+      await this.user(target.user_id, true);
       // Marking the token used is the claim: a link works once, even when opened twice at the same moment.
       const row = await this.db.get<{ user_id: string }>('UPDATE reset_tokens SET used_at=? WHERE token_hash=? AND used_at IS NULL AND expires_at>? RETURNING user_id', now(), hash(token), now());
       if (!row) throw new AppError('رابط الاستعادة غير صالح أو انتهت مدته.', 410);

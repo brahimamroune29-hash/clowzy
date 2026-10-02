@@ -36,7 +36,11 @@ export function pgDriver(url: string): Driver {
     prepare: false, max: 5, idle_timeout: 20, connect_timeout: 10,
     // Verify the server certificate and host name (plain 'require' does not); a database on this machine (local checks) has no TLS.
     ssl: /@(localhost|127\.0\.0\.1)[:/]/.test(url) ? false : { ca: SUPABASE_ROOT_CA, rejectUnauthorized: true },
-    types: { int8: { to: 20, from: [20], serialize: String, parse: Number } }, // counts and epoch ms fit a JS number
+    types: {
+      int8: { to: 20, from: [20], serialize: String, parse: Number }, // counts and epoch ms fit a JS number
+      // Db callers already serialize JSON parameters, as PGlite/SQL expect. Avoid encoding them a second time.
+      json: { to: 114, from: [114, 3802], serialize: (value: unknown) => typeof value === 'string' ? value : JSON.stringify(value), parse: JSON.parse },
+    },
   });
   const wrap = (s: postgres.Sql | postgres.TransactionSql): Driver => ({
     async query(text, params) {

@@ -1,5 +1,5 @@
 # Every 6 hours: the data provider account's credits. Under 200 (LOW_CREDITS, src/lib/icypeas.ts) the run fails, and a failed
-# scheduled run emails the repository owner. The log prints the credits either way. Secret: ICYPEAS_API_KEY (the server's key).
+# scheduled run appears in Actions (email depends on GitHub notification settings). Secret: ICYPEAS_API_KEY (the server's key).
 # ponytail: the limit and the account email are copies of LOW_CREDITS and ACCOUNT_EMAIL in icypeas.ts; change them together.
 name: provider-credits
 on:

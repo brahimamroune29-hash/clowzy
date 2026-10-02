@@ -1,5 +1,4 @@
-# Nightly copy of the clowzy schema (the Supabase free plan has no backups), kept 30 days as a private artifact.
-# The daily query also keeps the free project from pausing after a week without activity.
+# Independent nightly copy of the full clowzy schema, kept 30 days as a private artifact.
 # Restore: pg_restore --no-owner -d <database> clowzy.dump (into an empty database, as its owner).
 name: nightly-backup
 on:
@@ -12,10 +11,12 @@ jobs:
     timeout-minutes: 10
     container: postgres:17
     steps:
+      - uses: actions/checkout@v4
       - name: Dump the clowzy schema (read-only role clowzy_backup)
         env: { BACKUP_DATABASE_URL: '${{ secrets.BACKUP_DATABASE_URL }}' }
         run: |
-          pg_dump "$BACKUP_DATABASE_URL" --schema=clowzy --no-owner --no-privileges -Fc -f clowzy.dump
-          test "$(pg_restore --list clowzy.dump | grep -c 'TABLE DATA')" -ge 13
+          export PGSSLMODE=verify-full PGSSLROOTCERT="$PWD/db/supabase-ca.pem"
+          pg_dump "$BACKUP_DATABASE_URL" --schema=clowzy --enable-row-security --inserts --no-owner --no-privileges -Fc -f clowzy.dump
+          test "$(pg_restore --list clowzy.dump | grep -c 'TABLE DATA')" -ge 27
       - uses: actions/upload-artifact@v4
         with: { name: 'clowzy-${{ github.run_id }}', path: clowzy.dump, retention-days: 30 }

@@ -9,12 +9,13 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "tsx --test tests/*.test.ts",
-    "create-owner": "tsx scripts/create-owner.ts"
+    "create-owner": "tsx scripts/create-owner.ts",
+    "worker": "tsx scripts/search-worker.ts"
   },
   "dependencies": {
     "@fontsource/ibm-plex-sans-arabic": "5.3.0",
     "@phosphor-icons/react": "2.1.10",
-    "next": "16.3.6",
+    "next": "16.3.8",
     "postgres": "3.4.9",
     "react": "19.3.0",
     "react-dom": "19.3.0",
@@ -26,7 +27,7 @@
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.3.6",
+    "eslint-config-next": "16.3.8",
     "tsx": "4.23.15",
     "typescript": "5.9.3"
   },

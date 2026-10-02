@@ -1,5 +1,5 @@
 # Hourly: the site answers, and the API reaches the database (a well-formed unknown invitation is a 410 only then).
-# A failed run emails the repository owner (GitHub's default for failed scheduled workflows).
+# Failed runs appear in Actions; email delivery depends on the owner's GitHub notification settings.
 name: uptime
 on:
   schedule: [{ cron: '17 * * * *' }]
@@ -11,7 +11,8 @@ jobs:
     timeout-minutes: 3
     steps:
       - name: Site and database answer
+        env: { APP_URL: "${{ vars.APP_URL || 'https://app.clowzy.io' }}" }
         run: |
           code() { curl -s -o /dev/null -w '%{http_code}' --max-time 30 --retry 2 "$1"; }
-          test "$(code https://clowzy.vercel.app/)" = 200
-          test "$(code 'https://clowzy.vercel.app/api/invitation?token=000000000000000000000000000000000000000000000000')" = 410
+          test "$(code "$APP_URL/")" = 200
+          test "$(code "$APP_URL/api/invitation?token=000000000000000000000000000000000000000000000000")" = 410

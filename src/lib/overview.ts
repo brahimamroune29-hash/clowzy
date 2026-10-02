@@ -10,5 +10,5 @@ export function weekBoundaries(today = new Date()): string[] {
 
 // Other pages keep their existing data contract until their own performance task.
 export function overviewOnly(pathname: string) {
-  return !['/leads', '/search', '/history', '/credits', '/admin/members', '/admin/activity'].includes(pathname);
+  return !['/crm', '/leads', '/search', '/history', '/credits', '/admin/members', '/admin/activity'].includes(pathname);
 }

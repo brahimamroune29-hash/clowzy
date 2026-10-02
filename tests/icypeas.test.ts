@@ -100,7 +100,7 @@ test('a probable email (95% sure, paid by the provider anyway) is delivered and 
   const { candidates } = await m.client.results('file1', ['a', 'b', 'c', 'd', 'e', 'f'].map(lead) as never);
   assert.deepEqual(candidates.map(c => [c.email, c.email_status]), [['c@company-c.example', 'VERIFIED'], ['d2@company-d.example', 'VERIFIED'], ['b@company-b.example', 'PROBABLE']],
     'sure first, and the sure address of a person with both; personal mailboxes and unknown or missing certainty are refused');
-  assert.equal(emailTrust('PROBABLE'), 'مؤكد ٩٥٪'); assert.equal(emailTrust('VERIFIED'), 'مؤكد ٩٩٪');
+  assert.equal(emailTrust('PROBABLE'), 'ثقة المزوّد ٩٥٪'); assert.equal(emailTrust('VERIFIED'), 'ثقة المزوّد ٩٩٪');
 });
 test('short batches top up from the next people page, never submitting more than 20x the requested count, then try the companies', async () => {
   const people = 'abcdefghijklmnopqrstuvwxyz'.split('');
@@ -217,7 +217,7 @@ test('two overlapping polls deliver once and submit the next batch once (no paid
 
 test('a repeat search continues from the member\'s cursor (leftovers, then the next page) instead of rescanning the top', async () => {
   const pages = [{ leads: ['a', 'b', 'c', 'd', 'e'].map(lead), token: 't1' }, { leads: ['f', 'g', 'h'].map(lead) }];
-  const m = mockTransport({ pages, files: [[item(0, 'a@company-a.example')], [item(0, 'e@company-e.example')]] });
+  const m = mockTransport({ pages, files: [[item(0, 'a@company-a.example'), ...[1,2,3].map(i=>item(i,null))], [item(0, 'e@company-e.example')]] });
   const { store, user } = await setup(), search = live(store, m.client);
   try {
     const first = await search.start(user.id, input(1)); await eligible(store); await search.poll(user.id, first.id);
@@ -393,7 +393,7 @@ test('no balance: the search is refused before any provider call', async () => {
   const { store, user } = await setup(), admin = await store.addUser('Owner', 'owner@example.com', 'secure-password', 'admin'), m = mockTransport();
   try {
     await store.adjustCredits(admin.id, user.id, 'set', 0, 'test', randomUUID());
-    await assert.rejects(live(store, m.client).start(user.id, input(1)), /لا يكفي/);
+    await assert.rejects(live(store, m.client).start(user.id, input(1)), /لا يكفي|رصيدك صفر/);
     assert.equal(m.calls.length, 0);
   } finally { await store.close(); }
 });

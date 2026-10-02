@@ -8,7 +8,7 @@ import { assistForm } from '../src/lib/contracts';
 const arabic = /[؀-ۿ]/;
 
 test('every Arabic sentence the server can send has its English: a new message without a translation fails here', () => {
-  const files = ['src/lib/store.ts', 'src/lib/live-search.ts', 'src/lib/icypeas.ts', 'src/app/api/[...path]/route.ts', 'src/lib/access.ts', 'src/lib/audience.ts'];
+  const files = ['src/lib/crm.ts','src/lib/store.ts', 'src/lib/live-search.ts', 'src/lib/icypeas.ts', 'src/app/api/[...path]/route.ts', 'src/lib/access.ts', 'src/lib/audience.ts'];
   const missing: string[] = [];
   for (const file of files) for (const m of readFileSync(file, 'utf8').matchAll(/'([^'\n]*[؀-ۿ][^'\n]*[.…])\s?'/g)) {
     const text = m[1].trim();

@@ -1,6 +1,16 @@
 // English for the server's Arabic messages, applied on the way out (route.ts) when the page asks for English. Messages are
 // built from these sentences, so whole sentences are replaced wherever they appear; numbered ones go through the patterns.
 const sentences: Record<string, string> = {
+  'تصدير GoHighLevel يتطلب عمود البريد.': 'GoHighLevel export requires the email column.',
+  'التصدير المخصص محدود بألف عميل. حدد العملاء أولًا.': 'Custom export is limited to 1,000 contacts. Select contacts first.',
+  'إدارة العملاء غير مفعلة بعد.': 'CRM is not enabled yet.',
+  'الحد الأقصى 100 جمهور محفوظ.': 'You can save up to 100 audiences.',
+  'الحد الأقصى 100 قائمة.': 'You can create up to 100 lists.',
+  'العميل غير موجود في حسابك.': 'This contact is not in your account.',
+  'القائمة غير موجودة في حسابك.': 'This list is not in your account.',
+  'العملية غير موجودة.': 'This action does not exist.',
+  'طلب الحذف غير موجود أو عولج سابقًا.': 'This deletion request does not exist or was already handled.',
+
   'بلغت حد البحث اليومي لحسابك. يمكنك البحث مجددًا بعد 24 ساعة من أول بحث اليوم، أو تواصل مع مالك المنصة.': 'You have reached today’s search limit. You can search again 24 hours after today’s first search, or contact the platform owner.',
   'الحساب غير متاح أو تم تعطيله.': 'This account is unavailable or disabled.',
   'هذه العملية متاحة لمالك المنصة فقط.': 'Only the platform owner can do this.',
@@ -11,7 +21,7 @@ const sentences: Record<string, string> = {
   'طلبات كثيرة. انتظر دقيقة وحاول مجددًا.': 'Too many requests. Wait a minute and try again.',
   'معرّف الطلب مستخدم لبحث مختلف.': 'This request id belongs to a different search.',
   'الرصيد المتاح بعد حجز عمليات البحث لا يكفي.': 'Not enough credits left after your running searches.',
-  'لديك عمليتا بحث قيد التنفيذ. انتظر اكتمالهما.': 'You have two searches running. Wait for them to finish.',
+  'لديك بحث قيد التنفيذ. انتظر اكتماله.': 'You have a search running. Wait for it to finish.',
   'قائمة البحث ممتلئة مؤقتًا. حاول لاحقًا.': 'The search queue is full for now. Try later.',
   'البحث غير موجود في حسابك.': 'This search is not in your account.',
   'بعض النتائج غير موجودة في حسابك.': 'Some results are not in your account.',

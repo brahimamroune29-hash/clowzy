@@ -28,3 +28,8 @@ export const weekBoundariesSchema = z.array(z.iso.datetime()).length(8).refine(d
     return hours >= 20 && hours <= 28;
   }), 'Expected seven consecutive calendar days',
 );
+
+export const assistRequestSchema = z.object({
+  messages: z.array(z.object({role:z.enum(['user','assistant']),content:text(1200).min(1)})).min(1).max(8),
+  context: searchSchema.omit({confirmed:true,requestId:true}).extend({sector:text(60)}).optional(),
+});

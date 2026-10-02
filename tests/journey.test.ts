@@ -33,7 +33,7 @@ function provider(o: Fake = {}) {
     if (String(url).startsWith('https://openrouter.ai/')) {
       if (o.ai === 'down') return Response.json({}, { status: 500 });
       const asked = body.messages[1].content as string;
-      if (String(body.messages[0].content).startsWith('You are the assistant')) return Response.json({ choices: [{ message: { content: JSON.stringify({ reply: 'جهّزت لك البحث.',
+      if (String(body.messages[0].content).startsWith('You are the assistant')) return Response.json({ choices: [{ message: { content: JSON.stringify({ reply: 'جهّزت لك البحث.', action:'prepare', choices:[],
         search: { mode: 'people', field: 'الصحة والطب', specialty: 'عيادات الأسنان', other: '', countries: ['AE', 'ZZ'], city: 'Dubai', title: 'مدير العيادة أو المدير الطبي', size: 'all', count: 4 } }) } }] });
       const content = asked.startsWith('Sector:') ? { industries: [{ name: 'Retail Health and Personal Care Products', ar: 'متاجر العناية الشخصية' }, { name: 'Cosmetics', ar: 'مستحضرات التجميل' }] } : { titles: ['Warehouse Manager'] };
       return Response.json({ choices: [{ message: { content: JSON.stringify(content) } }] });
@@ -229,7 +229,7 @@ test('journey: member closes the tab mid-search -> the next search closes it wit
 test('journey: no credits left -> the search is refused before anything is spent', async t => {
   const { member } = await setup(t, 0);
   const fake = provider();
-  const r = await member('search', form(1));
+  const r = await member('search', {...form(1), sector: 'محلات العطور'});
   assert.equal(r.status, 400);
   assert.equal(fake.submits(), 0);
   const count = await member('search/count', { ...form(1), sector: 'محلات العطور' });
@@ -297,7 +297,7 @@ test('journey: the assistant turns a description into a checked search; an Engli
   provider();
   const r = await member('assist', { messages: [{ role: 'user', content: 'عيادات أسنان في دبي، أبغى المدير' }] });
   assert.equal(r.status, 200);
-  assert.equal(r.data.reply, 'جهّزت لك البحث.');
+  assert.match(r.data.reply, /عيادات الأسنان.*دبي.*4/);
   assert.deepEqual([r.data.search.specialty, r.data.search.countries, r.data.search.city, r.data.search.count], ['عيادات الأسنان', ['AE'], 'Dubai', 4], 'an invalid country code is dropped');
   assert.equal((await member('assist', { messages: [] })).status, 400);
   const english = await member('search/count', { ...form(2), city: 'الخبر الشمالية' }, 'en');
@@ -346,4 +346,48 @@ test('journey: the owner sees the provider credits, flagged under 200', async t 
   assert.deepEqual((await owner('provider/verify', {})).data, { ok: true, credits: 199, low: true });
   globalThis.fetch = (async (url: string) => String(url).endsWith('/find-people/count') ? Response.json({ success: true, total: 1 }) : Response.json({ validationErrors: [{ message: 'email' }] })) as typeof fetch;
   assert.equal((await owner('provider/verify', {})).status, 502, 'a wrong account email is an error, not a balance of zero');
+});
+
+test('journey: database limits reject API, search and count before any paid or provider call', async t => {
+  const { store, member } = await setup(t);
+  const fake = provider(), account = await me(member), id = account.user.id;
+  const window = Date.now() - Date.now() % 60000;
+  for (const [prefix, max, path, payload] of [
+    ['count', 60, 'search/count', form(2)],
+    ['search', 20, 'search', form(2)],
+    ['api', 120, 'bootstrap?view=full', undefined],
+  ] as const) {
+    await store.db.run('INSERT INTO rate_hits(key,window_start,count) VALUES(?,?,?) ON CONFLICT(key,window_start) DO UPDATE SET count=excluded.count', prefix + ':' + id, window, max);
+    assert.equal((await member(path, payload)).status, 429, prefix);
+    assert.equal(fake.calls.length, 0, 'no provider or AI call after the shared limit');
+  }
+});
+
+test('journey: reserved credits and the shared daily AI allowance stop uncached mapping before payment', async t => {
+  const { member, store } = await setup(t, 2), fake = provider({ neverDone: true });
+  const uid = (await me(member)).user.id;
+  const started = await member('search', form(2));
+  assert.equal(started.status, 200);
+  const before = fake.calls.length;
+  assert.equal((await member('search/count', {...form(1), sector:'متاجر الورود'})).status, 400);
+  assert.equal(fake.calls.length, before, 'reserved money cannot fund new AI calls');
+  await store.finishSearch(started.data.id);
+  const stamp = Date.now() - Date.now() % 86400000;
+  await store.db.run('INSERT INTO rate_hits(key,window_start,count) VALUES(?,?,150) ON CONFLICT(key,window_start) DO UPDATE SET count=150', 'assist-day:'+uid, stamp);
+  assert.equal((await member('search/count', {...form(1), sector:'متاجر الورود'})).status, 429);
+  assert.equal((await member('search/count', {...form(1), title:'مسؤول التخزين'})).status, 429, 'title fallback cannot swallow a budget rejection');
+  assert.equal(fake.calls.length, before);
+  assert.equal((await member('search/count', form(1))).status, 200, 'listed filters still work without AI');
+});
+
+test('cron API requires its own bearer secret and does not accept a member session instead', async t => {
+  const {member}=await setup(t);
+  const oldSecret=process.env.CRON_SECRET,oldCrm=process.env.CRM_ENABLED;
+  process.env.CRON_SECRET='a-secure-cron-test-token-'.repeat(3);process.env.CRM_ENABLED='true';
+  t.after(()=>{if(oldSecret===undefined)delete process.env.CRON_SECRET;else process.env.CRON_SECRET=oldSecret;if(oldCrm===undefined)delete process.env.CRM_ENABLED;else process.env.CRM_ENABLED=oldCrm;});
+  assert.equal((await member('cron/search')).status,401);
+  assert.equal((await member('cron/search',{})).status,401);
+  const req=new NextRequest('https://deployment-test.vercel.app/api/cron/search',{headers:{host:'deployment-test.vercel.app',authorization:'Bearer '+process.env.CRON_SECRET}});
+  const response=await GET(req,{params:Promise.resolve({path:['cron','search']})});
+  assert.equal(response.status,200);assert.deepEqual(await response.json(),{handled:0});
 });

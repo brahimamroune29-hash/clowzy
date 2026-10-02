@@ -16,6 +16,12 @@
 
 لا توجد حسابات أو بيانات تجريبية ولا دخول بلا كلمة مرور. المالك ينشئ المشتركين بدعوات من لوحته.
 
+### فحص الواجهة والاتصال
+
+- بعد تشغيل الخادم المحلي، `node scripts/check-platform-browser.cjs` يفحص مسارات المالك والمشترك في متصفح مع قاعدة مؤقتة ومزوّد محاكى. يستخدم Playwright المثبّت، أو المسار المحدد في `PLAYWRIGHT_MODULE`.
+- `npx tsx scripts/check-postgres-json.ts` يفحص قراءة JSON من قاعدة `DATABASE_URL` الحقيقية دون تعديل الجداول أو استدعاء مزوّد البيانات.
+- للبيانات التي حُفظت قبل إصلاح ترميز JSON: احفظ نسخة ثم نفّذ `db/repair-crm-json.sql` مرة واحدة. أعد تشغيل الخادم بعد تحديث برنامج اتصال قاعدة البيانات.
+
 ## قاعدة البيانات (Supabase)
 
 - الجداول في مخطط مستقل اسمه clowzy، غير مكشوف لواجهة Supabase العامة، ولا صلاحية عليه لأدوار anon وauthenticated.
@@ -65,15 +71,15 @@ alter table clowzy.users add column if not exists recovery_hash text;
 
 ## النسخ الاحتياطي والمراقبة (GitHub Actions، المستودع الخاص brahimamroune29-hash/clowzy)
 
-- .github/workflows/backup.yml: كل ليلة 02:00 UTC نسخة من مخطط clowzy بدور قراءة فقط clowzy_backup (سر BACKUP_DATABASE_URL عبر مجمّع الجلسات، المنفذ 5432)، تُحفظ 30 يومًا ملفًا خاصًا في صفحة التشغيل. الاستعلام اليومي يمنع توقف مشروع Supabase المجاني. الاسترجاع: pg_restore --no-owner -d <قاعدة فارغة> clowzy.dump (جُرّب في 30 سبتمبر 2026: 15 جدولًا، الأعداد مطابقة).
-- .github/workflows/uptime.yml: كل ساعة يتحقق من الصفحة ومن وصول الخادم إلى القاعدة؛ الفشل يصل بريدًا لصاحب المستودع.
-- .github/workflows/provider-credits.yml: كل 6 ساعات يقرأ رصيد حساب Icypeas، ويفشل تحت 200 فيصل بريد لصاحب المستودع. يحتاج سر ICYPEAS_API_KEY في المستودع. لوحة المالك تعرض الرصيد نفسه (أحمر تحت 200). بريد الحساب ثابت في icypeas.ts وفي هذا الملف.
+- .github/workflows/backup.yml: كل ليلة 02:00 UTC نسخة من مخطط clowzy بدور قراءة فقط clowzy_backup (سر BACKUP_DATABASE_URL عبر مجمّع الجلسات، المنفذ 5432)، تُحفظ 30 يومًا ملفًا خاصًا في صفحة التشغيل. يستخدم --enable-row-security مع سياسة قراءة مخصصة؛ صلاحية SELECT وحدها لا تكفي مع RLS. جُرّبت استعادة الجداول الحية الـ26، ثم الترقية واستعادة نسخة دور القراءة للجداول الـ27 محليًا في 2 أكتوبر 2026. راجع دليل التسليم لإعادة إنشاء الأدوار والصلاحيات بعد الاستعادة.
+- .github/workflows/uptime.yml: كل ساعة يتحقق من الصفحة ومن وصول الخادم إلى القاعدة؛ الفشل يظهر في GitHub Actions؛ وصول البريد يعتمد على إعدادات إشعارات صاحب المستودع.
+- .github/workflows/provider-credits.yml: كل 6 ساعات يقرأ رصيد حساب Icypeas، ويفشل تحت 200 ويظهر الفشل في Actions. يحتاج سر ICYPEAS_API_KEY في المستودع. لوحة المالك تعرض الرصيد نفسه (أحمر تحت 200). بريد الحساب ثابت في icypeas.ts وفي هذا الملف.
 
 ## النشر (Vercel)
 
-- مشروع Vercel اسمه clowzy، ودوال الخادم في منطقة fra1 قرب قاعدة eu-central-1 (vercel.json).
-- متغيرات الإنتاج: DATABASE_URL وICYPEAS_API_KEY وOPENROUTER_API_KEY (حساسة)، وAPP_URL. بدون OPENROUTER_API_KEY تعمل القوائم، ويظهر للمشترك أن «أخرى» غير مفعّل.
-- النشر: vercel deploy --prod. الملف .vercelignore يستبعد ملفات البيئة والبيانات المحلية والاختبارات.
+- مشروع Vercel اسمه clowzy، ودوال الخادم في منطقة dub1 قرب قاعدة eu-west-1 (vercel.json).
+- متغيرات الإنتاج: DATABASE_URL وICYPEAS_API_KEY وOPENROUTER_API_KEY وCRON_SECRET (حساسة)، وAPP_URL. بدون OPENROUTER_API_KEY تعمل القوائم، ويظهر للمشترك أن «أخرى» غير مفعّل.
+- النشر لحساب العميل: vercel deploy --prod --scope clowzy -Q .data/vercel-client-auth. يحتاج الحساب صلاحية نشر مؤلف Git. تشغيل البحث المجدول يتم من Supabase Cron. الملف .vercelignore يستبعد ملفات البيئة والبيانات المحلية والاختبارات.
 
 ## ما يعمل فعليًا
 
@@ -112,7 +118,7 @@ alter table clowzy.users add column if not exists recovery_hash text;
 
 ## التحقق
 
-- npm test: 54 اختبارًا تشمل الرصيد والتكرار والتزامن وفشل المزوّد والتراجع عن المعاملة الفاشلة والدعوات والجلسات وعزل التصدير.
+- npm test: 132 اختبارًا تشمل الرصيد والتكرار والتزامن وفشل المزوّد والتراجع عن المعاملة الفاشلة والدعوات والجلسات وعزل التصدير.
 - npm run lint وnpm run typecheck وnpm run build.
 
 سعر التطوير المتفق عليه للنسخة الأولى: 4,000 دولار. فواتير الخدمات والبيانات والتشغيل منفصلة.
@@ -126,3 +132,13 @@ alter table clowzy.users add column if not exists recovery_hash text;
 ## تجربة FullEnrich — 25 سبتمبر
 
 راجع [دليل التجربة](docs/fullenrich-local-trial.md) للإعداد والحدود والأدلة. يظل التطبيق محليًا؛ تفعيل API لا يحوّله إلى نسخة جاهزة لإطلاق المشتركين.
+
+## إدارة العملاء والمخزون المركزي
+
+التنفيذ وخطوات الترقية والتراجع موثقة في [docs/crm-delivery-2026-10-02.md](docs/crm-delivery-2026-10-02.md).
+الجداول في مخطط clowzy الخاص داخل Supabase. طبّق الترقية قبل CRM_ENABLED=true؛ في القاعدة الجديدة شغّل db/crm-access.sql بعد إنشاء دور التطبيق.
+CATALOG_REUSE_ENABLED=false يبقى معطلًا إلى حين تأكيد حق إعادة تقديم بيانات المزوّد بين الحسابات.
+لتكملة البحث بعد إغلاق الصفحة: الترحيلان `20261002215234_search_schedule.sql` و`20261002215831_private_search_schedule.sql` يجهزان مهمة Supabase Cron كل دقيقة، ويستدعي `/api/cron/search` فقط عند وجود بحث جارٍ. احفظ `CRON_SECRET` نفسه في Supabase Vault باسم `clowzy_cron_secret`؛ لا تضع السر داخل SQL المهمة. الاستدعاء مباشر عبر امتداد `http` ولا يكتب السر في طابور `pg_net`. الترحيل ينشئها معطلة؛ بعد النشر وفحص المصادقة فعّلها بـ `select cron.alter_job(jobid,active:=true) from cron.job where jobname='clowzy-search-worker';`. المهمة تعالج خطوة واحدة كل دقيقة؛ العامل المستقل `npm run worker` أنسب عند زيادة الطابور. لا تتطلب هذه الجدولة خدمة مدفوعة جديدة؛ صلاحية خطة الاستضافة للاستخدام التجاري قرار منفصل.
+فحص الواجهة ببيانات محلية فقط: npm run dev، ثم PLAYWRIGHT_MODULE=/absolute/path/to/playwright node scripts/check-crm-browser.cjs.
+
+حالة التسليم الحالية والفحوص وخطوات النشر المتبقية: [docs/launch-readiness-2026-10-02.md](docs/launch-readiness-2026-10-02.md).

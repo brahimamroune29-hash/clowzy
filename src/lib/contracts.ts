@@ -1,3 +1,4 @@
+import type { SearchInput } from './schemas';
 import { countryFromText } from './places';
 
 // What the member picks from: a main field, then one of its specialties or the whole field. The server maps each label to
@@ -50,10 +51,10 @@ export type User = { id: string; name: string; email: string; role: Role; active
 // When the terms last changed in a way members must accept again (ISO UTC, same format as terms_accepted_at). Raise it with
 // the text in terms.tsx: every member who accepted before it sees the terms again before anything else (route.ts).
 // Never later than the deploy: acceptances would count as old until then (a test checks it is in the past).
-export const TERMS_VERSION = '2026-10-01T13:05:00.000Z';
+export const TERMS_VERSION = '2026-10-02T00:00:00.000Z';
 export const termsCurrent = (user: Pick<User, 'terms_accepted_at'>) => !!user.terms_accepted_at && user.terms_accepted_at >= TERMS_VERSION;
 // How sure the provider is that the email exists: VERIFIED <1% expected bounce, PROBABLE <5% (Icypeas certainties).
-export const emailTrust = (status: string, en = false) => status === 'PROBABLE' ? (en ? 'Verified 95%' : 'مؤكد ٩٥٪') : status === 'VERIFIED' ? (en ? 'Verified 99%' : 'مؤكد ٩٩٪') : status;
+export const emailTrust = (status: string, en = false) => status === 'PROBABLE' ? (en ? 'Provider confidence 95%' : 'ثقة المزوّد ٩٥٪') : status === 'VERIFIED' ? (en ? 'Provider confidence 99%' : 'ثقة المزوّد ٩٩٪') : status;
 export type Contact = { kind?: 'person' | 'company'; id: string; user_id: string; search_id: string; name: string; email: string; company: string; title: string; sector: string; country: string; city: string; website: string; size: string; source: string; email_status: string; created_at: string };
 export type Search = { id: string; user_id: string; filters: string; title: string; requested: number; delivered: number; duplicates: number; status: string; created_at: string; message?: string; checked?: number };
 export type Ledger = { id: string; amount: number; kind: string; reason: string; created_at: string; balance_after: number };
@@ -66,6 +67,7 @@ export type OverviewStats = {
   weekly: { start: string; end: string; count: number }[];
 };
 export type Snapshot = {
+  features?:{crm:boolean}; wallet?:{total:number;reserved:number;available:number};
   provider?: { configured: boolean; maxCount: number }; // no provider name: members never see it
   user: User; contacts: Contact[]; searches: Search[]; ledger: Ledger[]; exports: ExportEvent[];
   summary?: OverviewStats;
@@ -99,8 +101,15 @@ export const labelsEn: Record<string, string> = {
 };
 
 // The assistant (src/lib/ai.ts): a short answer, and a search form when the member described who they want to reach.
+export type AssistContext = Pick<SearchInput, 'mode' | 'sector' | 'countries' | 'city' | 'title' | 'size' | 'count'>;
 export type AssistMessage = { role: 'user' | 'assistant'; content: string };
-export type AssistReply = { reply: string; search?: { mode: 'people' | 'companies'; field: string; specialty: string; other: string; countries: string[];
+export function searchMethod(query: Pick<URLSearchParams,'get'>): 'manual'|'ai'|null {
+  const method=query.get('method');
+  if(method==='manual'||method==='ai')return method;
+  if(method!==null)return null;
+  return query.get('ai')?'ai':query.get('from')||query.get('saved')?'manual':null;
+}
+export type AssistReply = { reply: string; action?: 'prepare' | 'clarify' | 'answer'; choices?: string[]; search?: { mode: 'people' | 'companies'; field: string; specialty: string; other: string; countries: string[];
   city: string; title: string; size: 'all' | '1-10' | '11-50' | '51-200'; count: number } };
 // The assistant's suggestion -> search form values (a specialty, a whole field, or the member's own words). Checked in the
 // browser too: it may arrive in a link (?ai=), so nothing is trusted; the server checks the search itself.

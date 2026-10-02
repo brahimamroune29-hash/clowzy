@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { z } from 'zod';
 import { SUBMIT_MULTIPLE, type Candidate, type Resolved } from './contracts';
 import { cityNames, countryLabel, englishName, placeOf } from './places';
-import { companyEmail } from './site-email';
+import { abortable, companyEmail } from './site-email';
 
 // status: HTTP status for the API response. uncertain: a paid request may have reached Icypeas.
 // rejected: Icypeas refused this exact request (validation / 4xx), e.g. an expired pagination token.
@@ -76,7 +77,7 @@ const leadSchema = z.object({
 });
 const companySchema = z.object({ name: text, url: text, address: text, website: text, industry: text, numberOfEmployees: z.number().nullish() });
 const SCRAPE_MS = 10000; // reading one page of company sites, within a request's collecting budget (live-search.ts)
-export type Lead = z.infer<typeof leadSchema>;
+export type Lead = z.infer<typeof leadSchema> & { suppressed?: boolean };
 const itemSchema = z.object({
   _id: z.string(), status: z.string(),
   userData: z.object({ externalId: z.string().nullish() }).nullish(),
@@ -98,7 +99,7 @@ const inCountries = (lead: Lead, codes: string[]) => { const { code } = placeOf(
 // A company found by the companies search stands under its own name.
 export const leadName = (lead: Lead) => [lead.firstname, lead.lastname].filter(Boolean).join(' ').trim() || (lead.email ? lead.lastCompanyName?.trim() || '' : '');
 const nameKey = (name: string, company: string) => (name + '|' + company).trim().toLowerCase();
-export const personKey = (lead: Lead) => lead.profileUrl?.trim().toLowerCase() || nameKey(leadName(lead), lead.lastCompanyName || '');
+export const personKey = (lead: Lead) => createHash('sha256').update(lead.profileUrl?.trim().toLowerCase() || nameKey(leadName(lead), lead.lastCompanyName || '')).digest('hex');
 export function safeWebsite(value: string | null | undefined) {
   try { const u = new URL(/^https?:\/\//i.test(value || '') ? value! : 'https://' + value); return value && ['https:', 'http:'].includes(u.protocol) ? u.href : ''; } catch { return ''; }
 }
@@ -178,8 +179,17 @@ export class IcypeasClient {
     const leads: Lead[] = parsed.data.map(c => ({ firstname: '', lastname: '', profileUrl: c.url, lastJobTitle: '', address: c.address, lastCompanyName: c.name,
       lastCompanyWebsite: c.website, lastCompanyIndustry: c.industry, lastCompanySize: c.numberOfEmployees, email: '' }))
       .filter(l => l.lastCompanyName?.trim() && siteOf(l) && inCountries(l, input.countries));
-    const emails: string[] = [];
-    await Promise.race([Promise.all(leads.map(async (l, i) => { emails[i] = await this.siteEmail(l.lastCompanyWebsite!).catch(() => ''); })), sleep(SCRAPE_MS)]);
+    const emails: string[] = [], controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error('Website batch deadline')), SCRAPE_MS);
+    let nextSite = 0;
+    try {
+      await Promise.all(Array.from({ length: Math.min(4, leads.length) }, async () => {
+        while (nextSite < leads.length && !controller.signal.aborted) {
+          const i = nextSite++;
+          emails[i] = await abortable(this.siteEmail(leads[i].lastCompanyWebsite!, undefined, controller.signal), controller.signal).catch(() => '');
+        }
+      }));
+    } finally { clearTimeout(timer); controller.abort(); }
     return { leads: leads.map((l, i) => ({ ...l, email: emails[i] ?? '' })).filter(l => l.email), returned: parsed.data.length, token: next.success ? next.data.token : null };
   }
   // People: email discovery (1 credit per found email). Companies: verification of the site email (0.1 credit per email).
@@ -205,7 +215,7 @@ export class IcypeasClient {
     const leadOf = (item: z.infer<typeof itemSchema>) => /^\d+$/.test(item.userData?.externalId ?? '') ? leads[Number(item.userData!.externalId)] : undefined;
     for (const item of finished) {
       const lead = leadOf(item);
-      if (!lead || /NOT_FOUND/.test(item.status)) continue;
+      if (!lead || lead.suppressed || /NOT_FOUND/.test(item.status)) continue;
       const usable = (item.results?.emails ?? []).filter(e => z.email().safeParse(e.email).success && !freeMail.test(e.email.split('@')[1]));
       const email = usable.find(e => sure.includes(e.certainty || '')) ?? usable.find(e => e.certainty === 'probable');
       if (!email || (lead.email && email.email.toLowerCase() !== lead.email.toLowerCase())) continue; // a verification answers for the email it was sent
@@ -218,7 +228,7 @@ export class IcypeasClient {
       });
     }
     // Rows the provider could not pay for (its balance ran out after the batch was accepted) were never searched.
-    const unpaid = finished.filter(i => i.status === 'INSUFFICIENT_FUNDS').flatMap(i => leadOf(i) ?? []);
+    const unpaid = finished.filter(i => i.status === 'INSUFFICIENT_FUNDS').flatMap(i => { const lead = leadOf(i); return lead && !lead.suppressed ? [lead] : []; });
     candidates.sort((a, b) => Number(a.email_status === 'PROBABLE') - Number(b.email_status === 'PROBABLE'));
     return { done: finished.length + malformed >= leads.length, candidates, unpaid }; // a malformed row counts as finished without email
   }

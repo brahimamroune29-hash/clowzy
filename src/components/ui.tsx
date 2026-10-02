@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useLayoutEffect, useRef, useId } from 'react';
+import { cloneElement, isValidElement, useEffect, useLayoutEffect, useRef, useId } from 'react';
 import { ArrowLeft, ArrowUpLeft, CircleNotch, X, MagnifyingGlass, CheckCircle, WarningCircle, Moon, Sun } from '@phosphor-icons/react';
 import { useT } from './lang';
 export function Brand() {
@@ -26,9 +26,12 @@ export function Notice({children,error=false}:{children:React.ReactNode;error?:b
 export function PageHeading({title,description,children}:{title:string;description?:string;children?:React.ReactNode}) {
   return <div className="page-heading"><div><h1>{title}</h1>{description&&<p>{description}</p>}</div>{children&&<div className="heading-action">{children}</div>}</div>;
 }
-export function Field({label,children,hint}:{label:string;children:React.ReactNode;hint?:string}) {return <label className="field"><span>{label}</span>{children}{hint&&<small>{hint}</small>}</label>;}
-// Same rule as the pre-paint script in layout.tsx: saved choice, else the system setting.
-function savedTheme(){let t:string|null=null;try{t=localStorage.getItem('theme');}catch{}return t==='light'||t==='dark'?t:matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}
+export function Field({label,children,hint}:{label:string;children:React.ReactNode;hint?:string}) {
+  const id=useId();
+  return <label className="field"><span id={id}>{label}</span>{isValidElement<{'aria-labelledby'?:string;'aria-describedby'?:string}>(children)?cloneElement(children,{'aria-labelledby':id,'aria-describedby':hint?id+'-hint':undefined}):children}{hint&&<small id={id+'-hint'}>{hint}</small>}</label>;
+}
+// Same rule as the pre-paint script in layout.tsx: saved choice, else light.
+function savedTheme(){let t:string|null=null;try{t=localStorage.getItem('theme');}catch{}return t==='light'||t==='dark'?t:'light';}
 export function ThemeToggle() {
   const t=useT();
   // React Strict Mode (development only) clears data-theme on its remount; re-apply before paint. No-op in production.

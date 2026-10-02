@@ -1,10 +1,10 @@
 'use client';
-import { useEffect,useState } from 'react';
+import { useEffect,useRef,useState } from 'react';
 import Link from 'next/link';
 import { useRouter,useSearchParams } from 'next/navigation';
-import { ArrowDown, Check, CheckCircle, Coins, Copy, DownloadSimple, MagnifyingGlass, MapPin, Plus, Sparkle, UsersThree, ClockCounterClockwise, ArrowSquareOut, X } from '@phosphor-icons/react';
-import { assistForm, type AssistReply, type Contact, emailTrust, expectedEmails, fieldOf, fields, type FieldName, gulf, OTHER, type Search, type SearchInput, titles, withCountries } from '@/lib/contracts';
-import { countrySuggestions } from '@/lib/places';
+import { ArrowDown, Check, CheckCircle, Coins, Copy, DownloadSimple, MagnifyingGlass, MapPin, Plus, SlidersHorizontal, Sparkle, UsersThree, ClockCounterClockwise, ArrowSquareOut, X } from '@phosphor-icons/react';
+import { searchMethod, assistForm, type AssistMessage, type AssistReply, type Contact, emailTrust, expectedEmails, fieldOf, fields, type FieldName, gulf, OTHER, type Search, type SearchInput, titles, withCountries } from '@/lib/contracts';
+import { cityNames, countrySuggestions } from '@/lib/places';
 import { api,date,downloadContacts,number } from '@/lib/client';
 import type { ViewProps } from './platform';
 import { SearchProgress } from './search-progress';
@@ -39,9 +39,14 @@ export function Dashboard({data}:ViewProps) {
 type Form={mode:'people'|'companies';sector:string;countries:string[];city:string;title:string;size:'all'|'1-10'|'11-50'|'51-200';count:number};
 // The form as the member edits it, from a saved search ("repeat"), the assistant, or the defaults.
 function formOf(raw?:Partial<SearchInput>):Form{
-  return {mode:raw?.mode==='companies'?'companies':'people',sector:raw?.sector||'الصحة والطب',countries:raw?.countries?.length?raw.countries:['SA'],city:raw?.city||'',title:raw?.title||'',size:raw?.size||'all',count:raw?.count||10};
+  return {mode:raw?.mode==='companies'?'companies':'people',sector:raw?.sector||'',countries:raw?.countries?.length?raw.countries:['SA'],city:raw?.city||'',title:raw?.title||'',size:raw?.size||'all',count:raw?.count||10};
 }
-const fromFilters=(filters?:string)=>formOf(filters?withCountries(JSON.parse(filters)) as Partial<SearchInput>:undefined);
+const fromFilters=(filters?:string)=>{
+  try { const raw=filters?withCountries(JSON.parse(filters)):undefined;
+    if(!raw||typeof raw!=='object')return formOf();
+    const s=raw as Record<string,unknown>;return formOf(assistForm({...s,other:s.sector},50));
+  } catch { return formOf(); }
+};
 // Countries: type part of a name for suggestions; the chosen ones show as removable tags.
 function CountryPicker({value,onChange}:{value:string[];onChange:(v:string[])=>void}){
   const t=useT(),names=useNames(),[text,setText]=useState(''),[error,setError]=useState('');
@@ -59,54 +64,75 @@ function CountryPicker({value,onChange}:{value:string[];onChange:(v:string[])=>v
 }
 export function SearchView({data,reload,notify}:ViewProps){
   const t=useT(),{lang}=useLang(),names=useNames(),router=useRouter(),query=useSearchParams();
+  const method=searchMethod(query);
   const previous=data.searches.find(s=>s.id===query.get('from'));
   // Starting values: a search the assistant prepared (?ai=, from its chat window), else a repeated search, else the defaults.
-  const maxCount=Math.max(1,Math.min(data.provider?.maxCount??50,data.user.balance));
+  const available=data.wallet?.available??data.user.balance,maxCount=Math.max(0,Math.min(data.provider?.maxCount??50,available));
   const [filters,setFilters]=useState<Form>(()=>{
-    let f=fromFilters(previous?.filters);
-    try{const raw=query.get('ai');if(raw){const s=assistForm(JSON.parse(raw),maxCount);f={...f,...Object.fromEntries(Object.entries(s).filter(([,v])=>v!==undefined))};}}catch{}
-    return {...f,count:Math.max(1,Math.min(f.count,maxCount))};
+    let f=fromFilters(query.get('saved')||previous?.filters);
+    try{const raw=query.get('ai');if(raw){const s=assistForm(JSON.parse(raw),50);f={...f,...Object.fromEntries(Object.entries(s).filter(([,v])=>v!==undefined))};}}catch{}
+    return {...f,count:Math.max(1,Math.min(f.count,50))};
   });
   const [busy,setBusy]=useState(false),[confirmed,setConfirmed]=useState(false),[error,setError]=useState('');
+  const [audienceName,setAudienceName]=useState('');
   const [requestId,setRequestId]=useState(()=>crypto.randomUUID());
-  const [otherDraft,setOtherDraft]=useState(()=>fieldOf(filters.sector)?'':filters.sector),[other,setOther]=useState(()=>!fieldOf(filters.sector));
-  const [more,setMore]=useState(()=>!!(filters.city||filters.title||filters.size!=='all'));
+  const [otherDraft,setOtherDraft]=useState(()=>fieldOf(filters.sector)?'':filters.sector),[other,setOther]=useState(()=>!!filters.sector&&!fieldOf(filters.sector));
+  const [editing,setEditing]=useState(false);
   const listedTitle=(title:string)=>!title||(titles as readonly string[]).includes(title);
   const [titleOther,setTitleOther]=useState(()=>!listedTitle(filters.title)),[titleDraft,setTitleDraft]=useState(()=>listedTitle(filters.title)?'':filters.title);
   const [describe,setDescribe]=useState(''),[thinking,setThinking]=useState(false),[aiNote,setAiNote]=useState('');
-  const [match,setMatch]=useState<{total?:number;strict?:number;industryLabels?:string[];industries?:string[];error?:string}|null>(null); // null: counting
+  const [conversation,setConversation]=useState<AssistMessage[]>([]);
+  const [aiState,setAiState]=useState<'idle'|'prepare'|'clarify'|'answer'|'error'>('idle'),[choices,setChoices]=useState<string[]>([]);
+  const formVersion=useRef(0);
+  const [match,setMatch]=useState<{total?:number;strict?:number;industryLabels?:string[];industries?:string[];error?:string;audience:string}|null>(null); // null: counting
   function change(patch:Partial<Form>){
+    formVersion.current++;
+    setAiState('idle');setChoices([]);setAiNote('');
     setFilters(f=>{const next={...f,...Object.fromEntries(Object.entries(patch).filter(([,v])=>v!==undefined))};if(next.countries.length!==1)next.city='';return next;});
-    setConfirmed(false);setRequestId(crypto.randomUUID());if(!('count' in patch&&Object.keys(patch).length===1))setMatch(null);
+    setConfirmed(false);setRequestId(crypto.randomUUID()); // match is keyed by audience; changing only the count keeps the free count valid
   }
   function apply(patch:Partial<Form>){
     change(patch);
     if(patch.sector!==undefined){const own=!fieldOf(patch.sector);setOther(own);setOtherDraft(own?patch.sector:'');}
     if(patch.title!==undefined){const own=!listedTitle(patch.title);setTitleOther(own);setTitleDraft(own?patch.title:'');}
-    if(patch.city||patch.title||(patch.size&&patch.size!=='all'))setMore(true);
   }
-  async function prepare(){
-    if(describe.trim().length<3)return;
-    setThinking(true);setAiNote('');
-    try{const r=await api<AssistReply>('assist',{messages:[{role:'user',content:describe.trim()}]});if(r.search){apply(assistForm(r.search,maxCount));setAiNote(t('جهّزنا البحث. راجعه ثم ابدأ.','The search is ready. Review it, then start.'));}else setAiNote(r.reply);}
-    catch(e){setAiNote((e as Error).message);}finally{setThinking(false);}
+  async function prepare(content=describe){
+    if(content.trim().length<2||thinking||busy)return;
+    if(!Number.isInteger(filters.count)||filters.count<1||filters.count>50){setError(t('اختر عددًا من 1 إلى 50 قبل تجهيز الوصف.','Choose 1–50 emails before preparing your description.'));return;}
+    const version=formVersion.current;
+    const messages:AssistMessage[]=[...conversation,{role:'user' as const,content:content.trim()}].slice(-8);
+    while(messages[0]?.role==='assistant')messages.shift();
+    setThinking(true);setAiNote('');setChoices([]);setConfirmed(false);setError('');
+    try{
+      const r=await api<AssistReply>('assist',{messages,context:filters});
+      if(version!==formVersion.current){setAiNote(t('تغيّرت إعداداتك أثناء التجهيز. أرسل الوصف مجددًا لتطبيقه على اختياراتك الحالية.','Your settings changed while preparing. Send the description again to use your current choices.'));return;}
+      if(r.search) apply(assistForm(r.search,50));
+      setAiNote(r.reply);setAiState(r.search?'prepare':r.action==='clarify'?'clarify':'answer');setChoices(r.choices||[]);
+      setConversation([...messages,{role:'assistant',content:r.reply}]);setDescribe('');
+    }catch(e){setAiNote((e as Error).message);setAiState('error');}finally{setThinking(false);}
   }
+  const displayCity=lang==='ar'?(Object.entries(cityNames).find(([,en])=>en===filters.city)?.[0]||filters.city):filters.city;
   const companies=filters.mode==='companies',field=fieldOf(filters.sector) as FieldName|'';
   const audience=JSON.stringify({mode:filters.mode,sector:filters.sector,countries:filters.countries,city:filters.city,title:companies?'':filters.title,size:filters.size});
   // Free count of matching people or companies, so a too-narrow search is visible before any credit is spent.
   useEffect(()=>{
-    if(!data.provider?.configured||JSON.parse(audience).sector.length<2)return;
+    if(!method||!data.provider?.configured||JSON.parse(audience).sector.length<2)return;
     let active=true;
     const timer=setTimeout(()=>api<{total:number;strict:number;industryLabels:string[];industries:string[]}>('search/count',JSON.parse(audience))
-      .then(r=>{if(active)setMatch(r);}).catch(e=>{if(active)setMatch({error:(e as Error).message});}),700);
+      .then(r=>{if(active)setMatch({...r,audience});}).catch(e=>{if(active)setMatch({error:(e as Error).message,audience});}),700);
     return()=>{active=false;clearTimeout(timer);};
-  },[data.provider?.configured,audience]);
-  const expected=match?.total!==undefined?expectedEmails(match.strict??0,match.total,filters.count||0,filters.mode):undefined;
+  },[data.provider?.configured,audience,method]);
+  const currentMatch=match?.audience===audience?match:null;
+  const expected=currentMatch?.total!==undefined?expectedEmails(currentMatch.strict??0,currentMatch.total,filters.count||0,filters.mode):undefined;
   const few=expected!==undefined&&expected<filters.count;
   const pending=other&&filters.sector!==otherDraft.trim()||!companies&&titleOther&&filters.title!==titleDraft.trim();
   const who=companies?t('الشركات المطابقة','matching companies'):t('الأشخاص المطابقين','matching people');
+  const ready=filters.sector.length>=2&&!pending;
+  const validCount=Number.isInteger(filters.count)&&filters.count>=1&&filters.count<=maxCount;
+  const unfinishedDescription=method==='ai'&&(!!describe.trim()||aiState==='clarify');
+  const canStart=!!method&&ready&&validCount&&confirmed&&!thinking&&!unfinishedDescription&&!!currentMatch&&!currentMatch.error&&currentMatch.total!==0&&!!data.provider?.configured;
   async function submit(e:React.FormEvent){
-    e.preventDefault();setBusy(true);setError('');
+    e.preventDefault();if(busy||!canStart)return;setBusy(true);setError('');
     try{
       const result=await api<Search>('search',{...filters,title:companies?'':filters.title,confirmed,requestId});
       await reload();
@@ -120,46 +146,111 @@ export function SearchView({data,reload,notify}:ViewProps){
     }catch(e){setError((e as Error).message);}finally{setBusy(false);}
   }
   const status=pending||filters.sector.length<2?t('اكتب مجالك ثم اضغط «اعتماد».','Type your field, then press “Apply”.')
-    :!match?t('نحسب عدد ','Counting ')+who+'…':match.error?match.error
-    :(other&&match.industryLabels?.length?t('سنبحث في: ','We will search in: ')+(lang==='en'?match.industries??[]:match.industryLabels).join(lang==='en'?', ':'، ')+'. ':'')
-      +(match.total===0?t('لا يوجد ما يطابق هذه المعايير. وسّع البحث: احذف المدينة أو حجم الشركة.','Nothing matches. Widen the search: remove the city or company size.')
-      :few?(expected?t('المتوقع نحو '+expected+' بريد من '+filters.count,'Expect about '+expected+' of '+filters.count+' emails'):t('قد لا نجد بريدًا بهذه المعايير','We may find no email with these filters'))+' ('+number(match.total!)+' '+who+'). '+t('لا يُخصم إلا البريد الذي يصلك.','You pay only for emails you receive.')
-      :t('عدد '+who,companies?'Matching companies':'Matching people')+': '+number(match.total!)+'. '+t('العدّ مجاني.','Counting is free.'));
-  return <><PageHeading title={t('من تريد الوصول إليه؟','Who do you want to reach?')}/>
-  <section className="panel search-panel">
-    <div className="ai-box"><Sparkle size={20}/><div><label htmlFor="describe">{t('صف عملاءك بكلامك، والمساعد يجهّز البحث','Describe your clients and the assistant fills the search')}</label>
-      <div className="ai-row"><input id="describe" value={describe} onChange={e=>setDescribe(e.target.value)} maxLength={300} placeholder={t('مثلًا: عيادات أسنان في دبي، أبغى المدير','e.g. dental clinics in Dubai, the manager')} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();void prepare();}}}/>
-        <Button type="button" variant="secondary" loading={thinking} disabled={describe.trim().length<3} onClick={prepare}>{t('جهّز البحث','Fill it in')}</Button></div>
-      {aiNote&&<small>{aiNote}</small>}</div></div>
-    <form onSubmit={submit} className="search-form">
+    :!currentMatch?t('نحسب عدد ','Counting ')+who+'…':currentMatch.error?currentMatch.error
+    :(other&&currentMatch.industryLabels?.length?t('سنبحث في: ','We will search in: ')+(lang==='en'?currentMatch.industries??[]:currentMatch.industryLabels).join(lang==='en'?', ':'، ')+'. ':'')
+      +(currentMatch.total===0?t('لا يوجد ما يطابق هذه المعايير. وسّع البحث: احذف المدينة أو حجم الشركة.','Nothing matches. Widen the search: remove the city or company size.')
+      :few?(expected?t('المتوقع نحو '+expected+' بريد من '+filters.count,'Expect about '+expected+' of '+filters.count+' emails'):t('قد لا نجد بريدًا بهذه المعايير','We may find no email with these filters'))+' ('+number(currentMatch.total!)+' '+who+'). '+t('لا يُخصم إلا البريد الذي يصلك.','You pay only for emails you receive.')
+      :t('عدد '+who,companies?'Matching companies':'Matching people')+': '+number(currentMatch.total!)+'. '+t('العدّ مجاني.','Counting is free.'));
+  function chooseMethod(next:'manual'|'ai'|null){
+    if(busy||thinking)return;
+    const params=new URLSearchParams(query.toString());params.set('method',next||'choose');
+    setConfirmed(false);setEditing(false);
+    router.push('/search?'+params.toString(),{scroll:false});
+  }
+  function editDetails(){
+    if(method!=='manual'){setEditing(!editing);return;}
+    const details=document.getElementById('search-details');
+    details?.scrollIntoView({block:'start'});
+    details?.querySelector<HTMLButtonElement>('button')?.focus({preventScroll:true});
+  }
+  const manualControls=(
+    <div id="search-details" className="search-details">
       <div className="field"><span>{t('نوع البحث','Search for')}</span><div className="chips">
         <button type="button" className={'chip'+(!companies?' on':'')} aria-pressed={!companies} onClick={()=>change({mode:'people'})}>{t('أشخاص داخل الشركات','People in companies')}</button>
         <button type="button" className={'chip'+(companies?' on':'')} aria-pressed={companies} onClick={()=>change({mode:'companies'})}>{t('إيميلات الشركات','Company emails')}</button></div>
         <small>{companies?t('الإيميل العام للشركة المنشور على موقعها، بعد التحقق منه.','The company’s own email from its website, verified.'):t('إيميل العمل لشخص داخل الشركة. إن لم يكفِ، نكمّل بإيميلات الشركات نفسها.','A person’s work email. If not enough, we fill in with the companies’ own emails.')}</small></div>
       <div className="form-grid">
-        <Field label={t('المجال','Field')}><select value={other?OTHER:field} onChange={e=>{if(e.target.value===OTHER){setOther(true);change({sector:otherDraft.trim()});}else{setOther(false);change({sector:e.target.value});}}}>{(Object.keys(fields) as FieldName[]).map(f=><option key={f} value={f}>{names.label(f)}</option>)}<option value={OTHER}>{t('أخرى (اكتب مجالك)','Other (type it)')}</option></select></Field>
+        <Field label={t('المجال','Field')}><select value={other?OTHER:field} onChange={e=>{if(e.target.value===OTHER){setOther(true);change({sector:otherDraft.trim()});}else{setOther(false);change({sector:e.target.value});}}}><option value="" disabled>{t('اختر المجال','Choose a field')}</option>{(Object.keys(fields) as FieldName[]).map(f=><option key={f} value={f}>{names.label(f)}</option>)}<option value={OTHER}>{t('أخرى (اكتب مجالك)','Other (type it)')}</option></select></Field>
         {other?<div className="field"><span>{t('اكتب مجالك','Your field')}</span><div className="other-row"><input value={otherDraft} onChange={e=>setOtherDraft(e.target.value)} maxLength={60} placeholder={t('مثلًا: محلات العطور','e.g. perfume shops')} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();if(otherDraft.trim().length>=2)change({sector:otherDraft.trim()});}}}/>
           <Button type="button" variant="secondary" disabled={otherDraft.trim().length<2||!pending} onClick={()=>change({sector:otherDraft.trim()})}>{pending?t('اعتماد','Apply'):t('معتمد','Applied')}</Button></div></div>
-        :<Field label={t('التخصص','Specialty')}><select value={filters.sector} onChange={e=>change({sector:e.target.value})}><option value={field}>{t('كل التخصصات','All specialties')}</option>{field&&fields[field].map(s=><option key={s} value={s}>{names.label(s)}</option>)}</select></Field>}
+        :field?<Field label={t('التخصص','Specialty')}><select value={filters.sector} onChange={e=>change({sector:e.target.value})}><option value={field}>{t('كل التخصصات','All specialties')}</option>{field&&fields[field].map(s=><option key={s} value={s}>{names.label(s)}</option>)}</select></Field>:null}
       </div>
       <CountryPicker value={filters.countries} onChange={countries=>change({countries})}/>
-      <button type="button" className="text-button more-toggle" aria-expanded={more} onClick={()=>setMore(m=>!m)}>{more?t('إخفاء الخيارات الإضافية','Hide more options'):t('خيارات إضافية: المدينة، المسمى، حجم الشركة','More options: city, job title, company size')}</button>
-      {more&&<div className="form-grid">
+      <div className="form-grid">
         <Field label={t('المدينة','City')} hint={filters.countries.length===1?t('اتركها فارغة للبلد كله.','Leave empty for the whole country.'):t('متاحة عند اختيار دولة واحدة.','Available with one country.')}><input value={filters.city} onChange={e=>change({city:e.target.value})} placeholder={filters.countries.length===1?t('مثلًا: الرياض','e.g. Riyadh'):'—'} disabled={filters.countries.length!==1} maxLength={60}/></Field>
         {!companies&&<div className="field"><span>{t('المسمى الوظيفي','Job title')}</span><select aria-label={t('المسمى الوظيفي','Job title')} value={titleOther?OTHER:filters.title} onChange={e=>{if(e.target.value===OTHER){setTitleOther(true);change({title:titleDraft.trim()});}else{setTitleOther(false);change({title:e.target.value});}}}><option value="">{t('جميع المسميات','All titles')}</option>{titles.map(x=><option key={x} value={x}>{names.label(x)}</option>)}<option value={OTHER}>{t('أخرى (اكتب المسمى)','Other (type it)')}</option></select>
           {titleOther&&<div className="other-row"><input aria-label={t('اكتب المسمى الوظيفي','Type the job title')} value={titleDraft} onChange={e=>setTitleDraft(e.target.value)} maxLength={60} placeholder={t('مثلًا: مدير مستودع','e.g. warehouse manager')} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();if(titleDraft.trim().length>=2)change({title:titleDraft.trim()});}}}/>
             <Button type="button" variant="secondary" disabled={titleDraft.trim().length<2||filters.title===titleDraft.trim()} onClick={()=>change({title:titleDraft.trim()})}>{filters.title===titleDraft.trim()?t('معتمد','Applied'):t('اعتماد','Apply')}</Button></div>}</div>}
         <Field label={t('حجم الشركة','Company size')}><select value={filters.size} onChange={e=>change({size:e.target.value as Form['size']})}><option value="all">{t('كل الأحجام','Any size')}</option><option value="1-10">{t('1–10 موظفين','1–10 employees')}</option><option value="11-50">{t('11–50 موظفًا','11–50 employees')}</option><option value="51-200">{t('51–200 موظف','51–200 employees')}</option></select></Field>
-      </div>}
-      <Field label={t('عدد الإيميلات','How many emails')}><input type="number" min="1" max={Math.min(data.provider?.maxCount??50,data.user.balance)} value={filters.count} onChange={e=>change({count:Number(e.target.value)})} required/></Field>
-      {!data.provider?.configured?<Notice error>{t('البحث غير متاح حاليًا. تواصل مع مالك المنصة.','Search is unavailable right now. Contact the platform owner.')}</Notice>
-        :<div className={'match-count'+(match?.error||few||pending?' warn':'')} role="status"><UsersThree size={18}/><span>{status}</span></div>}
-      {error&&<Notice error>{error}</Notice>}
-      {data.user.balance<1&&<Notice error>{t('رصيدك صفر. تواصل مع مالك المنصة لإضافة رصيد.','Your balance is zero. Contact the platform owner for credits.')}</Notice>}
-      <label className="check-label"><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/><span>{t('أوافق على خصم كريدت واحد لكل بريد جديد يصلني فقط.','I agree to pay one credit for each new email I receive, and nothing else.')}</span></label>
-      <div className="search-submit"><span><Coins size={18}/>{t('رصيدك: ','Your credits: ')}<strong>{number(data.user.balance)}</strong></span><Button type="submit" loading={busy} disabled={!confirmed||pending||filters.sector.length<2||!match||!!match.error||match.total===0||!data.user.balance||!data.provider?.configured}>{t('ابدأ البحث','Start search')}</Button></div>
-    </form>
-  </section></>;
+      </div>
+
+        </div>
+  );
+  if(!method)return <>
+    <PageHeading title={t('كيف تحب أن تبدأ البحث؟','How would you like to search?')} description={t('طريقتان للوصول إلى عملائك. اختر الأنسب لك.','Two ways to find your clients. Pick the one that suits you.')}/>
+    <div className="search-paths">
+      <button type="button" className="search-path" onClick={()=>chooseMethod('manual')}>
+        <span className="search-path-icon"><SlidersHorizontal size={28} weight="light"/></span>
+        <h2>{t('بحث يدوي','Manual search')}</h2>
+        <p>{t('حدد المجال والبلد ونوع جهات الاتصال بنفسك. كل الخيارات أمامك، خطوة بخطوة.','Choose the niche, location and contact type yourself. Every option is right in front of you.')}</p>
+        <span className="search-path-preview">{t('المجال · المكان · جهة الاتصال','Niche · Location · Contact type')}</span>
+        <span className="search-path-action">{t('اختَر معايير البحث','Choose search criteria')}<Forward size={19}/></span>
+      </button>
+      <button type="button" className="search-path" onClick={()=>chooseMethod('ai')}>
+        <span className="search-path-icon"><Sparkle size={28} weight="light"/></span>
+        <h2>{t('بمساعدة AI','AI-assisted search')}</h2>
+        <p>{t('صف العملاء بكلامك، ونجهّز لك معايير البحث. راجع الملخص وعدّله قبل أن تبدأ.','Describe your ideal clients. We prepare the search criteria for you to review and refine.')}</p>
+        <span className="search-path-preview">{t('«أريد أصحاب عيادات أسنان في دبي»','“I want dental clinic owners in Dubai”')}</span>
+        <span className="search-path-action">{t('صِف العملاء للمساعد','Describe your clients')}<Forward size={19}/></span>
+      </button>
+    </div>
+    <p className="search-path-note">{filters.sector?t('اختياراتك الحالية محفوظة عند الانتقال بين الطريقتين. ','Your current criteria stay with you when switching. '):''}{t('في الطريقتين، تراجع العدد والرصيد قبل البدء.','With either method, you review the count and credits before starting.')}</p>
+  </>;
+  return <>
+    <div className="search-method-bar"><button type="button" className="text-button" disabled={busy||thinking} onClick={()=>chooseMethod(null)}>{t('طرق البحث','Search methods')}</button><span aria-hidden="true">/</span><span>{method==='manual'?t('بحث يدوي','Manual search'):t('بمساعدة AI','AI-assisted search')}</span><button type="button" className="text-button search-switch" disabled={busy||thinking} onClick={()=>chooseMethod(method==='manual'?'ai':'manual')}>{method==='manual'?t('الانتقال إلى مساعد AI','Switch to AI assistant'):t('الانتقال إلى البحث اليدوي','Switch to manual search')}</button></div>
+    <PageHeading title={method==='manual'?t('حدّد العملاء الذين تبحث عنهم','Choose the clients you want to reach'):t('صِف عملاءك للمساعد','Describe your clients to the assistant')} description={method==='manual'?t('اختر المعايير، راجع الملخص، ثم ابدأ البحث.','Choose your criteria, review the summary, then start searching.'):t('اكتب وصفًا بسيطًا، وسنحوّله إلى بحث قابل للتعديل.','Write a simple description. We turn it into an editable search.')}/>
+    <div className={'search-workspace method-'+method}>
+      {method==='manual'?<section className="panel search-manual" aria-labelledby="manual-title"><div className="search-step"><span>01</span>{t('اختر المعايير','Choose criteria')}</div><h2 id="manual-title">{t('أنت تحدد التفاصيل','You set the details')}</h2><p>{t('ابدأ بالمجال والبلد. المدينة والمسمى وحجم الشركة اختيارية.','Start with a niche and country. City, job title and company size are optional.')}</p>{manualControls}</section>:
+      <section className="panel search-composer" aria-labelledby="describe-label">
+        <div className="search-step"><span>01</span>{t('صف العملاء','Describe your clients')}</div>
+        <h2 id="describe-label">{t('ابدأ بالمجال. التفاصيل نكملها معًا.','Start with a niche. Refine it as you go.')}</h2>
+        <p>{t('مثل «عيادات الأسنان»، أو صف المكان والأشخاص الذين تريد التواصل معهم.','Try “dental clinics”, or describe the location and people you want to reach.')}</p>
+        <form onSubmit={e=>{e.preventDefault();void prepare();}} className="search-compose-form">
+          <label htmlFor="describe" className="visually-hidden">{t('وصف العملاء أو تعديل البحث','Describe clients or refine the search')}</label>
+          <textarea id="describe" value={describe} onChange={e=>{setDescribe(e.target.value);setConfirmed(false);}} rows={4} maxLength={500} disabled={thinking||busy} placeholder={conversation.length?t('أضف تعديلًا، مثلًا: في دبي وأريد المالكين','Refine it, e.g. in Dubai, and I want owners'):t('أبحث عن عيادات أسنان في السعودية…','I’m looking for dental clinics in Saudi Arabia…')}/>
+          <div className="compose-actions"><small>{t('تجهيز الوصف لا يخصم من رصيد النتائج.','Preparing a draft uses no result credits.')}</small><Button type="submit" variant="secondary" loading={thinking} disabled={thinking||busy||describe.trim().length<2}>{thinking?t('نجهّز البحث…','Preparing…'):conversation.length?t('تحديث البحث','Update draft'):t('تجهيز البحث','Prepare search')}</Button></div>
+        </form>
+        {!conversation.length&&<div className="search-examples" aria-label={t('أمثلة للبدء','Try an example')}><small>{t('جرّب مثالًا','Try an example')}</small>{[t('عيادات الأسنان','Dental clinics'),t('محلات العطور','Perfume shops'),t('شركات البرمجيات','Software companies')].map(x=><button type="button" key={x} disabled={thinking||busy} onClick={()=>void prepare(x)}>{x}<Forward size={14}/></button>)}</div>}
+        <div className="search-reply" role="status" aria-live="polite" aria-atomic="true">
+          {thinking?<p>{t('نفهم الوصف ونحدّث ملخص البحث…','Reading your description and updating the draft…')}</p>:aiNote?<><strong>{aiState==='prepare'?t('تم تجهيز البحث','Draft prepared'):aiState==='clarify'?t('توضيح واحد ونكمل','One detail to clarify'):aiState==='error'?t('تعذّر تجهيز الوصف','Could not prepare the draft'):t('عن البحث','About your search')}</strong><p>{aiNote}</p></>:<p>{t('البلد والعدد المختاران ظاهرَان في الملخص. لن يبدأ البحث حتى تراجعه وتضغط «ابدأ البحث».','Your country and count are shown in the summary. Searching starts only after you review and confirm it.')}</p>}
+        </div>
+        {!!choices.length&&<div className="chips">{choices.map(x=><button type="button" key={x} className="chip" disabled={thinking||busy} onClick={()=>void prepare(x)}>{x}</button>)}</div>}
+        {conversation.length>0&&<div className="search-context"><small>{t('آخر وصف: ','Last description: ')}{conversation.filter(m=>m.role==='user').at(-1)?.content}</small><button type="button" className="text-button" disabled={thinking||busy} onClick={()=>{setConversation([]);setAiNote('');setAiState('idle');setChoices([]);setDescribe('');apply({sector:'',city:'',title:''});setEditing(false);}}>{t('وصف جديد','New description')}</button></div>}
+        {aiState==='error'&&<button type="button" className="text-button" onClick={()=>chooseMethod('manual')}>{t('أكمل بتعديل التفاصيل يدويًا','Continue by editing the details')}</button>}
+      </section>}
+      <form onSubmit={submit} className="panel search-review" aria-labelledby="review-title">
+        <div className="search-step"><span>02</span>{t('راجع وابدأ','Review and start')}</div>
+        <div className="search-review-title"><h2 id="review-title">{t('ملخص البحث','Your search')}</h2>{ready&&<Badge tone="green">{t('مسودة','Draft')}</Badge>}</div>
+        <h3 className="search-audience">{ready?names.label(filters.sector):method==='manual'?t('اختر المجال لبدء البحث','Choose a niche to begin'):t('بانتظار وصف عملائك','Describe your clients to begin')}</h3>
+        <dl className="search-summary">
+          <div><dt>{t('المكان','Location')}</dt><dd><button type="button" onClick={editDetails}>{[displayCity,filters.countries.map(names.country).join('، ')].filter(Boolean).join(' · ')}<span>{t('تعديل','Edit')}</span></button></dd></div>
+          <div><dt>{t('جهة الاتصال','Contact type')}</dt><dd><button type="button" onClick={editDetails}>{companies?t('بريد الشركات','Company emails'):filters.title?names.label(filters.title):t('أشخاص داخل الشركات','People in companies')}<span>{t('تعديل','Edit')}</span></button></dd></div>
+          {filters.size!=='all'&&<div><dt>{t('حجم الشركة','Company size')}</dt><dd>{filters.size} {t('موظفين','employees')}</dd></div>}
+        </dl>
+        <Field label={t('عدد الإيميلات المطلوبة','Emails to find')}><input type="number" min="1" max={Math.max(1,maxCount)} value={filters.count||''} onChange={e=>change({count:Number(e.target.value)})} required/></Field>
+        {method==='ai'&&(<button type="button" className="text-button" aria-expanded={editing} aria-controls="search-details" onClick={()=>setEditing(!editing)}>{editing?t('إخفاء التفاصيل','Hide details'):t('تعديل المجال والتفاصيل','Edit niche and details')}<ArrowDown size={15}/></button>)}
+        {method==='ai'&&editing&&manualControls}
+        {!data.provider?.configured?<Notice error>{t('البحث غير متاح حاليًا. تواصل مع مالك المنصة.','Search is unavailable right now. Contact the platform owner.')}</Notice>
+          :ready&&<div className={'match-count'+(currentMatch?.error||few||pending?' warn':'')} role="status"><UsersThree size={18}/><span>{status}</span></div>}
+        {ready&&other&&currentMatch?.industryLabels?.length&&<p className="search-footnote">{t('تصنيف مزوّد البيانات قد يكون أوسع من وصفك. راجعه قبل البدء.','The data provider’s category may be broader than your description. Review it before starting.')}</p>}
+        {error&&<Notice error>{error}</Notice>}
+        {maxCount<1?<Notice error>{t('لا يوجد رصيد متاح. تواصل مع مالك المنصة لإضافة رصيد.','No credits available. Contact the platform owner to add credits.')}</Notice>:!validCount&&<Notice error>{t('العدد المتاح حاليًا من 1 إلى '+maxCount+' بريد.','You can request 1–'+maxCount+' emails right now.')} {filters.count>maxCount&&<button type="button" className="text-button" onClick={()=>change({count:maxCount})}>{t('استخدم '+maxCount,'Use '+maxCount)}</button>}</Notice>}
+        {ready&&<><p className="search-footnote">{t('كريدت واحد لكل بريد جديد يصلك. لا خصم للتكرار أو النتائج غير المتاحة.','One credit per new email delivered. No charge for duplicates or unavailable results.')}</p>
+          <label className="check-label"><input type="checkbox" checked={confirmed} disabled={thinking||busy||unfinishedDescription||!validCount} onChange={e=>setConfirmed(e.target.checked)}/><span>{t('راجعت البحث وأوافق على خصم حتى '+filters.count+' كريدت مقابل الإيميلات التي تصلني.','I reviewed the search and agree to use up to '+filters.count+' credits for emails delivered.')}</span></label></>}
+        <div className="search-launch"><Button type="submit" loading={busy} disabled={!canStart}>{ready?t('ابدأ البحث عن '+filters.count+' بريد','Find '+filters.count+' emails'):t('ابدأ البحث','Start search')}</Button><small><Coins size={16}/>{t('الرصيد المتاح: ','Available credits: ')}<strong>{number(available)}</strong></small></div>
+        {data.features?.crm&&ready&&<details className="save-audience"><summary>{t('احفظ هذا الجمهور لبحث قادم','Save this audience for later')}</summary><div className="crm-save"><Field label={t('اسم الجمهور المحفوظ','Saved audience name')}><input maxLength={80} value={audienceName} onChange={e=>setAudienceName(e.target.value)}/></Field><Button type="button" variant="secondary" disabled={busy||thinking||!audienceName.trim()||pending||!validCount} onClick={async()=>{setBusy(true);try{await api('crm/audience',{name:audienceName,filters});setAudienceName('');notify(t('حُفظ الجمهور في إدارة العملاء.','Audience saved in CRM.'));}catch(e){notify((e as Error).message,true);}finally{setBusy(false);}}}>{t('حفظ المعايير','Save criteria')}</Button></div></details>}
+      </form>
+    </div></>;
 }
 
 export function LeadsView({data,reload,notify}:ViewProps){
@@ -192,7 +283,7 @@ export function HistoryView({data}:ViewProps){
 }
 export function CreditsView({data}:ViewProps){
   const t=useT();
-  return <><PageHeading title={t('رصيدك','Your credits')} description={t('كريدت واحد لكل بريد يصلك. البحث الذي لا يجد شيئًا لا يكلّفك.','One credit per email you receive. A search that finds nothing costs nothing.')}/><div className="credit-overview"><div><span>{t('الرصيد المتاح','Available')}</span><strong>{number(data.user.balance)}</strong></div><div><span>{t('البريد المستلم','Emails received')}</span><strong>{data.contacts.length}</strong></div></div><section className="panel table-panel"><div className="section-title"><h2>{t('حركة الرصيد','Credit history')}</h2></div><div className="table-scroll"><table><thead><tr><th>{t('العملية','Entry')}</th><th>{t('التفاصيل','Details')}</th><th>{t('التاريخ','Date')}</th><th>{t('التغيير','Change')}</th><th>{t('الرصيد بعدها','Balance after')}</th></tr></thead><tbody>{data.ledger.map(l=><tr key={l.id}><td><span className={'ledger-icon '+(l.amount<0?'debit':'')}><ArrowDown size={16}/></span>{l.kind==='debit'?t('تسليم بريد','Email delivered'):l.kind==='grant'?t('إضافة رصيد','Credits added'):t('تصحيح الرصيد','Balance correction')}</td><td>{l.reason}</td><td>{date(l.created_at)}</td><td><span className={l.amount>=0?'positive':''} dir="ltr">{l.amount>0?'+':''}{l.amount}</span></td><td>{number(l.balance_after)}</td></tr>)}</tbody></table></div></section></>;
+  return <><PageHeading title={t('رصيدك','Your credits')} description={t('كريدت واحد لكل بريد يصلك. البحث الذي لا يجد شيئًا لا يكلّفك.','One credit per email you receive. A search that finds nothing costs nothing.')}/><div className="credit-overview"><div><span>{t('الرصيد المتاح','Available')}</span><strong>{number(data.wallet?.available??data.user.balance)}</strong></div>{data.wallet&&<><div><span>{t('الرصيد الكلي','Total balance')}</span><strong>{number(data.wallet.total)}</strong></div><div><span>{t('المحجوز لبحث جارٍ','Reserved for running searches')}</span><strong>{number(data.wallet.reserved)}</strong></div></>}<div><span>{t('البريد المستلم','Emails received')}</span><strong>{data.contacts.length}</strong></div></div><section className="panel table-panel"><div className="section-title"><h2>{t('حركة الرصيد','Credit history')}</h2></div><div className="table-scroll"><table><thead><tr><th>{t('العملية','Entry')}</th><th>{t('التفاصيل','Details')}</th><th>{t('التاريخ','Date')}</th><th>{t('التغيير','Change')}</th><th>{t('الرصيد بعدها','Balance after')}</th></tr></thead><tbody>{data.ledger.map(l=><tr key={l.id}><td><span className={'ledger-icon '+(l.amount<0?'debit':'')}><ArrowDown size={16}/></span>{l.kind==='debit'?t('تسليم بريد','Email delivered'):l.kind==='grant'?t('إضافة رصيد','Credits added'):t('تصحيح الرصيد','Balance correction')}</td><td>{l.reason}</td><td>{date(l.created_at)}</td><td><span className={l.amount>=0?'positive':''} dir="ltr">{l.amount>0?'+':''}{l.amount}</span></td><td>{number(l.balance_after)}</td></tr>)}</tbody></table></div></section></>;
 }
 export function SettingsView({data,reload,notify}:ViewProps){
   const t=useT(),[name,setName]=useState(data.user.name),[current,setCurrent]=useState(''),[password,setPassword]=useState(''),[busy,setBusy]=useState(false);

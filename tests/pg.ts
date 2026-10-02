@@ -11,9 +11,14 @@ import { LiveSearch } from '../src/lib/live-search';
 
 const schema = readFileSync(join(process.cwd(), 'db', 'schema.sql'), 'utf8');
 // A fresh in-process Postgres per test with the production schema, behind the same Db as production.
-export async function testDb() {
+export async function testDb(withRoles = false, upgrade = false) {
   const pg = await PGlite.create({ parsers: { 20: Number } }); // int8 as a JS number, like the production driver
-  await pg.exec(schema);
+  if(withRoles) await pg.exec('create role clowzy_app; create role clowzy_backup; create role anon; create role authenticated;');
+  await pg.exec(upgrade?schema.slice(0,schema.indexOf('-- Shared supplier data')):schema);
+  if(upgrade) {
+    await pg.exec(readFileSync(join(process.cwd(),'supabase/migrations/20261002095426_crm_catalog.sql'),'utf8'));
+    await pg.exec(readFileSync(join(process.cwd(),'supabase/migrations/20261002175425_launch_hardening.sql'),'utf8'));
+  }
   await pg.exec('set search_path to clowzy'); // production: the app role's default (ALTER ROLE ... SET search_path)
   const wrap = (s: PGlite | Transaction): Driver => ({
     async query(text, params) { const r = await s.query<Row>(text, params); return { rows: r.rows, count: r.affectedRows ?? 0 }; },

@@ -6,7 +6,7 @@ import { contactsCsv,cell } from '../src/lib/csv';
 import { Candidate,Resolved,TERMS_VERSION,termsCurrent } from '../src/lib/contracts';
 import { searchSchema } from '../src/lib/schemas';
 import { audienceOf } from '../src/lib/audience';
-import { testStore } from './pg';
+import { testStore, hookDb } from './pg';
 
 // Three synthetic contacts (the CSV test's second row relies on the demo status and label).
 const demoCatalog:Candidate[]=[0,1,2].map(i=>({name:'خالد '+i+' الحسن',email:'contact-'+i+'@example.com',company:'شركة '+i,title:'مدير التسويق',sector:'التقنية والبرمجيات',country:'السعودية',city:'الرياض',size:'1-10',website:'https://example.com',source:'كتالوج تجريبي محلي',email_status:'demo'}));
@@ -44,12 +44,13 @@ test('a fresh production store has no demo accounts; the owner is created once a
     assert.equal((await s.session(await s.login('owner@company.com','owner-strong-password-1'))).id,owner.id);
   } finally {await s.close();}
 });
-test('concurrent searches dedupe per member and charge once per normalized email',async()=>{
+test('concurrent searches are serialized per member; retries dedupe and charge once per email',async()=>{
   const {store,alice,bob}=await setup();
   const noisy=[demoCatalog[0],{...demoCatalog[0],email:'  '+demoCatalog[0].email.toUpperCase()+' '},demoCatalog[1],{...demoCatalog[2],email:''}];
   try {
-    const results=await Promise.all([deliver(store,alice.id,input(),noisy),deliver(store,alice.id,input(),noisy)]);
-    assert.equal(results.reduce((n,r)=>n+r.delivered,0),2);
+    const results=await Promise.allSettled([deliver(store,alice.id,input(),noisy),deliver(store,alice.id,input(),noisy)]);
+    assert.equal(results.filter(r=>r.status==='fulfilled').length,1);
+    assert.equal((await deliver(store,alice.id,input(),noisy)).delivered,0, 'retry does not charge duplicates');
     assert.equal(await balance(store,alice.id),8);
     assert.equal((await store.snapshot(alice.id)).contacts.length,2);
     await deliver(store,bob.id,input(),noisy);
@@ -77,7 +78,7 @@ test('zero balance rejects the search before anything is reserved',async()=>{
   const {store,admin,alice}=await setup();
   try {
     await store.adjustCredits(admin.id,alice.id,'set',0,'test reset',randomUUID());
-    await assert.rejects(store.enqueueSearch(alice.id,input(1)),/لا يكفي/);
+    await assert.rejects(store.enqueueSearch(alice.id,input(1)),/لا يكفي|رصيدك صفر/);
     assert.equal(await balance(store,alice.id),0);assert.equal(await store.reserved(alice.id),0);
   } finally {await store.close();}
 });
@@ -106,13 +107,14 @@ test('export ownership enforced and repeated export never debits',async()=>{
   } finally {await store.close();}
 });
 test('CSV keeps each contact stored email status; only demo rows carry the demo label',()=>{
+  assert.equal(cell('\n=1+1'), '"\'\n=1+1"', 'a leading newline is escaped as spreadsheet data too');
   const row={id:'c',user_id:'u',search_id:'s',created_at:''};
   const [,real,demo]=contactsCsv([{...demoCatalog[0],...row,source:'FullEnrich',email_status:'DELIVERABLE'},{...demoCatalog[1],...row}]).split('\r\n');
   assert.ok(real.endsWith(',"DELIVERABLE"'),real);
   assert.ok(real.includes(',"clowzy",')&&!real.includes('FullEnrich'),'the provider name never reaches the member\'s file: '+real);
   assert.ok(demo.endsWith(',"DEMO — not real contact data"'),demo);
   const [,probable]=contactsCsv([{...demoCatalog[0],...row,email_status:'PROBABLE'}]).split('\r\n');
-  assert.ok(probable.endsWith(',"مؤكد ٩٥٪"'),'the member reads how sure each email is: '+probable);
+  assert.ok(probable.endsWith(',"ثقة المزوّد ٩٥٪"'),'the member reads how sure each email is: '+probable);
 });
 test('invitations accepted once, preserve assigned credits, reject expired token',async()=>{
   const {store,admin}=await setup();
@@ -228,5 +230,24 @@ test('login attempts are counted per IP in the database, so every server instanc
     await store.hit('auth:5.6.7.8',20);
     for(let i=0;i<2;i++) await store.hit('assist-day:u',2,86400000,'حد اليوم');
     await assert.rejects(store.hit('assist-day:u',2,86400000,'حد اليوم'),(e:AppError)=>e.status===429&&e.message==='حد اليوم','a day-long window counts across minutes');
+  } finally {await store.close();}
+});
+
+// PGlite serializes transactions; this checks rollback and lock ordering, not real multi-connection contention.
+test('reset creation rolls back revocation on failure and locks the account before touching tokens',async()=>{
+  const {store,admin,alice}=await setup();
+  try {
+    const old=await store.createReset(admin.id,alice.id);
+    let fail=true;const queries:string[]=[];
+    hookDb(store,sql=>{queries.push(sql);if(fail&&sql.startsWith('INSERT INTO reset_tokens'))throw new Error('injected reset failure');});
+    await assert.rejects(store.createReset(admin.id,alice.id),/injected reset failure/);
+    fail=false;
+    assert.ok(queries.findIndex(q=>q.includes('FOR UPDATE')) < queries.findIndex(q=>q.startsWith('UPDATE reset_tokens')));
+    await store.resetPassword(old,'still-valid-password-123');
+    const outcomes=await Promise.allSettled([
+      store.changePassword(alice.id,'still-valid-password-123','winner-password-123'),
+      store.changePassword(alice.id,'still-valid-password-123','loser-password-123'),
+    ]);
+    assert.equal(outcomes.filter(r=>r.status==='fulfilled').length,1,'the old password authorizes only the first change');
   } finally {await store.close();}
 });

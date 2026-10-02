@@ -1,4 +1,5 @@
 import type { Resolved, Search } from './contracts';
+import { catalogMatches, rememberCandidates } from './catalog';
 import { audienceOf } from './audience';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { DAILY_PEOPLE, dailyLimit, Store } from './store';
@@ -8,15 +9,6 @@ type Run = { search_id: string; phase: string; people: string; file: string | nu
 // The audience a run continues with: the stored filters, switched to companies once a people search has fallen back.
 const inputOf = (filters: string, run?: Pick<Run, 'mode'>): Resolved => ({ ...audienceOf(filters), ...(run?.mode ? { mode: run.mode } : {}) });
 type Slots = { read: number; bulk: number };
-// ponytail: process-wide spacing for Icypeas account limits (results read 30/min, bulk submit 1/s); per server instance, so two
-// instances can collide: a refused submit (429) is retried once (icypeas.ts), a refused read waits for the next poll. Move the
-// slots to the database if many members search at the same moment.
-const sharedSlots: Slots = { read: 0, bulk: 0 };
-function takeSlot(slots: Slots, kind: keyof Slots, gapMs: number) {
-  const now = Date.now();
-  if (now - slots[kind] < gapMs) return false;
-  slots[kind] = now; return true;
-}
 const BATCH_DEADLINE = 15 * 60000; // a batch that never fully returns is closed with what came back
 const READ_ERRORS = 10; // a batch past its deadline is closed on read errors only after this many in a row
 const STALE = 90000; // no request lives this long (maxDuration 60 s): a run untouched for 90 s was interrupted
@@ -37,10 +29,20 @@ const EXPECTED_FIND_RATE = { people: 0.3, companies: 0.8 };
 // Phases: searching (<-> paused) -> submitting -> waiting -> searching ... -> finished. The people picked for the next batch
 // are saved with the run as they are picked. Only one request can move a search out of 'waiting' or 'paused' (conditional
 // update), and a delivery commits together with leaving 'waiting', so overlapping polls never deliver or submit twice.
-// Durable markers prevent refreshes, timeouts or restarts from replaying paid requests. Batches advance by polling (no worker).
+// Durable markers prevent refreshes, timeouts or restarts from replaying paid requests. Batches advance through browser polls or the optional search worker.
 export class LiveSearch {
   private begun = Date.now(); // one LiveSearch per HTTP request
-  constructor(private store: Store, private client = new IcypeasClient(), private gaps = { read: 2100, bulk: 1100 }, private slots = sharedSlots) {}
+  constructor(private store: Store, private client = new IcypeasClient(), private gaps = { read: 2100, bulk: 1100 }, private slots?: Slots) {}
+  private async takeSlot(kind: keyof Slots) {
+    const gap = this.gaps[kind], now = Date.now();
+    if (!gap) return true;
+    if (this.slots) { // isolated clocks in provider failure tests
+      if (now - this.slots[kind] < gap) return false;
+      this.slots[kind] = now; return true;
+    }
+    return await this.store.db.run(`INSERT INTO provider_slots(kind,available_at) VALUES(?,?)
+      ON CONFLICT(kind) DO UPDATE SET available_at=excluded.available_at WHERE provider_slots.available_at<=?`, kind, now + gap, now) === 1;
+  }
   private elapsed() { return Date.now() - this.begun; }
   private run(id: string) { return this.store.db.get<Run>('SELECT * FROM provider_runs WHERE search_id=?', id); }
   private async patch(id: string, fields: Partial<Run>) {
@@ -56,7 +58,10 @@ export class LiveSearch {
     return this.store.transaction(async () => {
       await this.patch(id, { phase: uncertain ? 'unknown' : 'failed', message });
       // Only the request that closes the search alerts the owner (two tabs may both get here).
-      if (await this.store.db.run("UPDATE searches SET status=? WHERE id=? AND status='awaiting_provider'", uncertain ? 'unknown' : 'failed', id)) await this.store.alert(userId, id, message);
+      if (await this.store.db.run("UPDATE searches SET status=? WHERE id=? AND status='awaiting_provider'", uncertain ? 'unknown' : 'failed', id)) {
+        await this.store.alert(userId, id, message);
+        await this.store.notifySearch(id, message);
+      }
       await this.store.db.run('DELETE FROM reservations WHERE search_id=?', id);
     });
   }
@@ -129,10 +134,10 @@ export class LiveSearch {
     let batch: Lead[] = [], sent = false; // from the paid submit on, a failure may mean the provider has the batch (and charged for it)
     try {
       const search = await this.store.getSearch(userId, id), run = (await this.run(id))!;
-      batch = JSON.parse(run.people) as Lead[]; // picked (and claimed) by an earlier request of this search, not sent yet
+      batch = (JSON.parse(run.people) as Lead[]).filter(l => !l.suppressed); // picked (and claimed) by an earlier request of this search, not sent yet
       const want = Math.min(BATCH, submitCap(search.requested) - run.submitted, Math.ceil((search.requested - search.delivered) / EXPECTED_FIND_RATE[input.mode]));
       const cursor = await this.store.cursor(userId, queryKey);
-      let pool = JSON.parse(cursor.leftovers) as Lead[], token = cursor.token, stage = cursor.stage, wrapped = false, scanned = run.scanned, fetched = run.fetched, pages = 0;
+      let pool = (JSON.parse(cursor.leftovers) as Lead[]).filter(l => !l.suppressed), token = cursor.token, stage = cursor.stage, wrapped = false, scanned = run.scanned, fetched = run.fetched, pages = 0;
       while (want > 0 && batch.length < want) {
         if (!pool.length) {
           if (scanned >= fetchCap(search.requested) || wrapped) break;
@@ -161,7 +166,7 @@ export class LiveSearch {
         });
       }
       if (!batch.length) return this.end(userId, id, input);
-      while (!takeSlot(this.slots, 'bulk', this.gaps.bulk)) { await this.patch(id, {}); await sleep(this.gaps.bulk); }
+      while (!await this.takeSlot('bulk')) { await this.patch(id, {}); await sleep(this.gaps.bulk); }
       if (this.elapsed() > SUBMIT_MS) return this.pause(userId, id, batch, input); // checked once the slot is ours: the submit starts now
       await this.patch(id, { phase: 'submitting', people: JSON.stringify(batch) });
       if ((await this.store.getSearch(userId, id)).status !== 'awaiting_provider' || (await this.run(id))?.phase !== 'submitting') { await this.release(userId, queryKey, batch); return this.view(userId, id); }
@@ -181,19 +186,30 @@ export class LiveSearch {
       return this.view(userId, id);
     }
   }
-  async start(userId: string, input: Resolved): Promise<Search> {
-    queryOf(input); // Validate filters before reserving credits or contacting the provider.
+  async recoverStale(userId: string) {
     // Close this member's abandoned or interrupted searches first, so they do not hold credits or pending slots.
     const stale = await this.store.db.all<{ search_id: string }>(`SELECT r.search_id FROM provider_runs r JOIN searches s ON s.id=r.search_id WHERE s.user_id=? AND s.status='awaiting_provider'
       AND ((r.phase='waiting' AND r.submitted_at<?) OR (r.phase<>'waiting' AND r.updated_at<?))`, userId, Date.now() - BATCH_DEADLINE, Date.now() - STALE);
     for (const { search_id } of stale) { if (this.elapsed() > 10000) break; await this.poll(userId, search_id, true); } // the rest close next time
+  }
+  async start(userId: string, input: Resolved): Promise<Search> {
+    queryOf(input);
+    await this.recoverStale(userId);
     // Reservation and claim commit together, under the member's row lock (taken by enqueueSearch): a lost connection
     // leaves neither behind, and a repeated request (same request id, e.g. a double click) waits and then only polls.
     const { search, claimed } = await this.store.transaction(async () => {
       const search = await this.store.enqueueSearch(userId, input);
       if (search.status !== 'queued' || !await this.store.db.run("UPDATE searches SET status='awaiting_provider' WHERE id=? AND status='queued'", search.id)) return { search, claimed: false };
       await this.store.db.run("INSERT INTO provider_runs(search_id,phase,updated_at) VALUES(?,'searching',?)", search.id, Date.now());
-      return { search, claimed: true };
+      const cached = await catalogMatches(this.store, userId, input, input.count);
+      if (cached.length) await this.store.deliverBatch(userId, search.id, cached.map(c => ({ ...c, sector: input.sector })), 'catalog');
+      const fresh = await this.store.getSearch(userId, search.id);
+      if (fresh.delivered >= fresh.requested) {
+        await this.store.finishSearch(search.id);
+        await this.patch(search.id, { phase: 'finished' });
+        return { search: await this.view(userId, search.id), claimed: false };
+      }
+      return { search: fresh, claimed: true };
     });
     return claimed ? this.advance(userId, search.id, input) : this.poll(userId, search.id);
   }
@@ -220,7 +236,7 @@ export class LiveSearch {
       }
       return this.view(userId, id);
     }
-    if (!run.file || Date.now() - run.updated_at < 5000 || !takeSlot(this.slots, 'read', this.gaps.read)) return this.view(userId, id);
+    if (!run.file || Date.now() - run.updated_at < 5000 || !await this.takeSlot('read')) return this.view(userId, id);
     // Read-only polling may safely resume after an interruption; the row lock spaces out concurrent readers.
     const locked = await this.store.db.run('UPDATE provider_runs SET updated_at=? WHERE search_id=? AND updated_at=?', Date.now(), id, run.updated_at);
     if (!locked) return this.view(userId, id);
@@ -233,6 +249,7 @@ export class LiveSearch {
       const delivered = await this.store.transaction(async () => {
         if (await this.store.db.run(`UPDATE provider_runs SET phase='searching',file=NULL,people='[]',updated_at=? WHERE search_id=? AND phase='waiting' AND file=?
           AND EXISTS (SELECT 1 FROM searches WHERE id=? AND status='awaiting_provider')`, Date.now(), id, run.file, id) !== 1) return null;
+        await rememberCandidates(this.store, result.candidates);
         const delivered = await this.store.deliverBatch(userId, id, result.candidates.map(c => ({ ...c, sector: input.sector })));
         if (delivered !== null) await this.release(userId, cursorKey(input), result.unpaid); // rows the provider could not pay for were never searched
         return delivered;

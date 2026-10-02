@@ -120,7 +120,7 @@ test('results that keep failing to read (10 in a row, past the deadline) close t
 });
 
 // The reservation is what open searches can still charge: requested minus delivered.
-test('reservation must shrink as emails are delivered (member can afford a second search)', async () => {
+test('reservation shrinks as emails arrive; a second search waits for the active cursor owner', async () => {
   const { store, user, admin } = await setup(10);
   try {
     const a = await store.enqueueSearch(user.id, input(5));
@@ -128,7 +128,10 @@ test('reservation must shrink as emails are delivered (member can afford a secon
     const c = (e: string): Candidate => ({ name: e, email: e + '@x.example', company: 'C', title: '', sector: '', country: '', city: '', website: '', size: '', source: 'Icypeas', email_status: 'VERIFIED' });
     await store.deliverBatch(user.id, a.id, ['a', 'b', 'c', 'd'].map(c)); // 4 of 5 delivered: balance 6, A can charge at most 1 more
     assert.equal((await store.user(user.id)).balance, 6);
-    const b = await store.enqueueSearch(user.id, input(5)).then(() => 'ok', (e: Error) => e.message); // 6 - 1 = 5 available
+    assert.equal(await store.reserved(user.id), 1);
+    await assert.rejects(store.enqueueSearch(user.id, input(5)), /بحث قيد التنفيذ/);
+    await store.finishSearch(a.id);
+    const b = await store.enqueueSearch(user.id, input(5)).then(() => 'ok', (e: Error) => e.message);
     const set = await store.adjustCredits(admin.id, user.id, 'set', 6, 'correction', randomUUID()).then(() => 'ok', (e: Error) => e.message); // 6 >= 1 + 5 still chargeable
     assert.deepEqual([b, set], ['ok', 'ok'], 'over-reserved: blocks affordable search and owner correction');
   } finally { await store.close(); }
@@ -253,4 +256,15 @@ test('a failed search is recorded in the owner\'s activity log with the member a
     const audit = (await store.snapshot(admin.id)).admin!.audit;
     assert.ok(audit.some(a => a.action.includes('تنبيه') && a.detail.includes('Alice') && a.detail.includes('رصيد مزوّد البيانات')), JSON.stringify(audit));
   } finally { await store.close(); }
+});
+
+test('production instances share provider pacing in the database', async () => {
+  const submitted:number[]=[];
+  const m=mock({pages:[{leads:Array.from({length:25},(_,i)=>lead('slot'+i))}],onBulk:()=>{submitted.push(Date.now());return undefined;}});
+  const {store,user}=await setup(20);const bob=await store.addUser('Bob','slots@test.com','long-password','member',20);
+  try{
+    const results=await Promise.all([new LiveSearch(store,m.client).start(user.id,input(1)),new LiveSearch(store,m.client).start(bob.id,input(1))]);
+    assert.ok(results.every(s=>s.status==='awaiting_provider'));
+    assert.equal(submitted.length,2);assert.ok(submitted[1]-submitted[0]>=1000,'separate instances cannot submit within one second');
+  }finally{await store.close();}
 });

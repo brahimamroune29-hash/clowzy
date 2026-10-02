@@ -2,14 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { AppError, getStore } from '@/lib/store';
 import { termsCurrent, withCountries } from '@/lib/contracts';
-import { searchSchema, weekBoundariesSchema } from '@/lib/schemas';
+import { assistRequestSchema, searchSchema, weekBoundariesSchema } from '@/lib/schemas';
 import { IcypeasClient, IcypeasError, providerInfo } from '@/lib/icypeas';
 import { LiveSearch } from '@/lib/live-search';
-import { resolveAudience } from '@/lib/audience';
-import { contactsCsv } from '@/lib/csv';
+import { searchTick, workerAuthorized } from '@/lib/search-worker';
+import { audienceOf, resolveAudience } from '@/lib/audience';
+import { contactsCsv, crmCsv, exportColumns } from '@/lib/csv';
 import { accessError, bodyLimit, clientIp, isHttps } from '@/lib/access';
 import { assist } from '@/lib/ai';
 import { englishBody } from '@/lib/en';
+import { crmEnabled } from '@/lib/catalog';
+import { crmState, crmAction, crmOperations, approveDeletion, requireCrm } from '@/lib/crm';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,15 +20,6 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 const password = z.string().min(10).max(128);
 const tokenField = z.string().regex(/^[a-f0-9]{48}$/);
-const attempts = new Map<string, { count: number; until: number }>();
-function rateLimit(key: string, max: number) {
-  const t = Date.now();
-  for (const [k,v] of attempts) if (v.until < t) attempts.delete(k);
-  const current = attempts.get(key) ?? { count: 0, until: t + 60000 };
-  current.count++;
-  attempts.set(key, current);
-  if (current.count > max) throw new AppError('طلبات كثيرة. انتظر دقيقة وحاول مجددًا.', 429);
-}
 function guard(req: NextRequest) {
   const h = req.headers, denied = accessError({ method: req.method, host: h.get('host'), origin: h.get('origin'), contentType: h.get('content-type'), contentLength: h.get('content-length') }, process.env.APP_URL);
   if (denied) throw new AppError(denied.message, denied.status);
@@ -53,8 +47,14 @@ function authenticated(token: string, data: object = { ok: true }) {
 }
 async function answer(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
   try {
-    guard(req);
     const path = (await params).path.join('/');
+    // Vercel may invoke the deployment hostname. The cron authenticates with its server secret, not a browser origin/cookie.
+    if (path === 'cron/search') {
+      if (req.method !== 'GET' || !workerAuthorized(req.headers.get('authorization'))) return json({ error: 'Unauthorized' }, 401);
+      // ponytail: one search step/minute bounds this function to 60s; a dedicated worker if queue latency becomes material.
+      return json({ handled: await searchTick(getStore(), undefined, 1) });
+    }
+    guard(req);
     const store = getStore();
     const session = req.cookies.get('wasl_session')?.value;
     if (req.method === 'GET' && path === 'invitation') {
@@ -94,16 +94,20 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
       }
     }
     const user = await store.session(session);
-    rateLimit(user.id, 120);
+    await store.hit('api:' + user.id, 120);
     // Members see no data and spend no credits before accepting the current terms (the UI gate alone is not enough):
     // the page gets the account alone, to show the terms.
     if (user.role === 'member' && !termsCurrent(user)) {
       if (req.method === 'GET' && path === 'bootstrap') return json({ user, contacts: [], searches: [], ledger: [], exports: [] });
       if (path !== 'terms') throw new AppError('وافق على شروط الاستخدام أولًا.', 403);
     }
+    if (req.method === 'GET' && path === 'crm') return json(await crmState(store,user.id));
+    if (req.method === 'GET' && path === 'admin/crm') return json(await crmOperations(store,user.id));
     if (req.method === 'GET' && path === 'bootstrap') {
+      const reserved=await store.reserved(user.id);
+      const features={crm:crmEnabled()},wallet=(balance:number)=>({total:balance,reserved,available:Math.max(0,balance-reserved)});
       const view=z.enum(['overview','full']).parse(req.nextUrl.searchParams.get('view')||'overview');
-      if(view==='full') return json({...await store.snapshot(user.id),provider:providerInfo()});
+      if(view==='full') { const snapshot=await store.snapshot(user.id);return json({...snapshot,provider:providerInfo(),features,wallet:wallet(snapshot.user.balance)}); }
       const raw=req.nextUrl.searchParams.get('days');
       let days: string[] | undefined;
       if(raw!==null) {
@@ -112,31 +116,40 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
         try {parsed=JSON.parse(raw);} catch {throw new AppError('الفترة الزمنية غير صالحة.');}
         days=weekBoundariesSchema.parse(parsed);
       }
-      return json({...await store.overview(user.id,days),provider:providerInfo()});
+      const snapshot=await store.overview(user.id,days);
+      return json({...snapshot,provider:providerInfo(),features,wallet:wallet(snapshot.user.balance)});
     }
     if (req.method !== 'POST') throw new AppError('الصفحة المطلوبة غير موجودة.', 404);
     const b = await body(req);
+    if(path.startsWith('crm/')) return json(await crmAction(store,user.id,path.slice(4),b));
+    if(path==='admin/crm/delete') return json(await approveDeletion(store,user.id,b));
     if (path === 'search') {
       const input = searchSchema.parse(withCountries(b)); // a page opened before multi-country still searches
-      rateLimit('search:' + user.id, 20);
+      await store.hit('search:' + user.id, 20);
       if (!providerInfo().configured) throw new AppError('مزوّد البيانات غير مهيأ على الخادم. تواصل مع مالك المنصة.',503);
-      return json(await new LiveSearch(store).start(user.id,await resolveAudience(store,input)));
+      const old = await store.db.get<{ filters: string }>('SELECT filters FROM searches WHERE user_id=? AND request_id=?', user.id, input.requestId);
+      if (old) {
+        if (JSON.stringify(searchSchema.parse(JSON.parse(old.filters))) !== JSON.stringify(input)) throw new AppError('معرّف الطلب مستخدم لبحث مختلف.', 409);
+        return json(await new LiveSearch(store).start(user.id, audienceOf(old.filters)));
+      }
+      const live = new LiveSearch(store);
+      await live.recoverStale(user.id);
+      await store.checkSearchCapacity(user.id, input.count); // before any paid AI; enqueue rechecks under the wallet lock
+      return json(await live.start(user.id,await resolveAudience(store,input,undefined,user.id)));
     }
     if (path === 'search/count') {
       const input = searchSchema.pick({ mode:true, sector:true, countries:true, city:true, title:true, size:true }).parse(withCountries(b));
-      rateLimit('count:' + user.id, 60); // ponytail: in-memory, like the other limits; each call is 2 free provider requests, plus one paid AI call per new «أخرى» text (then cached)
+      await store.hit('count:' + user.id, 60); // Shared across server instances, before any provider or AI call.
       if (!providerInfo().configured) throw new AppError('مزوّد البيانات غير مهيأ على الخادم. تواصل مع مالك المنصة.',503);
-      if (user.balance < 1) throw new AppError('رصيدك صفر. تواصل مع مالك المنصة لإضافة رصيد قبل البحث.'); // no paid AI mapping for a search that cannot run
-      const audience = await resolveAudience(store,input); // «أخرى» is mapped here, so the member sees what will be searched
+      await store.checkSearchCapacity(user.id, 1);
+      const audience = await resolveAudience(store,input,undefined,user.id); // «أخرى» is mapped here, so the member sees what will be searched
       return json({...await new IcypeasClient().count(audience),industryLabels:audience.industryLabels,industries:audience.industries});
     }
     if (path === 'assist') {
-      const {messages}=z.object({messages:z.array(z.object({role:z.enum(['user','assistant']),content:z.string().trim().min(1).max(1200)})).min(1).max(8)}).parse(b);
+      const {messages,context}=assistRequestSchema.parse(b);
       // About $0.002 a message, at most ~$0.012: 12 a minute and 150 a day per member bound one account to ~$2 a day.
-      await store.hit('assist:'+user.id, 12);
-      await store.hit('assist-day:'+user.id, 150, 86400000, 'وصلت حد المساعد اليومي. حاول غدًا.');
-      if (!process.env.OPENROUTER_API_KEY?.trim()) throw new AppError('المساعد غير متاح الآن. حاول بعد قليل.', 503);
-      return json(await assist(messages, req.headers.get('x-lang') === 'en' ? 'en' : 'ar').catch(e => {
+      await store.aiBudget(user.id);
+      return json(await assist(messages, req.headers.get('x-lang') === 'en' ? 'en' : 'ar', context).catch(e => {
         console.warn('Assistant failed:', e instanceof Error ? e.message : 'unknown');
         throw new AppError('المساعد غير متاح الآن. حاول بعد قليل.', 503);
       }));
@@ -149,10 +162,19 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
       await store.admin(user.id);
       return json(await new IcypeasClient().verify());
     }
-    if (path === 'export') {
-      const options = z.object({ ids:z.array(z.string().uuid()).min(1).max(1000).optional(), searchId:z.string().uuid().optional() }).parse(b);
-      const contacts = await store.contactsForExport(user.id, options.ids, options.searchId);
-      return new NextResponse(contactsCsv(contacts), {headers:{ 'Content-Type':'text/csv; charset=utf-8', 'Content-Disposition':'attachment; filename="clowzy-contacts.csv"', 'Cache-Control':'no-store' }});
+    if (path === 'export' || path === 'export/preview') {
+      const options = z.object({ ids:z.array(z.string().uuid()).min(1).max(1000).optional(), searchId:z.string().uuid().optional(),profile:z.enum(['generic','gohighlevel']).optional(),columns:z.array(z.enum(exportColumns)).min(1).max(exportColumns.length).refine(c=>new Set(c).size===c.length).optional() }).parse(b);
+      if(options.profile||options.columns||path==='export/preview') requireCrm();
+      if(options.profile==='gohighlevel'&&options.columns&&!options.columns.includes('email')) throw new AppError('تصدير GoHighLevel يتطلب عمود البريد.');
+      const contacts = await store.contactsForExport(user.id, options.ids, options.searchId,false);
+      if((options.profile||options.columns)&&contacts.length>1000) throw new AppError('التصدير المخصص محدود بألف عميل. حدد العملاء أولًا.');
+      const meta=options.profile||options.columns?await store.db.all<{contact_id:string;stage:string;tags:string[];notes:string}>('SELECT contact_id,stage,tags,notes FROM crm_meta WHERE user_id=?',user.id):[];
+      const byId=new Map(meta.map(m=>[m.contact_id,m]));
+      const rows=(path==='export/preview'?contacts.slice(0,5):contacts).map(c=>({...c,...byId.get(c.id)}));
+      const csv=options.profile||options.columns?crmCsv(rows,options.columns||['name','email','company','title','city','country'],options.profile||'generic'):contactsCsv(rows);
+      if(path==='export/preview') return json({rowCount:contacts.length,preview:csv});
+      await store.contactsForExport(user.id,contacts.map(c=>c.id));
+      return new NextResponse(csv, {headers:{ 'Content-Type':'text/csv; charset=utf-8', 'Content-Disposition':'attachment; filename="clowzy-contacts.csv"', 'Cache-Control':'no-store' }});
     }
     if (path === 'terms') {
       await store.acceptTerms(user.id);

@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ChatCircleDots, PaperPlaneTilt, X } from '@phosphor-icons/react';
-import type { AssistReply, AssistMessage } from '@/lib/contracts';
+import { assistForm, type AssistReply, type AssistMessage } from '@/lib/contracts';
 import { api } from '@/lib/client';
 import { Button } from './ui';
 import { useT } from './lang';
@@ -23,7 +23,8 @@ export function Assistant() {
     try {
       const recent = next.slice(-8);
       while (recent[0]?.role === 'assistant') recent.shift(); // a conversation starts with the member
-      const r = await api<AssistReply>('assist', { messages: recent.map(({ role, content }) => ({ role, content: content.slice(0, 1200) })) });
+      const previous = [...messages].reverse().find(m => m.search)?.search;
+      const r = await api<AssistReply>('assist', { context: previous ? assistForm(previous, 50) : undefined, messages: recent.map(({ role, content }) => ({ role, content: content.slice(0, 1200) })) });
       setMessages([...next, { role: 'assistant', content: r.reply, search: r.search }]);
     } catch (e) { setMessages([...next, { role: 'assistant', content: (e as Error).message }]); }
     finally { setBusy(false); }

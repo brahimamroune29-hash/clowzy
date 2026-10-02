@@ -17,6 +17,7 @@ test('dashboard stays bounded with 1000 members and 100000 contacts, without los
       assert.equal(overview.summary?.exports,150); // The previous snapshot caps exports at 100.
       assert.equal(overview.user.balance,10000);
       assert.equal(overview.searches.length,4);
+      assert.equal(overviewOnly('/crm'),false);
       assert.deepEqual(overview.contacts,[]);assert.deepEqual(overview.ledger,[]);assert.deepEqual(overview.exports,[]);
       assert.equal(overview.admin,undefined);
       assert.ok(overview.searches.every(r=>r.user_id===f.heavyId));

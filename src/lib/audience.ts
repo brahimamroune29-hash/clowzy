@@ -85,14 +85,16 @@ const known = new Set(INDUSTRIES);
 const arabic = /[؀-ۿ]/;
 // One AI answer per normalized text, kept in the database (empty answers too): the same words never pay twice, and the
 // query (so the member's cursor) stays the same across count, search and repeat searches.
-async function cached<T>(store: Store, kind: 'sector' | 'title', text: string, ask: () => Promise<T>): Promise<T> {
+async function cached<T>(store: Store, kind: 'sector' | 'title', text: string, ask: () => Promise<T>, userId?: string): Promise<T> {
   const key = norm(text), hit = await store.aiCached(kind, key);
   if (hit) return JSON.parse(hit) as T;
+  if (userId) await store.aiBudget(userId);
   const value = await ask();
   await store.saveAiCache(kind, key, JSON.stringify(value));
   return value;
 }
 const aiDown = (kind: string, e: unknown) => {
+  if (e instanceof AppError && e.status === 429) return e;
   console.warn('AI mapping failed:', kind, e instanceof Error ? e.message : 'unknown');
   return new AppError(process.env.OPENROUTER_API_KEY?.trim() ? 'تعذّر فهم ما كتبته في «أخرى» الآن. اختر من القائمة أو حاول بعد قليل.'
     : 'خيار «أخرى» غير مفعّل حاليًا. اختر من القائمة.', 503);
@@ -100,14 +102,14 @@ const aiDown = (kind: string, e: unknown) => {
 
 // Form -> the audience a search runs with. Listed options map from the tables; typed ones go through the AI, checked.
 type AudienceForm = Pick<SearchInput, 'sector' | 'countries' | 'city' | 'title' | 'size'> & Partial<Pick<SearchInput, 'mode'>>;
-export async function resolveAudience<T extends AudienceForm>(store: Store, input: T, ai: AiMapper = openRouter): Promise<T & Pick<Resolved, 'industries' | 'industryLabels' | 'titles'>> {
+export async function resolveAudience<T extends AudienceForm>(store: Store, input: T, ai: AiMapper = openRouter, userId?: string): Promise<T & Pick<Resolved, 'industries' | 'industryLabels' | 'titles'>> {
   let industries: string[], industryLabels: string[];
   const table = listed(input.sector);
   if (table) {
     industries = table; industryLabels = [input.sector];
   } else {
     const pick = (list: { name: string; ar: string }[]) => list.filter((x, i) => known.has(x.name) && list.findIndex(y => y.name === x.name) === i).slice(0, 5);
-    const picked = pick(await cached(store, 'sector', input.sector, () => ai.sector(input.sector)).catch(e => { throw aiDown('sector', e); }));
+    const picked = pick(await cached(store, 'sector', input.sector, () => ai.sector(input.sector), userId).catch(e => { throw aiDown('sector', e); }));
     if (!picked.length) throw new AppError(`لم نجد مجالًا مهنيًا يطابق «${input.sector}». جرّب كلمات أوضح أو اختر من القائمة.`, 400);
     industries = picked.map(x => x.name); industryLabels = picked.map(x => arabic.test(x.ar) ? x.ar.trim().slice(0, 80) : input.sector); // members read Arabic only
   }
@@ -115,7 +117,7 @@ export async function resolveAudience<T extends AudienceForm>(store: Store, inpu
   let titles: string[] = [];
   if (Object.hasOwn(TITLE_VARIANTS, title)) titles = TITLE_VARIANTS[title as keyof typeof TITLE_VARIANTS];
   else if (arabic.test(title)) { // the Arabic words always search; the AI adds the English forms when it answers
-    const english = await cached(store, 'title', title, () => ai.title(title)).catch(e => { aiDown('title', e); return []; });
+    const english = await cached(store, 'title', title, () => ai.title(title), userId).catch(e => { if (e instanceof AppError && e.status === 429) throw e; aiDown('title', e); return []; });
     titles = [title, ...english.filter(t => /^[\x20-\x7E]{2,60}$/.test(t)).slice(0, 4)];
   } else if (title) titles = [title];
   return { ...input, industries, industryLabels, titles };
