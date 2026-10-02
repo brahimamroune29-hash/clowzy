@@ -38,7 +38,7 @@ export function SearchProgress({search,reload}:{search:Search;reload:()=>Promise
     <div className="searching-body">
       <h3>{t('نبحث عن عملائك الآن','Finding your clients now')}</h3>
       <ol className="search-steps">
-        <li className={checked?'done':'active'}>{companies?t('نبحث عن شركات تطابق معاييرك ونقرأ مواقعها','Finding matching companies and reading their sites'):t('نبحث عن أشخاص يطابقون معاييرك','Finding matching people')}</li>
+        <li className={checked?'done':'active'}>{companies?t('نبحث عن بريد عمل للشركات المطابقة لمعاييرك','Finding business emails for matching companies'):t('نبحث عن أشخاص يطابقون معاييرك','Finding matching people')}</li>
         <li className={checked?'active':''}>{t('نتحقق من البريد','Verifying the emails')}</li>
         <li className={delivered?'done':''}>{t('نحفظ البريد في حسابك','Saving them to your account')}</li>
       </ol>
