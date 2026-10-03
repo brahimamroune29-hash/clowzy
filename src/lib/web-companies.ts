@@ -14,6 +14,8 @@ const choice = z.object({ index: z.number().int().nonnegative(), name: z.string(
 const picked = z.object({ companies: z.array(choice).max(25) });
 const tokenSchema = z.object({ round: z.number().int().min(1).max(WEB_ROUNDS), seen: z.array(z.string().max(255)).max(200) });
 const host = (url: string) => new URL(url).hostname.toLowerCase().replace(/^www\d*\./, '');
+// A directory's own mailbox belongs to the publisher, even when its page accurately describes a dental clinic.
+export const directoryPath = (path: string) => /\/(?:library\/places?|d\/companies|companies|profiles?|listings?|biz)(?:\/|$)|\/ServiceProviderDetails\.aspx$/i.test(path);
 export type WebCompany = { name: string; website: string; address: string; industry: string };
 
 // A business's contact page may prove its address while its home page proves its services. Never join different hosts.
@@ -23,7 +25,7 @@ function sourcesOf(raw: unknown[]) {
     const p = citation.safeParse(r); if (!p.success) return;
     const s = p.data.url_citation, url = new URL(s.url), domain = host(s.url);
     if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.port || !/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,63}$/.test(domain) || directory.test(domain)
-      || /\/(?:library\/places?|d\/companies|companies|profiles?|listings?|biz)(?:\/|$)/i.test(url.pathname)) return;
+      || directoryPath(url.pathname)) return;
     const previous = sources.get(domain), content = s.title + '\n' + s.content.slice(0, 2500);
     sources.set(domain, previous ? { ...previous, content: previous.content + '\n' + content } : { index, ...s, content });
   });

@@ -64,7 +64,7 @@ test('Arabic location prefixes and country aliases match, and evidence joins onl
   assert.equal(groundedCompanies([pages[0], source('https://other.example/contact', pages[1].url_citation.content)], { companies: [select()] }, scope).length, 0);
   const national = groundedCompanies([source('https://clinic.example', 'Smile Clinic in Saudi Arabia. We provide dental treatment and implants.')], { companies: [select()] }, { ...scope, city: '' });
   assert.equal(national[0].address, 'Saudi Arabia', 'never invent a city for country-wide results');
-  for (const host of ['exa.ai', 'saudi.vezeeta.com', 'linkedin.com', 'tradersunion.com', 'platform.tracxn.com', 'unknown.example/companies/smile']) assert.equal(groundedCompanies([source('https://' + host)], { companies: [select()] }, scope).length, 0);
+  for (const host of ['exa.ai', 'saudi.vezeeta.com', 'linkedin.com', 'tradersunion.com', 'platform.tracxn.com', 'unknown.example/companies/smile', 'health.example/en/Pages/ServiceProviderDetails.aspx?id=37']) assert.equal(groundedCompanies([source('https://' + host)], { companies: [select()] }, scope).length, 0);
 });
 
 test('web discovery is bounded, resumes excluding seen domains, and does not replace free stock counts or relax headcount', async t => {

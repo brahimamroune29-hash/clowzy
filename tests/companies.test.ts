@@ -37,9 +37,9 @@ test('companies are searched by headquarters, industry and headcount; the job ti
 });
 
 test('every eligible company domain is retained even when no email is published on its website', async () => {
-  const m2 = mock({ pages: [[company('a'), company('b'), company('social', { website: 'https://instagram.com/x' }), company('far', { address: 'Cairo, Egypt' }), company('none', { website: '' })]] });
+  const m2 = mock({ pages: [[company('a'), company('b'), company('social', { website: 'https://instagram.com/x' }), company('far', { address: 'Cairo, Egypt' }), company('none', { website: '' }), company('directory',{website:'https://health.example/en/Pages/ServiceProviderDetails.aspx?id=37'})]] });
   const page2 = await m2.client.companies(companies(), null, 0);
-  assert.equal(page2.returned, 5, 'every company returned is paid for (0.02 each)');
+  assert.equal(page2.returned, 6, 'every company returned is paid for (0.02 each)');
   assert.deepEqual(page2.leads.map(l => l.lastCompanyName), ['Company a', 'Company b'], 'unread sites survive the paid page');
   assert(page2.leads.every(l=>l.kind==='company'&&!l.email));
   assert.equal((await m2.client.count(companies())).total, 100, 'the free count asks the companies list');

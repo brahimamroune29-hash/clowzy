@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { SUBMIT_MULTIPLE, type Candidate, type Resolved } from './contracts';
 import { cityNames, countryLabel, englishName, placeOf } from './places';
 import { abortable, bestEmail, companyEmail, emailsIn, freeMail, safeGet, type Get } from './site-email';
-import { webCompanies, webEnabled } from './web-companies';
+import { directoryPath, webCompanies, webEnabled } from './web-companies';
 
 // status: HTTP status for the API response. uncertain: a paid request may have reached Icypeas.
 // rejected: Icypeas refused this exact request (validation / 4xx), e.g. an expired pagination token.
@@ -109,8 +109,13 @@ const sure = ['ultra_sure', 'very_sure'];
 export { freeMail } from './site-email';
 // Placeholder employers: without a website there is nothing to find an email at.
 const genericCompany = /^(confidential\b|private (company|office|sector)$|self[- ]?employed|freelancer?$|stealth\b|n\/?a$|none$|-+$)/i;
-const hostOf = (url: string) => { try { return new URL(/^https?:\/\//i.test(url) ? url : 'https://' + url).hostname.replace(/^www\d*\./i, '').toLowerCase(); } catch { return ''; } };
-export const siteOf = (lead: Lead) => { const site = hostOf((lead.lastCompanyWebsite || '').trim()); return site.includes('.') && !/^[\d.]+$/.test(site) && !sharedHost.test(site) && !freeMail.test(site) ? site : ''; };
+export const siteOf = (lead: Lead) => {
+  try {
+    const website = (lead.lastCompanyWebsite || '').trim(), url = new URL(/^https?:\/\//i.test(website) ? website : 'https://' + website);
+    const site = url.hostname.replace(/^www\d*\./i, '').toLowerCase();
+    return site.includes('.') && !/^[\d.]+$/.test(site) && !sharedHost.test(site) && !freeMail.test(site) && !directoryPath(url.pathname) ? site : '';
+  } catch { return ''; }
+};
 const domainOf = (lead: Lead) => { const name = (lead.lastCompanyName || '').trim(); return siteOf(lead) || (genericCompany.test(name) ? '' : name); };
 // The provider matched the search by profile location; the address is checked too, so nobody from another country is sent.
 const inCountries = (lead: Lead, codes: string[]) => { const { code } = placeOf(lead.address); return !code || codes.includes(code); };
