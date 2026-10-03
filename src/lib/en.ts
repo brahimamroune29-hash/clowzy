@@ -1,6 +1,7 @@
 // English for the server's Arabic messages, applied on the way out (route.ts) when the page asks for English. Messages are
 // built from these sentences, so whole sentences are replaced wherever they appear; numbered ones go through the patterns.
 const sentences: Record<string, string> = {
+  'انتهت جولات البحث المتاحة لهذا الطلب.': 'This request reached the end of its available search rounds.',
   'بلغ البحث حد اكتشاف المواقع. حُفظت النتائج المتاحة.': 'This search reached its website discovery limit. Available results were saved.',
   'بلغت حد اكتشاف المواقع اليومي. حُفظت النتائج المتاحة.': 'You reached the daily website discovery limit. Available results were saved.',
   'تعذّر إكمال البحث المكمّل في المواقع. حُفظت النتائج التي وصلتك؛ حاول لاحقًا.': 'The supplementary website search could not finish. Your delivered results were saved; try again later.',

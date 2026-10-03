@@ -73,7 +73,7 @@ export class LiveSearch {
     const found = search.delivered + search.duplicates, dup = search.duplicates ? `، منها ${search.duplicates} مكرر مستبعد` : '';
     return (companies ? `تحققنا من بريد ${checked} من الشركات المطابقة، ${found ? `وصحّ بريد ${found} منها${dup}` : 'ولم يصح أيّ منها'}. `
       : `بحثنا عن بريد ${checked} من الأشخاص المطابقين، ${found ? `ووجدنا بريدًا موثّقًا لـ ${found} منهم${dup}` : 'ولم نجد بريدًا موثّقًا لأيّ منهم'}. `)
-      + (!cursor.stage && !cursor.token && cursor.leftovers === '[]' ? 'جرّبنا كل المطابقين المتاحين. ' + widen : `أعد البحث بالمعايير نفسها لتجربة ${companies ? 'شركات أخرى' : 'أشخاص آخرين'}، أو وسّعها لنتائج أكثر.`);
+      + (!cursor.stage && !cursor.token && cursor.leftovers === '[]' ? (webStage(input, stageCount(input) - 1) ? 'انتهت جولات البحث المتاحة لهذا الطلب. ' : 'جرّبنا كل المطابقين المتاحين. ') + widen : `أعد البحث بالمعايير نفسها لتجربة ${companies ? 'شركات أخرى' : 'أشخاص آخرين'}، أو وسّعها لنتائج أكثر.`);
   }
   private async finish(userId: string, id: string, message = '') {
     await this.store.finishSearch(id);
