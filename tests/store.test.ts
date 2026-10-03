@@ -127,6 +127,52 @@ test('invitations accepted once, preserve assigned credits, reject expired token
     await assert.rejects(store.acceptInvite(expired.token,'a-strong-password-123'));
   } finally {await store.close();}
 });
+test('name-only invitation lets the member choose an email once, preserves name and credits, and records the joined email',async()=>{
+  const {store,admin}=await setup();
+  try{
+    const invite=await store.invite(admin.id,'Member chosen by owner',undefined,35);
+    assert.equal((await store.invitation(invite.token)).email,'');
+    const session=await store.acceptInvite(invite.token,'a-strong-password-123',' NEW@Example.com ',true),user=await store.session(session);
+    assert.equal(user.email,'new@example.com');assert.equal(user.name,'Member chosen by owner');assert.equal(user.role,'member');assert.equal(user.balance,35);
+    assert(termsCurrent(user));
+    assert.equal((await store.db.get<{email:string}>('SELECT email FROM invitations WHERE id=?',invite.id))?.email,user.email);
+    await assert.rejects(store.acceptInvite(invite.token,'other-password-123','other@example.com'),/الدعوة غير صالحة/);
+    assert.equal((await store.db.get<{n:number}>('SELECT count(*)::int n FROM ledger WHERE user_id=?',user.id))?.n,1);
+    assert.equal((await store.session(await store.login(user.email,'a-strong-password-123'))).id,user.id);
+  }finally{await store.close();}
+});
+test('missing, invalid or existing email does not consume a name-only invitation; legacy email-bound invites cannot be redirected',async()=>{
+  const {store,admin,alice}=await setup();
+  try{
+    const invite=await store.invite(admin.id,'Waiting member',undefined,15);
+    for(const email of [undefined,'not-an-email',alice.email.toUpperCase()])await assert.rejects(store.acceptInvite(invite.token,'a-strong-password-123',email),AppError);
+    const row=await store.db.get<{used_at:string|null;email:string}>('SELECT used_at,email FROM invitations WHERE id=?',invite.id);
+    assert.equal(row?.used_at,null);assert.equal(row?.email,'');
+    const fresh=await store.session(await store.acceptInvite(invite.token,'a-strong-password-123','fresh@example.com'));
+    assert.equal(fresh.balance,15);assert.equal(fresh.terms_accepted_at,null,'old clients still require explicit consent on the terms screen');
+    const bound=await store.invite(admin.id,'Legacy member','legacy@example.com',10);
+    await assert.rejects(store.acceptInvite(bound.token,'a-strong-password-123','replacement@example.com'),/مخصصة للبريد/);
+    assert.equal((await store.invitation(bound.token)).email,'legacy@example.com');
+    assert.equal((await store.session(await store.acceptInvite(bound.token,'a-strong-password-123'))).email,'legacy@example.com');
+    const expired=await store.invite(admin.id,'Expired member',undefined,10);
+    await store.db.run("UPDATE invitations SET expires_at='2000-01-01' WHERE id=?",expired.id);
+    await assert.rejects(store.acceptInvite(expired.token,'a-strong-password-123','expired-new@example.com'),/الدعوة غير صالحة/);
+    assert.equal(await store.db.get('SELECT id FROM users WHERE email=?','expired-new@example.com'),undefined);
+  }finally{await store.close();}
+});
+test('failed session creation rolls back signup, invitation use, starting credits and consent',async()=>{
+  const {store,admin}=await setup();
+  try{
+    const invite=await store.invite(admin.id,'Atomic signup',undefined,35);
+    const before=await store.db.get<{n:number}>('SELECT count(*)::int n FROM ledger');
+    let fail=true;hookDb(store,sql=>{if(fail&&sql.startsWith('INSERT INTO sessions'))throw Error('injected session failure');});
+    await assert.rejects(store.acceptInvite(invite.token,'a-strong-password-123','atomic@example.com',true),/injected session failure/);
+    assert.equal((await store.invitation(invite.token)).email,'');
+    assert.equal(await store.db.get('SELECT id FROM users WHERE email=?','atomic@example.com'),undefined);
+    assert.deepEqual(await store.db.get('SELECT count(*)::int n FROM ledger'),before);
+    fail=false;assert.equal((await store.session(await store.acceptInvite(invite.token,'a-strong-password-123','atomic@example.com',true))).balance,35);
+  }finally{await store.close();}
+});
 test('suspension revokes sessions and enforces admin-only mutations',async()=>{
   const {store,admin,alice,bob}=await setup();
   try {

@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { NextRequest } from 'next/server';
 import { GET, POST } from '../src/app/api/[...path]/route';
 import type { Store } from '../src/lib/store';
+import {TERMS_VERSION,termsCurrent} from '../src/lib/contracts';
 import { testStore } from './pg';
 
 // The member journey through the real API handler (invite -> password -> terms -> count -> search -> poll -> export),
@@ -86,16 +87,32 @@ async function setup(t: TestContext, credits = 20) {
   await store.addUser('المالك', 'owner@clowzy.test', 'owner-password-1', 'admin');
   const owner = browser();
   assert.equal((await owner('auth/login', { email: 'owner@clowzy.test', password: 'owner-password-1' })).status, 200);
-  const invite = await owner('admin/invite', { name: 'سارة', email: 'sara@clinic.test', credits });
+  const invite = await owner('admin/invite', { name: 'سارة', credits });
   assert.equal(invite.status, 200);
   const member = browser();
-  assert.equal((await member('invitation?token=' + invite.data.token)).data.name, 'سارة');
-  assert.equal((await member('auth/accept', { token: invite.data.token, password: 'sara-password-1' })).status, 200);
+  const invitation=await member('invitation?token='+invite.data.token);
+  assert.equal(invitation.data.name,'سارة');assert.equal(invitation.data.email,'');
+  assert.equal((await member('auth/accept', { token: invite.data.token, email:'sara@clinic.test', password: 'sara-password-1',termsVersion:TERMS_VERSION })).status, 200);
+  assert(termsCurrent((await member('bootstrap')).data.user),'explicit signup consent permits direct dashboard entry');
   assert.equal((await member('terms', {})).status, 200);
   return { store, owner, member, token: invite.data.token as string };
 }
 const form = (count: number) => ({ sector: 'التقنية والبرمجيات', countries: ['SA'], city: '', title: '', size: 'all', count, confirmed: true, requestId: randomUUID() });
 const me = async (member: Call) => (await member('bootstrap?view=full')).data;
+test('journey: owner creates a name-only link; signup validation preserves it and chosen email gets the assigned member access',async t=>{
+  const {owner}=await setup(t);
+  const created=await owner('admin/invite',{name:'عمر',credits:9});assert.equal(created.status,200);
+  const join=browser(),token=created.data.token;
+  const base={token,password:'omar-password-123'};
+  for(const input of [base,{...base,email:'invalid'},{...base,email:'sara@clinic.test'},{...base,email:'omar@clinic.test',termsVersion:'old-terms'},{...base,email:'omar@clinic.test',password:'short'}]){
+    assert.equal((await join('auth/accept',input)).status,400);
+    assert.equal((await join('invitation?token='+token)).status,200,'invalid signup cannot consume the link');
+  }
+  assert.equal((await join('auth/accept',{...base,email:' OMAR@Clinic.test ',termsVersion:TERMS_VERSION,role:'admin',credits:99999,name:'replacement'})).status,200);
+  const data=await me(join);assert.equal(data.user.name,'عمر');assert.equal(data.user.email,'omar@clinic.test');assert.equal(data.user.role,'member');assert.equal(data.user.balance,9);assert(termsCurrent(data.user));
+  assert.equal((await join('admin/invite',{name:'Illegal',credits:100})).status,403);
+  assert.equal((await browser()('auth/accept',{...base,email:'different@clinic.test'})).status,410);
+});
 async function finish(t: TestContext, member: Call, id: string, stepMs = 10000) {
   for (let i = 0; i < 200; i++) {
     t.mock.timers.tick(stepMs);

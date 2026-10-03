@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { countryLabel } from './places';
-import { resolvedSchema, weekBoundariesSchema } from './schemas';
+import { registrationEmail, resolvedSchema, weekBoundariesSchema } from './schemas';
 import { TERMS_VERSION, type AdminUser, type AuditEvent, type Candidate, type Contact, type ExportEvent, type Invitation, type Ledger, type Resolved, type Search, type Snapshot, type User } from './contracts';
 import { Db, pgDriver } from './db';
 import { weekBoundaries } from './overview';
@@ -313,12 +313,12 @@ export class Store {
     if (record) await this.db.run('INSERT INTO exports(id,user_id,row_count,created_at) VALUES(?,?,?,?)', randomUUID(), userId, contacts.length, now());
     return contacts;
   }
-  async invite(adminId: string, name: string, email: string, credits: number) {
+  async invite(adminId: string, name: string, email: string | undefined, credits: number) {
     await this.admin(adminId);
-    if (await this.db.get('SELECT 1 FROM users WHERE email=?', normalizeEmail(email))) throw new AppError('يوجد حساب بهذا البريد بالفعل.');
+    if (email && await this.db.get('SELECT 1 FROM users WHERE email=?', normalizeEmail(email))) throw new AppError('يوجد حساب بهذا البريد بالفعل.');
     const token = randomBytes(24).toString('hex'), id = randomUUID();
     await this.db.run('INSERT INTO invitations(id,token_hash,name,email,credits,expires_at,used_at,created_at) VALUES(?,?,?,?,?,?,NULL,?)',
-      id, hash(token), name, normalizeEmail(email), credits, new Date(Date.now() + 2 * 86400000).toISOString(), now());
+      id, hash(token), name, email ? normalizeEmail(email) : '', credits, new Date(Date.now() + 2 * 86400000).toISOString(), now());
     await this.audit(adminId, 'دعوة مشترك', name);
     return { token, id };
   }
@@ -327,14 +327,23 @@ export class Store {
     if (!row || row.used_at || row.expires_at <= now()) throw new AppError('الدعوة غير صالحة أو انتهت مدتها.', 410);
     return { id: row.id, name: row.name, email: row.email, credits: row.credits };
   }
-  acceptInvite(token: string, password: string) {
+  acceptInvite(token: string, password: string, email?: string, agreed = false) {
     return this.transaction(async () => {
       const invitation = await this.invitation(token);
+      const chosen = registrationEmail.safeParse(email ?? invitation.email);
+      if (!chosen.success) throw new AppError('اكتب بريدًا إلكترونيًا صالحًا لإكمال التسجيل.');
+      if (invitation.email && chosen.data !== invitation.email) throw new AppError('هذه الدعوة مخصصة للبريد المعروض فقط.');
       // The conditional update is the claim: a second, concurrent accept of the same link finds it used.
-      if (!await this.db.run('UPDATE invitations SET used_at=? WHERE id=? AND used_at IS NULL', now(), invitation.id)) throw new AppError('الدعوة غير صالحة أو انتهت مدتها.', 410);
-      if (await this.db.get('SELECT 1 FROM users WHERE email=?', invitation.email)) throw new AppError('الحساب موجود بالفعل. سجّل الدخول.');
-      const user = await this.addUser(invitation.name, invitation.email, password, 'member', invitation.credits);
+      if (!await this.db.run('UPDATE invitations SET used_at=?,email=? WHERE id=? AND used_at IS NULL AND expires_at>?', now(), chosen.data, invitation.id, now())) throw new AppError('الدعوة غير صالحة أو انتهت مدتها.', 410);
+      if (await this.db.get('SELECT 1 FROM users WHERE email=?', chosen.data)) throw new AppError('الحساب موجود بالفعل. سجّل الدخول.');
+      const user = await this.addUser(invitation.name, chosen.data, password, 'member', invitation.credits);
+      if (agreed) await this.acceptTerms(user.id);
       return this.createSession(user.id);
+    }).catch((error:unknown)=>{
+      // Two different links may choose the same email concurrently. Roll back the unused link and its credits.
+      const databaseError=error as {code?:string;constraint_name?:string;constraint?:string};
+      if(databaseError?.code==='23505'&&/users_email/.test(databaseError.constraint_name||databaseError.constraint||''))throw new AppError('الحساب موجود بالفعل. سجّل الدخول.');
+      throw error;
     });
   }
   async adjustCredits(adminId: string, userId: string, mode: 'add' | 'set', amount: number, reason: string, requestId: string) {

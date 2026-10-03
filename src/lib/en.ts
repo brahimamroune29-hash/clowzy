@@ -33,6 +33,8 @@ const sentences: Record<string, string> = {
   'يوجد حساب بهذا البريد بالفعل.': 'An account with this email already exists.',
   'الدعوة غير صالحة أو انتهت مدتها.': 'This invitation is invalid or expired.',
   'الحساب موجود بالفعل. سجّل الدخول.': 'The account already exists. Sign in.',
+  'اكتب بريدًا إلكترونيًا صالحًا لإكمال التسجيل.': 'Enter a valid email to complete registration.',
+  'هذه الدعوة مخصصة للبريد المعروض فقط.': 'This invitation is restricted to the displayed email.',
   'المشترك غير موجود.': 'Member not found.',
   'ألغِ عمليات البحث الجارية أولًا قبل تعيين رصيد أقل من المحجوز.': 'Cancel the running searches before setting a balance below what they hold.',
   'كلمة المرور الحالية غير صحيحة.': 'The current password is wrong.',

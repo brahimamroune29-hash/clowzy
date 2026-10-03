@@ -18,6 +18,7 @@ async function member(balance: number) {
   return id;
 }
 let failures = 0;
+const openInvitations:string[]=[];
 const check = (name: string, ok: boolean, detail = '') => { if (!ok) failures++; console.log(`${ok ? 'OK  ' : 'FAIL'} ${name}${detail ? ' — ' + detail : ''}`); };
 const fulfilled = (r: PromiseSettledResult<unknown>[]) => r.filter(x => x.status === 'fulfilled').length;
 const reasons = (r: PromiseSettledResult<unknown>[]) => r.flatMap(x => x.status === 'rejected' ? [String((x.reason as Error)?.message)] : []);
@@ -34,6 +35,19 @@ async function main() {
       const r = await Promise.allSettled([store.acceptInvite(token, 'check-password-123'), store.acceptInvite(token, 'check-password-123')]);
       check(`one invitation opened twice at once, used once (round ${round})`, fulfilled(r) === 1, reasons(r).join(' | '));
     }
+    for(let round=1;round<=5;round++){
+      const token=randomBytes(24).toString('hex'),id=randomUUID();openInvitations.push(id);
+      await db.run('INSERT INTO invitations(id,token_hash,name,email,credits,expires_at,created_at) VALUES(?,?,?,?,?,?,?)',id,hash(token),'check','',0,inAnHour(),now());
+      const r=await Promise.allSettled([store.acceptInvite(token,'check-password-123',`first-${id}${tag}`,true),store.acceptInvite(token,'check-password-123',`second-${id}${tag}`,true)]);
+      check(`name-only invitation with two different chosen emails, one accepted (round ${round})`,fulfilled(r)===1&&reasons(r).every(m=>m.includes('الدعوة غير صالحة')),reasons(r).join(' | '));
+    }
+    for(let round=1;round<=5;round++){
+      const tokens=[randomBytes(24).toString('hex'),randomBytes(24).toString('hex')],ids=[randomUUID(),randomUUID()],email=`same-${randomUUID()}${tag}`;openInvitations.push(...ids);
+      for(const [i,id] of ids.entries())await db.run('INSERT INTO invitations(id,token_hash,name,email,credits,expires_at,created_at) VALUES(?,?,?,?,?,?,?)',id,hash(tokens[i]),'check','',0,inAnHour(),now());
+      const r=await Promise.allSettled([store.acceptInvite(tokens[0],'check-password-123',email,true),store.acceptInvite(tokens[1],'check-password-123',email.toUpperCase(),true)]);
+      const unused=await db.get<{n:number}>('SELECT count(*)::int n FROM invitations WHERE (id=? OR id=?) AND used_at IS NULL AND email=?',ids[0],ids[1],'');
+      check(`different links choose the same email, one account and unused link retained (round ${round})`,fulfilled(r)===1&&unused?.n===1&&reasons(r).every(m=>m.includes('الحساب موجود بالفعل')),reasons(r).join(' | '));
+    }
     for (let round = 1; round <= 5; round++) {
       const users = [await member(0), await member(0)], tokens = [randomBytes(24).toString('hex'), randomBytes(24).toString('hex')];
       for (const [i, u] of users.entries()) {
@@ -47,6 +61,7 @@ async function main() {
     const ids = (await db.all<{ id: string }>('SELECT id FROM users WHERE email LIKE ?', '%' + tag)).map(u => u.id);
     for (const id of ids) for (const t of ['reservations', 'sessions', 'reset_tokens', 'searches']) await db.run(`DELETE FROM ${t} WHERE user_id=?`, id);
     await db.run('DELETE FROM invitations WHERE email LIKE ?', '%' + tag);
+    for(const id of openInvitations)await db.run('DELETE FROM invitations WHERE id=?',id);
     for (const id of ids) await db.run('DELETE FROM users WHERE id=?', id);
     console.log(`cleanup: removed ${ids.length} check accounts`);
     await store.close();

@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { AppError, getStore } from '@/lib/store';
-import { termsCurrent, withCountries } from '@/lib/contracts';
-import { assistRequestSchema, searchSchema, weekBoundariesSchema } from '@/lib/schemas';
+import { TERMS_VERSION, termsCurrent, withCountries } from '@/lib/contracts';
+import { assistRequestSchema, registrationEmail, searchSchema, weekBoundariesSchema } from '@/lib/schemas';
 import { IcypeasClient, IcypeasError, providerInfo } from '@/lib/icypeas';
 import { LiveSearch } from '@/lib/live-search';
 import { searchTick, workerAuthorized } from '@/lib/search-worker';
@@ -83,8 +83,8 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
         return authenticated(await store.login(data.email, data.password));
       }
       if (path === 'auth/accept') {
-        const data = z.object({token:tokenField,password}).parse(b);
-        return authenticated(await store.acceptInvite(data.token, data.password));
+        const data = z.object({token:tokenField,password,email:registrationEmail.optional(),termsVersion:z.literal(TERMS_VERSION).optional()}).parse(b);
+        return authenticated(await store.acceptInvite(data.token, data.password, data.email, data.termsVersion===TERMS_VERSION));
       }
       if (path === 'auth/reset') {
         const data = z.object({token:tokenField,password}).parse(b);
@@ -201,7 +201,7 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
     }
     if (path.startsWith('admin/')) await store.admin(user.id);
     if (path === 'admin/invite') {
-      const data = z.object({name:z.string().trim().min(2).max(60),email:z.email(),credits:z.number().int().min(0).max(100000)}).parse(b);
+      const data = z.object({name:z.string().trim().min(2).max(60),email:registrationEmail.optional(),credits:z.number().int().min(0).max(100000)}).parse(b);
       return json(await store.invite(user.id, data.name, data.email, data.credits));
     }
     if (path === 'admin/credits') {
