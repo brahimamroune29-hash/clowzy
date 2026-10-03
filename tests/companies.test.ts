@@ -4,7 +4,6 @@ import { randomUUID } from 'node:crypto';
 import { audienceOf } from '../src/lib/audience';
 import { companiesQuery, cursorKey, IcypeasClient, stageCount } from '../src/lib/icypeas';
 import { contactsCsv } from '../src/lib/csv';
-import { expectedEmails } from '../src/lib/contracts';
 import { item, live, testStore } from './pg';
 
 const companies = (count = 2, extra = {}) => audienceOf(JSON.stringify({ mode: 'companies', sector: 'العقارات', countries: ['SA', 'AE'], city: '', title: '', size: '11-50', count, confirmed: true, requestId: randomUUID(), ...extra }));
@@ -118,6 +117,26 @@ test('a first domain batch with one result continues from the saved page and fil
   }finally{await store.close();}
 });
 
+test('a 50-email request survives collection pauses and a sparse first batch, topping up without repeated charges', async () => {
+  const store = await testStore(), user = await store.addUser('Fifty test', 'fifty@example.com', 'secure-password', 'member', 60);
+  const m = mock({ pages: Array.from({ length: 6 }, (_, page) => Array.from({ length: 25 }, (_, i) => company('f' + (page * 25 + i)))), files: [
+    Array.from({ length: 100 }, (_, i) => item(i, i < 10 ? 'info@f' + i + '.example' : null)),
+    Array.from({ length: 50 }, (_, i) => item(i, i < 40 ? 'info@f' + (100 + i) + '.example' : null)),
+  ] });
+  try {
+    let search = await live(store, m.client).start(user.id, companies(50));
+    for (let i = 0; i < 10 && search.status === 'awaiting_provider'; i++) {
+      await store.db.run('UPDATE provider_runs SET updated_at=0');
+      search = await live(store, m.client).poll(user.id, search.id);
+    }
+    assert.equal(search.status, 'completed'); assert.equal(search.delivered, 50);
+    assert.equal(m.count('bulk-search'), 2); assert.equal((await store.user(user.id)).balance, 10); assert.equal(await store.reserved(user.id), 0);
+    const contacts = (await store.snapshot(user.id)).contacts; assert.equal(new Set(contacts.map(c => c.email)).size, 50);
+    await live(store, m.client).poll(user.id, search.id);
+    assert.equal(m.count('bulk-search'), 2); assert.equal((await store.user(user.id)).balance, 10);
+  } finally { await store.close(); }
+});
+
 test('a people search short of its count is completed with the companies\' own verified emails, once, labelled as such', async () => {
   const store = await testStore(), user = await store.addUser('Alice', 'alice@example.com', 'secure-password', 'member', 10);
   try {
@@ -134,9 +153,4 @@ test('a people search short of its count is completed with the companies\' own v
     assert.equal(m.count('find-people'), 2, 'never back to the people after the fallback');
     assert.equal((await store.user(user.id)).balance, 9);
   } finally { await store.close(); }
-});
-
-test('the expected count for companies follows the companies rate', () => {
-  assert.equal(expectedEmails(0, 1000, 10, 'companies'), 75, '25 companies tried per requested email, about 3 in 10 with a verified site email');
-  assert.equal(expectedEmails(0, 5, 10, 'companies'), 1);
 });

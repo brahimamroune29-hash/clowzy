@@ -4,10 +4,9 @@ import { randomUUID } from 'node:crypto';
 import { cursorKey, freeMail, IcypeasClient, IcypeasError, peopleQuery, personKey, safeWebsite } from '../src/lib/icypeas';
 import { LiveSearch } from '../src/lib/live-search';
 import { Store } from '../src/lib/store';
-import { emailTrust, expectedEmails } from '../src/lib/contracts';
+import { emailTrust } from '../src/lib/contracts';
 import { SECTOR_INDUSTRIES } from '../src/lib/audience';
 import { hookDb, input, item, lead, live, testStore } from './pg';
-
 
 // pages: find-people pages, a page's token points at the next page ('t1' -> pages[1]). files: result rows per bulk submission.
 function mockTransport(o: { pages?: { leads: unknown[]; token?: string }[]; broad?: { leads: unknown[]; token?: string }[]; files?: unknown[][]; bulkThrow?: boolean; bulkHttp?: number; bulkBody?: unknown; onRead?: (n: number) => Promise<void>; http?: number; expired?: string } = {}) {
@@ -196,7 +195,6 @@ test('missing key never calls the provider; provider errors are clear', async ()
   await assert.rejects(client.people(input()), (e: IcypeasError) => e.status === 503); assert.equal(called, false);
   await assert.rejects(mockTransport({ http: 401 }).client.verify(), /غير صالح/);
 });
-
 
 test('two overlapping polls deliver once and submit the next batch once (no paid-but-lost batch)', async () => {
   const pages = [{ leads: ['a', 'b', 'c', 'd'].map(lead), token: 't1' }, { leads: [lead('e')] }];
@@ -484,14 +482,6 @@ test('a search that ends short says why (people checked, verified emails found) 
     const r = await live(empty.store, mockTransport({ pages: [{ leads: [] }] }).client).start(empty.user.id, input(1));
     assert.equal(r.message, 'لا يوجد أشخاص جدد مطابقون لهذه المعايير حاليًا. ' + widen, 'nobody was checked');
   } finally { await empty.store.close(); }
-});
-
-test('the pre-search estimate: strict matches first at 18%, then broad ones at 8%, within the 20x people a search may try', () => {
-  assert.equal(expectedEmails(0, 15, 3), 1, 'production 776c4fd4: 15 broad-only people for 3 emails -> 1.2, so warn');
-  assert.equal(expectedEmails(5, 10, 3), 1);
-  assert.equal(expectedEmails(93, 644, 10), 25, 'up to 200 people are tried: the 93 strict ones first');
-  assert.equal(expectedEmails(0, 5, 1), 0, 'under one expected email reads as "may find none", never rounded up to 1');
-  assert.equal(expectedEmails(0, 0, 5), 0);
 });
 
 test('starting a new search closes the member\'s abandoned ones with what came back, never paying for another batch for them', async () => {

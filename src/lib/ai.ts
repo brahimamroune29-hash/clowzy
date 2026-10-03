@@ -7,14 +7,14 @@ import { cityNames, countryLabel, englishName, isCountry, norm } from './places'
 export type AiMapper = { sector(text: string): Promise<{ name: string; ar: string }[]>; title(text: string): Promise<string[]> };
 
 // «أخرى» through OpenRouter (key: OPENROUTER_API_KEY, server only). Answers are checked and cached by audience.ts.
-const MODEL = 'anthropic/claude-haiku-4.5'; // cheapest current Claude on OpenRouter (checked 2026-09-30)
-async function ask(system: string, user: string | AssistMessage[], maxTokens = 400, schema?: object): Promise<unknown> {
+export const MODEL = 'anthropic/claude-haiku-4.5'; // cheapest current Claude on OpenRouter (checked 2026-09-30)
+export async function ask(system: string, user: string | AssistMessage[], maxTokens = 400, schema?: object, timeout = schema ? 40000 : 20000): Promise<unknown> {
   const key = process.env.OPENROUTER_API_KEY?.trim();
   if (!key) throw new Error('OPENROUTER_API_KEY is not set');
   const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST', headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: MODEL, temperature: 0, max_tokens: maxTokens, ...(schema ? { response_format: { type: 'json_schema', json_schema: { name: 'search_assistant', strict: true, schema } }, provider: { require_parameters: true } } : {}), messages: [{ role: 'system', content: system }, ...(typeof user === 'string' ? [{ role: 'user', content: user }] : user)] }),
-    signal: AbortSignal.timeout(schema ? 40000 : 20000), redirect: 'error', cache: 'no-store',
+    signal: AbortSignal.timeout(timeout), redirect: 'error', cache: 'no-store',
   });
   if (!res.ok) throw new Error('OpenRouter HTTP ' + res.status);
   const content = z.object({ choices: z.array(z.object({ message: z.object({ content: z.string() }) })).min(1) }).parse(await res.json()).choices[0].message.content;

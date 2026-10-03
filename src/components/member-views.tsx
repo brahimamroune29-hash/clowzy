@@ -3,7 +3,7 @@ import { useEffect,useRef,useState } from 'react';
 import Link from 'next/link';
 import { useRouter,useSearchParams } from 'next/navigation';
 import { ArrowDown, Check, CheckCircle, Coins, Copy, DownloadSimple, MagnifyingGlass, MapPin, Plus, SlidersHorizontal, Sparkle, UsersThree, ClockCounterClockwise, ArrowSquareOut, X } from '@phosphor-icons/react';
-import { searchMethod, assistForm, type AssistMessage, type AssistReply, type Contact, emailTrust, expectedEmails, fieldOf, fields, type FieldName, gulf, OTHER, type Search, type SearchInput, titles, withCountries } from '@/lib/contracts';
+import { searchMethod, assistForm, type AssistMessage, type AssistReply, type Contact, emailTrust, fieldOf, fields, type FieldName, gulf, OTHER, type Search, type SearchInput, titles, withCountries } from '@/lib/contracts';
 import { cityNames, countrySuggestions } from '@/lib/places';
 import { api,date,downloadContacts,number } from '@/lib/client';
 import type { ViewProps } from './platform';
@@ -14,7 +14,7 @@ import { useLang,useNames,useT } from './lang';
 // A search's state in words, the same on the dashboard and in the history.
 function SearchBadge({s}:{s:Search}){
   const t=useT();
-  return <Badge tone={['failed','unknown','cancelled'].includes(s.status)||(s.status==='partial'&&!s.delivered)?'amber':'green'}>{s.status==='failed'?t('تعذّر البحث','Failed'):s.status==='unknown'?t('غير مؤكد','Uncertain'):s.status==='cancelled'?t('ملغى','Cancelled'):['awaiting_provider','running','queued'].includes(s.status)?t('قيد التنفيذ','Running'):s.status==='partial'?(s.delivered?t('نتائج جزئية','Partial'):t('لا نتائج','No results')):t('مكتمل','Complete')}</Badge>;
+  return <Badge tone={['failed','unknown','cancelled','partial'].includes(s.status)?'amber':'green'}>{s.status==='failed'?t('تعذّر البحث','Failed'):s.status==='unknown'?t('غير مؤكد','Uncertain'):s.status==='cancelled'?t('ملغى','Cancelled'):['awaiting_provider','running','queued'].includes(s.status)?t('قيد التنفيذ','Running'):s.status==='partial'?(s.delivered?t('نتائج جزئية','Partial'):t('لا نتائج','No results')):t('مكتمل','Complete')}</Badge>;
 }
 // The stored title is Arabic; in English it is rebuilt from the search's filters.
 function useSearchTitle(){
@@ -84,7 +84,7 @@ export function SearchView({data,reload,notify}:ViewProps){
   const [conversation,setConversation]=useState<AssistMessage[]>([]);
   const [aiState,setAiState]=useState<'idle'|'prepare'|'clarify'|'answer'|'error'>('idle'),[choices,setChoices]=useState<string[]>([]);
   const formVersion=useRef(0);
-  const [match,setMatch]=useState<{total?:number;strict?:number;industryLabels?:string[];industries?:string[];error?:string;audience:string}|null>(null); // null: counting
+  const [match,setMatch]=useState<{total?:number;strict?:number;supplementary?:boolean;industryLabels?:string[];industries?:string[];error?:string;audience:string}|null>(null); // null: counting
   function change(patch:Partial<Form>){
     formVersion.current++;
     setAiState('idle');setChoices([]);setAiNote('');
@@ -118,19 +118,18 @@ export function SearchView({data,reload,notify}:ViewProps){
   useEffect(()=>{
     if(!method||!data.provider?.configured||JSON.parse(audience).sector.length<2)return;
     let active=true;
-    const timer=setTimeout(()=>api<{total:number;strict:number;industryLabels:string[];industries:string[]}>('search/count',JSON.parse(audience))
+    const timer=setTimeout(()=>api<{total:number;strict:number;supplementary:boolean;industryLabels:string[];industries:string[]}>('search/count',JSON.parse(audience))
       .then(r=>{if(active)setMatch({...r,audience});}).catch(e=>{if(active)setMatch({error:(e as Error).message,audience});}),700);
     return()=>{active=false;clearTimeout(timer);};
   },[data.provider?.configured,audience,method]);
   const currentMatch=match?.audience===audience?match:null;
-  const expected=currentMatch?.total!==undefined?expectedEmails(currentMatch.strict??0,currentMatch.total,filters.count||0,filters.mode):undefined;
-  const few=expected!==undefined&&expected<filters.count;
+  const few=currentMatch?.total!==undefined&&currentMatch.total<filters.count;
   const pending=other&&filters.sector!==otherDraft.trim()||!companies&&titleOther&&filters.title!==titleDraft.trim();
   const who=companies?t('الشركات المطابقة','matching companies'):t('الأشخاص المطابقين','matching people');
   const ready=filters.sector.length>=2&&!pending;
   const validCount=Number.isInteger(filters.count)&&filters.count>=1&&filters.count<=maxCount;
   const unfinishedDescription=method==='ai'&&(!!describe.trim()||aiState==='clarify');
-  const canStart=!!method&&ready&&validCount&&confirmed&&!thinking&&!unfinishedDescription&&!!currentMatch&&!currentMatch.error&&currentMatch.total!==0&&!!data.provider?.configured;
+  const canStart=!!method&&ready&&validCount&&confirmed&&!thinking&&!unfinishedDescription&&!!currentMatch&&!currentMatch.error&&(currentMatch.total!==0||currentMatch.supplementary)&&!!data.provider?.configured;
   async function submit(e:React.FormEvent){
     e.preventDefault();if(busy||!canStart)return;setBusy(true);setError('');
     try{
@@ -148,9 +147,8 @@ export function SearchView({data,reload,notify}:ViewProps){
   const status=pending||filters.sector.length<2?t('اكتب مجالك ثم اضغط «اعتماد».','Type your field, then press “Apply”.')
     :!currentMatch?t('نحسب عدد ','Counting ')+who+'…':currentMatch.error?currentMatch.error
     :(other&&currentMatch.industryLabels?.length?t('سنبحث في: ','We will search in: ')+(lang==='en'?currentMatch.industries??[]:currentMatch.industryLabels).join(lang==='en'?', ':'، ')+'. ':'')
-      +(currentMatch.total===0?t('لا يوجد ما يطابق هذه المعايير. وسّع البحث: احذف المدينة أو حجم الشركة.','Nothing matches. Widen the search: remove the city or company size.')
-      :few?(expected?t('المتوقع نحو '+expected+' بريد من '+filters.count,'Expect about '+expected+' of '+filters.count+' emails'):t('قد لا نجد بريدًا بهذه المعايير','We may find no email with these filters'))+' ('+number(currentMatch.total!)+' '+who+'). '+t('لا يُخصم إلا البريد الذي يصلك.','You pay only for emails you receive.')
-      :t('عدد '+who,companies?'Matching companies':'Matching people')+': '+number(currentMatch.total!)+'. '+t('العدّ مجاني.','Counting is free.'));
+      +(currentMatch.total===0&&!currentMatch.supplementary?t('لا يوجد ما يطابق هذه المعايير. وسّع البحث: احذف المدينة أو حجم الشركة.','Nothing matches. Widen the search: remove the city or company size.')
+      :t('عدد '+who,companies?'Matching company records':'Matching people records')+': '+number(currentMatch.total!)+'. '+t('هذه سجلات مرشحة، وليست إيميلات متحققة. العدد المطلوب هدف للبحث، والمتاح فعليًا يتحدد بعد التحقق.','These are candidate records, not verified emails. Your requested count is a search target; availability is established after verification.')+(currentMatch.supplementary?' '+t('عند نقص النتائج، نبحث أيضًا في مواقع الشركات المطابقة ضمن حد البحث المتاح.','If results fall short, we also search matching company websites within the search allowance.'):few?' '+t('المصدر الحالي يحتوي سجلات أقل من العدد المطلوب.','The current source has fewer records than your target.') :''));
   function chooseMethod(next:'manual'|'ai'|null){
     if(busy||thinking)return;
     const params=new URLSearchParams(query.toString());params.set('method',next||'choose');
@@ -266,7 +264,7 @@ export function LeadsView({data,reload,notify}:ViewProps){
   return <><PageHeading title={search?title(search):t('عملائي','My contacts')}><Button variant="secondary" loading={busy} disabled={!base.length} onClick={exportRows}><DownloadSimple size={18}/>{selected.length?t('تنزيل المحدد ('+selected.length+')','Download selected ('+selected.length+')'):t('تنزيل الملف','Download file')}</Button></PageHeading>
   {search?.status==='awaiting_provider'&&<SearchProgress search={search} reload={reload}/>}
   {search&&['failed','unknown'].includes(search.status)&&<Notice error>{(search.message||(search.status==='unknown'?t('حالة الطلب غير مؤكدة. يمكنك البدء ببحث جديد.','The request status is uncertain. You can start a new search.'):t('تعذّر إكمال الطلب.','The request could not be completed.')))+' '+t('لم يُخصم كريدت لنتائج لم تصلك.','No credit was charged for results you did not receive.')}</Notice>}
-  {search?.status==='partial'&&<Notice>{search.message||t('لم نجد بريدًا كافيًا بهذه المعايير.','Not enough emails for these filters.')} {t('لم يُخصم إلا ما وصلك.','You paid only for what you received.')} <Link href={'/search?from='+search.id} className="text-link">{t('عدّل المعايير وابحث مجددًا','Edit and search again')}</Link></Notice>}
+  {search?.status==='partial'&&<Notice><strong>{t('الطلب غير مكتمل: وصل '+search.delivered+' من '+search.requested+'. ','Incomplete: received '+search.delivered+' of '+search.requested+'. ')}</strong>{search.message||t('لم نجد بريدًا كافيًا بهذه المعايير.','Not enough emails for these filters.')} {t('لم يُخصم إلا ما وصلك.','You paid only for what you received.')} <Link href={'/search?from='+search.id} className="text-link">{t('عدّل المعايير وابحث مجددًا','Edit and search again')}</Link></Notice>}
   {search&&<div className="result-summary"><span><CheckCircle size={20}/><strong>{search.delivered}</strong> {t('بريد جديد','new emails')}</span><span><Coins size={18}/>{search.delivered} {t('كريدت','credits')}</span>{search.duplicates>0&&<span>{search.duplicates} {t('مكرر لم يُخصم','duplicates, not charged')}</span>}<Link href="/leads" className="text-link">{t('كل عملائي','All my contacts')} <Forward/></Link></div>}
   {!(search?.status==='awaiting_provider'&&!base.length)&&<section className="panel table-panel"><div className="table-toolbar"><div className="search-input"><MagnifyingGlass size={19}/><input aria-label={t('ابحث في العملاء','Search contacts')} placeholder={t('ابحث بالاسم أو الشركة أو البريد…','Search by name, company or email…')} value={text} onChange={e=>{setText(e.target.value);setPage(1);}}/></div><span className="result-count">{rows.length} {t('نتيجة','results')}</span></div>
   {rows.length?<><div className="table-scroll"><table className="leads-table"><thead><tr><th className="check-cell"><input aria-label={t('تحديد الصفحة','Select page')} type="checkbox" checked={visible.length>0&&visible.every(c=>selected.includes(c.id))} onChange={e=>setSelected(e.target.checked?[...new Set([...selected,...visible.map(c=>c.id)])]:selected.filter(id=>!visible.some(c=>c.id===id)))}/></th><th>{t('الاسم','Name')}</th><th>{t('الشركة','Company')}</th><th>{t('البريد','Email')}</th><th>{t('الموقع','Location')}</th><th/></tr></thead><tbody>{visible.map((c,i)=><tr key={c.id}><td><input aria-label={t('تحديد ','Select ')+c.name} type="checkbox" checked={selected.includes(c.id)} onChange={()=>toggle(c.id)}/></td><td><button className="contact-name" onClick={()=>setDetail(c)}><span className={'avatar avatar-'+i%4}>{c.name.split(' ').map(s=>s[0]).join('').slice(0,2)}</span><span><strong>{c.name}</strong><small>{role(c)}</small></span></button></td><td><strong className="company-name">{c.company}</strong><small>{names.label(c.sector)}</small></td><td><span className="email-text" dir="ltr">{c.email}</span><Badge tone={c.email_status==='PROBABLE'?'neutral':'green'}>{trust(c)}</Badge></td><td><span className="location-cell"><MapPin size={14}/>{c.city||'—'}</span><small>{names.place(c.country)}</small></td><td><button className="icon-button" title={t('التفاصيل','Details')} aria-label={t('تفاصيل ','Details of ')+c.name} onClick={()=>setDetail(c)}><Open/></button></td></tr>)}</tbody></table></div>

@@ -2,8 +2,8 @@ import type { Resolved, Search } from './contracts';
 import { catalogMatches, rememberCandidates } from './catalog';
 import { audienceOf } from './audience';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { DAILY_PEOPLE, dailyLimit, Store } from './store';
-import { BATCH, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadName, personKey, queryOf, stageCount, submitCap } from './icypeas';
+import { AppError, DAILY_PEOPLE, dailyLimit, Store } from './store';
+import { BATCH, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadName, personKey, queryOf, stageCount, submitCap, webStage } from './icypeas';
 
 type Run = { search_id: string; phase: string; people: string; file: string | null; scanned: number; fetched: number; submitted: number; submitted_at: number | null; message: string; updated_at: number; read_errors: number; mode: 'companies' | null; people_checked: number };
 // The audience a run continues with: the stored filters, switched to companies once a people search has fallen back.
@@ -144,6 +144,14 @@ export class LiveSearch {
             if (batch.length) break;
             return this.finish(userId, id, 'حُسب فقط ما وصل. ' + dailyLimit);
           }
+          if (webStage(input, stage)) {
+            if (batch.length) break; // verify what we have before paying for another web page
+            // Web discovery and classification together have a 42 s ceiling. Start them in a fresh request,
+            // persist the result, then pause before any paid email submission if the submit window has passed.
+            if (this.elapsed() > 5000) return this.pause(userId, id, batch, input);
+            await this.store.hit('web-search:' + id, 3, 86400000, 'بلغ البحث حد اكتشاف المواقع. حُفظت النتائج المتاحة.');
+            await this.store.hit('web-day:' + userId, 12, 86400000, 'بلغت حد اكتشاف المواقع اليومي. حُفظت النتائج المتاحة.');
+          }
           pages++;
           const page = await this.page(input, token, stage);
           scanned += page.returned; fetched += page.returned; pool = page.leads; token = page.token;
@@ -175,7 +183,7 @@ export class LiveSearch {
       } catch (e) { console.error('Paid Icypeas batch not saved; reconcile by hand:', { search: id, file }); throw e; }
       return this.view(userId, id);
     } catch (e) {
-      const error = e instanceof IcypeasError ? e : sent ? new IcypeasError('تعذّر حفظ نتيجة الطلب. لن نعيد الإرسال تلقائيًا.', 502, true)
+      const error = e instanceof IcypeasError ? e : !sent && e instanceof AppError ? new IcypeasError(e.message, e.status) : sent ? new IcypeasError('تعذّر حفظ نتيجة الطلب. لن نعيد الإرسال تلقائيًا.', 502, true)
         : new IcypeasError('تعذّر إكمال البحث الآن. حاول مجددًا بعد قليل.', 503);
       if (!error.uncertain) await this.release(userId, queryKey, batch); // nothing reached the provider: offered again first
       // With emails delivered, or in the companies fallback (the people part ended normally), the search closes with what came.

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { SUBMIT_MULTIPLE, type Candidate, type Resolved } from './contracts';
 import { cityNames, countryLabel, englishName, placeOf } from './places';
 import { bestEmail, emailsIn } from './site-email';
+import { webCompanies, webEnabled } from './web-companies';
 
 // status: HTTP status for the API response. uncertain: a paid request may have reached Icypeas.
 // rejected: Icypeas refused this exact request (validation / 4xx), e.g. an expired pagination token.
@@ -31,7 +32,9 @@ export const fetchCap = (count: number) => count * 25;
 export const STAGES = 2;
 export type Audience = Pick<Resolved, 'countries' | 'city' | 'size' | 'industries' | 'titles'> & Partial<Pick<Resolved, 'mode'>>;
 const dentalOnly = (input: Audience) => input.industries.length === 1 && input.industries[0] === 'Dentists';
-export const stageCount = (input: Audience) => input.mode === 'companies' && dentalOnly(input) ? 4 : STAGES;
+const dataStages = (input: Audience) => input.mode === 'companies' && dentalOnly(input) ? 4 : STAGES;
+export const webStage = (input: Audience, stage: number) => webEnabled(input) && stage === dataStages(input);
+export const stageCount = (input: Audience) => dataStages(input) + Number(webEnabled(input));
 const dentalExclusions = ['lab', 'labs', 'laboratory', 'laboratories', 'مختبر', 'معمل', 'supplies', 'supply', 'supplier', 'suppliers', 'equipment', 'study', 'academy', 'education', 'course', 'courses', 'factory', 'تجهيز', 'مستلزمات', 'مصنع', 'دورات'];
 const nonClinic = /\b(labs?|laborator(?:y|ies)|suppl(?:y|ies|iers?)|equipment|study|academy|education|courses?|factory)\b|مختبر|معمل|تجهيز|مستلزمات|مصنع|دورات/i;
 const supplierDescription = /\b(?:exclusive|authorized|sole)\s+(?:agent|distributor)|\b(?:distributor|supplier|manufacturer)\s+(?:of|for)\b|توريد|موزع|موزّع|وكيل حصري|تصنيع أجهزة/i;
@@ -75,7 +78,9 @@ export function companiesQuery(input: Audience, stage = 0) {
     ...(input.size !== 'all' ? { headcount: { '>=': min, '<=': max } } : {}),
   };
 }
-export const queryOf = (input: Audience, stage = 0) => input.mode === 'companies' ? companiesQuery(input, stage) : peopleQuery(input, stage);
+export const queryOf = (input: Audience, stage = 0) => webStage(input, stage)
+  ? { web: 1, countries: input.countries, city: input.city, industries: input.industries }
+  : input.mode === 'companies' ? companiesQuery(input, stage) : peopleQuery(input, stage);
 
 // A member's place in the results, per audience: covers both stages, so a changed broad query never reuses an old token.
 export const cursorKey = (input: Audience) => {
@@ -166,13 +171,13 @@ export class IcypeasClient {
   }
   // Free: people matching the search across both stages (stage 1 excludes stage 0), shown before the member pays for anything.
   async count(input: Audience) {
-    const queries = Array.from({ length: stageCount(input) }, (_, stage) => queryOf(input, stage)); // validates before any call
+    const queries = Array.from({ length: dataStages(input) }, (_, stage) => queryOf(input, stage)); // free database counts only; web has no known stock
     const totals = await Promise.all(queries.map(async query => {
       const n = z.number().int().nonnegative().safeParse((await this.request(input.mode === 'companies' ? 'find-companies/count' : 'find-people/count', { query })).total);
       if (!n.success) throw new IcypeasError('تغيّرت صيغة نتائج مزوّد البيانات. يلزم مراجعة الربط.');
       return n.data;
     }));
-    return { total: totals.reduce((a, b) => a + b, 0), strict: totals[0] };
+    return { total: totals.reduce((a, b) => a + b, 0), strict: totals[0], ...(webEnabled(input) ? { supplementary: true } : {}) };
   }
   // One page of PAGE people (0.02 Icypeas credit each). token: continue where the previous page stopped.
   async people(input: Audience, token?: string | null, stage = 0): Promise<{ leads: Lead[]; returned: number; token: string | null }> {
@@ -185,6 +190,13 @@ export class IcypeasClient {
   // Use the provider's native domain discovery. A missing/slow website must not discard a company whose mail server
   // works. These domains enter the same durable, bounded bulk queue as people; no client-side email guessing.
   async companies(input: Audience, token?: string | null, stage = 0): Promise<{ leads: Lead[]; returned: number; token: string | null }> {
+    if (webStage(input, stage)) {
+      try {
+        const page = await webCompanies(input, token, this.transport);
+        return { ...page, leads: page.companies.map(c => ({ kind: 'company' as const, lastCompanyName: c.name, lastCompanyWebsite: c.website, address: c.address, lastCompanyIndustry: c.industry, email: '' }))
+          .filter(l => siteOf(l) && inCountries(l, input.countries) && (!dentalOnly(input) || !nonClinic.test(l.lastCompanyName))) };
+      } catch { throw new IcypeasError('تعذّر إكمال البحث المكمّل في المواقع. حُفظت النتائج التي وصلتك؛ حاول لاحقًا.', 503); }
+    }
     const raw = await this.request('find-companies', { query: companiesQuery(input, stage), pagination: { size: PAGE, ...(token ? { token } : {}) } });
     const parsed = z.array(companySchema).max(200).safeParse(raw.leads ?? []);
     if (!parsed.success) throw new IcypeasError('تغيّرت صيغة نتائج مزوّد البيانات. يلزم مراجعة الربط.');
