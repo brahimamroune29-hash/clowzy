@@ -42,7 +42,7 @@ export function SearchProgress({search,reload}:{search:Search;reload:()=>Promise
         <li className={checked?'active':''}>{t('نتحقق من البريد','Verifying the emails')}</li>
         <li className={delivered?'done':''}>{t('نحفظ البريد في حسابك','Saving them to your account')}</li>
       </ol>
-      <div role="status">{checked>0&&<p className="search-live">{t('فحصنا '+checked+' · وصلك '+delivered+' من '+search.requested,'Checked '+checked+' · received '+delivered+' of '+search.requested)}</p>}<p className="search-message">{message}</p></div>
+      <div role="status">{checked>0&&<p className="search-live">{t(checked+' محاولة فحص · وصلك '+delivered+' من '+search.requested,checked+' verification attempts · received '+delivered+' of '+search.requested)}</p>}<p className="search-message">{message}</p></div>
       <div className="searching-foot"><Button variant="ghost" onClick={()=>setRetry(n=>n+1)}>{t('متابعة','Refresh')}</Button><small>{t('يُخصم الكريدت فقط عند حفظ بريد جديد.','Credits are charged only when a new email is saved.')}</small></div>
     </div>
   </section>;

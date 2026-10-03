@@ -66,13 +66,14 @@ export class LiveSearch {
   // Why a search ended short and what to do next, so an empty result never reads as a silent failure.
   private async shortfall(userId: string, search: Search, run: Run) {
     const input = audienceOf(search.filters), companies = input.mode === 'companies', checked = run.mode ? run.people_checked : run.submitted;
-    if (run.mode && run.submitted) return `بحثنا عن بريد ${run.people_checked} من الأشخاص المطابقين، ثم كمّلنا بإيميلات الشركات نفسها بعد فحص ${run.submitted} منها، فوصلك ${search.delivered} من ${search.requested}. `
+    if (run.mode && run.submitted) return `بحثنا عن بريد ${run.people_checked} من الأشخاص المطابقين، ثم حاولنا استكمال العدد ببريد الشركات عبر ${run.submitted} محاولة فحص، فوصلك ${search.delivered} من ${search.requested}. `
       + 'لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو المسمى الوظيفي.'; // a fallback that found no company email reads as the people search
     const widen = companies ? 'لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو أضف دولًا.' : 'لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو المسمى الوظيفي.';
     if (!checked) return (companies ? 'لم نجد شركات جديدة مطابقة لها نطاق عمل صالح للبحث حاليًا. ' : 'لا يوجد أشخاص جدد مطابقون لهذه المعايير حاليًا. ') + widen;
     const cursor = await this.store.cursor(userId, cursorKey(input));
     const found = search.delivered + search.duplicates, dup = search.duplicates ? `، منها ${search.duplicates} مكرر مستبعد` : '';
-    return (companies ? `تحققنا من بريد ${checked} من الشركات المطابقة، ${found ? `وصحّ بريد ${found} منها${dup}` : 'ولم يصح أيّ منها'}. `
+    // One company can have domain discovery followed by publication verification: attempts are not unique companies.
+    return (companies ? `نفّذنا ${checked} محاولة للعثور على بريد الشركات المطابقة والتحقق منه، فوصلك ${search.delivered} من ${search.requested}. `
       : `بحثنا عن بريد ${checked} من الأشخاص المطابقين، ${found ? `ووجدنا بريدًا موثّقًا لـ ${found} منهم${dup}` : 'ولم نجد بريدًا موثّقًا لأيّ منهم'}. `)
       + (!cursor.stage && !cursor.token && cursor.leftovers === '[]' ? (webStage(input, stageCount(input) - 1) ? 'انتهت جولات البحث المتاحة لهذا الطلب. ' : 'جرّبنا كل المطابقين المتاحين. ') + widen : `أعد البحث بالمعايير نفسها لتجربة ${companies ? 'شركات أخرى' : 'أشخاص آخرين'}، أو وسّعها لنتائج أكثر.`);
   }

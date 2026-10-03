@@ -97,6 +97,10 @@ const sentences: Record<string, string> = {
   'وصلت حد المساعد اليومي. حاول غدًا.': 'You have reached today’s assistant limit. Try again tomorrow.',
 };
 const patterns: [RegExp, (...m: string[]) => string][] = [
+  [/نفّذنا (\d+) محاولة للعثور على بريد الشركات المطابقة والتحقق منه، فوصلك (\d+) من (\d+)\./g,
+    (_, a, d, r) => `We made ${a} attempts to find and verify matching companies' emails: you received ${d} of ${r}.`],
+  [/بحثنا عن بريد (\d+) من الأشخاص المطابقين، ثم حاولنا استكمال العدد ببريد الشركات عبر (\d+) محاولة فحص، فوصلك (\d+) من (\d+)\./g,
+    (_, p, a, d, r) => `We looked for the emails of ${p} matching people, then tried filling the remainder with companies' emails across ${a} verification attempts: you received ${d} of ${r}.`],
   [/بحثنا عن بريد (\d+) من الأشخاص المطابقين، ثم كمّلنا بإيميلات الشركات نفسها بعد فحص (\d+) منها، فوصلك (\d+) من (\d+)\./g,
     (_, p, c, d, r) => `We looked for the emails of ${p} matching people, then filled in with the companies’ own emails after verifying ${c} of them: you received ${d} of ${r}.`],
   [/بحثنا عن بريد (\d+) من الأشخاص المطابقين، ووجدنا بريدًا موثّقًا لـ (\d+) منهم(?:، منها (\d+) مكرر مستبعد)?\./g,

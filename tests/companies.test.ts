@@ -149,7 +149,7 @@ test('a people search short of its count is completed with the companies\' own v
     const done = await live(store, m.client).poll(user.id, first.id);
     assert.equal(done.delivered, 1); assert.equal(done.status, 'partial');
     assert.equal((await store.snapshot(user.id)).contacts[0].kind, 'company');
-    assert.equal(done.message, 'بحثنا عن بريد 0 من الأشخاص المطابقين، ثم كمّلنا بإيميلات الشركات نفسها بعد فحص 2 منها، فوصلك 1 من 2. لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو المسمى الوظيفي.');
+    assert.equal(done.message, 'بحثنا عن بريد 0 من الأشخاص المطابقين، ثم حاولنا استكمال العدد ببريد الشركات عبر 2 محاولة فحص، فوصلك 1 من 2. لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو المسمى الوظيفي.');
     assert.equal(m.count('find-people'), 2, 'never back to the people after the fallback');
     assert.equal((await store.user(user.id)).balance, 9);
   } finally { await store.close(); }
@@ -167,7 +167,7 @@ test('missing domain results resume from a durable published-contact queue, veri
     throw Error('Unexpected '+path);
   };
   const client = new IcypeasClient('test', transport, async url => '<a href="mailto:clinic-'+new URL(url).hostname.replace(/^www\./,'')[0]+'@gmail.com">Contact</a>');
-  const request = companies(1);
+  const request = companies(2);
   try {
     let result = await live(store,client).start(user.id,request);
     await store.db.run('UPDATE provider_runs SET updated_at=0');
@@ -175,7 +175,8 @@ test('missing domain results resume from a durable published-contact queue, veri
     assert.equal(calls[1].task,'email-verification'); assert.deepEqual(calls[1].data,[['clinic-a@gmail.com'],['clinic-b@gmail.com']]);
     await store.db.run('UPDATE provider_runs SET updated_at=0');
     result = await live(store,client).poll(user.id,result.id);
-    assert.equal(result.delivered,1); assert.equal(result.status,'completed'); assert.equal((await store.user(user.id)).balance,4); assert.equal(await store.reserved(user.id),0);
+    assert.equal(result.delivered,1); assert.equal(result.status,'partial'); assert.equal((await store.user(user.id)).balance,4); assert.equal(await store.reserved(user.id),0);
+    assert.match(result.message??'',/4 محاولة/, 'two companies with two checks each must not be reported as four different companies');
     assert.equal((await store.snapshot(user.id)).contacts[0].email,'clinic-a@gmail.com');
     assert.equal(await store.claimPerson(user.id,'different-key','اسم آخر للعيادة','اسم آخر للعيادة','a.example'),false,'a changed brand spelling must not create a second customer from the same domain');
     await live(store,client).poll(user.id,result.id); await live(store,client).start(user.id,request);
