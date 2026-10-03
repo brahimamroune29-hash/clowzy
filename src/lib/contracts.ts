@@ -115,3 +115,14 @@ export function assistForm(raw: unknown, max: number) {
     size: sizes.find(x => x === s.size) ?? 'all', count: count > 0 ? Math.max(1, Math.min(count, max)) : undefined,
   };
 }
+
+// A member explicitly chooses a broader draft. It requests only the deficit and never starts or confirms a paid search.
+export function completionDraft(search: Search | undefined, scope: string | null) {
+  if (!search || search.status !== 'partial' || search.delivered >= search.requested || !['country', 'gulf'].includes(scope || '')) return;
+  try {
+    const raw = withCountries(JSON.parse(search.filters)) as Record<string, unknown>, draft = assistForm({ ...raw, other: raw.sector }, 50);
+    if (!draft.sector || !draft.countries || (scope === 'country' && !draft.city)) return;
+    if (scope === 'gulf' && (!draft.countries.every(c => (gulf as readonly string[]).includes(c)) || gulf.every(c => draft.countries!.includes(c)))) return;
+    return { ...draft, countries: scope === 'gulf' ? [...gulf] : draft.countries, city: '', count: Math.min(50, search.requested - search.delivered) };
+  } catch { return; }
+}

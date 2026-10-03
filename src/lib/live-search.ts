@@ -155,7 +155,7 @@ export class LiveSearch {
           pages++;
           const page = await this.page(input, token, stage);
           scanned += page.returned; fetched += page.returned; pool = page.leads; token = page.token;
-          if (!token || !page.returned) { // stage done: next stage, or back to the top on the next search
+          if (!token || (!page.returned && !webStage(input, stage))) { // an empty web round can still have another search engine to try
             token = null; stage = (stage + 1) % stageCount(input); wrapped = stage === 0;
             if (wrapped) scanned = Math.max(scanned, fetchCap(search.requested)); // this search has seen everything: no further pages
           }
