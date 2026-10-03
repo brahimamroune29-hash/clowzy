@@ -1,15 +1,26 @@
 # Every 15 minutes: the site/database answer and active searches have progressed within 30 minutes.
 # Failed runs appear in Actions; email delivery depends on the owner's GitHub notification settings.
 name: uptime
+run-name: ${{ inputs.test_alert && 'TEST ONLY - alert delivery' || 'Production availability' }}
 on:
   schedule: [{ cron: '7,22,37,52 * * * *' }]
   workflow_dispatch:
+    inputs:
+      test_alert:
+        description: 'Intentionally fail to test the owner notification; does not affect the site.'
+        type: boolean
+        default: false
 permissions: {}
 jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
+      - name: Intentional notification test (not a production outage)
+        if: '${{ inputs.test_alert }}'
+        run: |
+          echo '::error::TEST ONLY: notification delivery check. The application has not been stopped or changed.'
+          exit 1
       - name: Site, database, and search processing are healthy
         env:
           APP_URL: "${{ vars.APP_URL || 'https://app.clowzy.io' }}"
