@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { INDUSTRIES } from './industries';
 import { type AssistContext, type AssistMessage, type AssistReply, fieldOf, fields, type FieldName, labelsEn, titles } from './contracts';
 import { cityNames, countryLabel, englishName, isCountry, norm } from './places';
+import { knownNiche } from './niches';
 
 // The AI half of «أخرى»: a typed sector -> provider industry names (with an Arabic label each), a typed Arabic title -> English titles.
 export type AiMapper = { sector(text: string): Promise<{ name: string; ar: string }[]>; title(text: string): Promise<string[]> };
@@ -85,7 +86,7 @@ export async function assist(messages: AssistMessage[], lang: 'ar' | 'en', conte
     ...(context ? { ...context, field, specialty: field && context.sector !== field ? context.sector : '', other: field ? '' : context.sector } : {}) };
   // Exact listed niches do not need a model. Full sentences still go through the assistant so questions never change a draft.
   const text = norm(messages.at(-1)?.content || '');
-  const known = [...Object.keys(fields), ...Object.values(fields).flat()].find(s => norm(s) === text || norm(labelsEn[s] || '') === text)
+  const known = knownNiche(text)?.label || [...Object.keys(fields), ...Object.values(fields).flat()].find(s => norm(s) === text || norm(labelsEn[s] || '') === text)
     || (['عياده الاسنان','عياده اسنان','عيادات اسنان','dental clinic'].includes(text) ? 'عيادات الأسنان' : '');
   if (text === norm('إعادة الأسنان')) return { action:'clarify', reply:lang === 'en' ? 'Do you mean dental clinics?' : 'هل تقصد عيادات الأسنان؟', choices:[lang === 'en' ? 'Dental clinics' : 'عيادات الأسنان'] };
   if (/^(انا طبيب اسنان|i am a dentist|i'm a dentist)$/.test(text)) return { action:'clarify', reply:lang === 'en' ? 'Which businesses do you want to reach? We find business contacts.' : 'أي جهات تريد التواصل معها؟ البحث هنا عن جهات اتصال تجارية.', choices:lang === 'en' ? ['Dental clinics','Medical equipment suppliers'] : ['عيادات الأسنان','موردي المعدات الطبية'] };

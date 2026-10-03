@@ -5,6 +5,7 @@ import { SUBMIT_MULTIPLE, type Candidate, type Resolved } from './contracts';
 import { cityNames, countryLabel, englishName, placeOf } from './places';
 import { abortable, bestEmail, companyEmail, emailsIn, freeMail, safeGet, type Get } from './site-email';
 import { directoryPath, webCompanies, webEnabled } from './web-companies';
+import { nicheKeywords } from './niches';
 
 // status: HTTP status for the API response. uncertain: a paid request may have reached Icypeas.
 // rejected: Icypeas refused this exact request (validation / 4xx), e.g. an expired pagination token.
@@ -31,7 +32,7 @@ export const fetchCap = (count: number) => count * 25;
 export const publishedEnabled = () => process.env.PUBLISHED_EMAIL_ENABLED === 'true';
 
 export const STAGES = 2;
-export type Audience = Pick<Resolved, 'countries' | 'city' | 'size' | 'industries' | 'titles'> & Partial<Pick<Resolved, 'mode'>>;
+export type Audience = Pick<Resolved, 'countries' | 'city' | 'size' | 'industries' | 'titles'> & Partial<Pick<Resolved, 'mode' | 'sector'>>;
 const dentalOnly = (input: Audience) => input.industries.length === 1 && input.industries[0] === 'Dentists';
 const dataStages = (input: Audience) => input.mode === 'companies' && dentalOnly(input) ? 4 : STAGES;
 export const webStage = (input: Audience, stage: number) => webEnabled(input) && stage === dataStages(input);
@@ -59,6 +60,7 @@ export function peopleQuery(input: Audience, stage = 0) {
   return {
     profileLocation: stage === 0 ? { include: strict } : { include: broad, exclude: strict },
     'currentCompany.industry': { include: input.industries },
+    ...(nicheKeywords(input.sector).length ? { 'currentCompany.keyword': { include: [...nicheKeywords(input.sector)] } } : {}),
     ...(input.titles.length ? { currentJobTitle: { include: input.titles } } : {}),
     ...(input.size !== 'all' ? { 'currentCompany.headcount': { '>=': min, '<=': max } } : {}),
   };
@@ -76,11 +78,12 @@ export function companiesQuery(input: Audience, stage = 0) {
       keyword: { include: ['dental', 'dentist', 'dentistry', 'أسنان', 'اسنان'] },
       name: { include: ['dental', 'dentist', 'dentistry', 'أسنان', 'اسنان', 'clinic', 'عياد', 'مستوصف', 'مجمع', 'مركز', 'center', 'centre'], exclude: dentalExclusions },
     } : { industry: { include: input.industries }, ...(dentalOnly(input) ? { name: { exclude: dentalExclusions } } : {}) }),
+    ...(nicheKeywords(input.sector).length ? { keyword: { include: [...nicheKeywords(input.sector)] } } : {}),
     ...(input.size !== 'all' ? { headcount: { '>=': min, '<=': max } } : {}),
   };
 }
 export const queryOf = (input: Audience, stage = 0) => webStage(input, stage)
-  ? { web: 2, countries: input.countries, city: input.city, industries: input.industries }
+  ? { web: 3, countries: input.countries, city: input.city, industries: input.industries, ...(input.sector ? { sector:input.sector } : {}) }
   : input.mode === 'companies' ? companiesQuery(input, stage) : peopleQuery(input, stage);
 
 // A member's place in the results, per audience: covers both stages, so a changed broad query never reuses an old token.

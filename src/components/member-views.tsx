@@ -3,13 +3,14 @@ import { useEffect,useRef,useState } from 'react';
 import Link from 'next/link';
 import { useRouter,useSearchParams } from 'next/navigation';
 import { ArrowDown, Check, CheckCircle, Coins, Copy, DownloadSimple, MagnifyingGlass, MapPin, Plus, SlidersHorizontal, Sparkle, UsersThree, ClockCounterClockwise, ArrowSquareOut, X } from '@phosphor-icons/react';
-import { searchMethod, assistForm, completionDraft, type AssistMessage, type AssistReply, type Contact, emailTrust, fieldOf, fields, type FieldName, gulf, OTHER, type Search, type SearchInput, titles, withCountries } from '@/lib/contracts';
+import { searchMethod, assistForm, completionDraft, type AssistMessage, type AssistReply, type Contact, emailTrust, fieldOf, gulf, OTHER, type Search, type SearchInput, titles, withCountries } from '@/lib/contracts';
 import { cityNames, countrySuggestions } from '@/lib/places';
 import { api,date,downloadContacts,number } from '@/lib/client';
 import type { ViewProps } from './platform';
 import { SearchProgress } from './search-progress';
 import { Badge,Button,Empty,Field,Forward,Modal,Notice,Open,PageHeading } from './ui';
 import { useLang,useNames,useT } from './lang';
+import { NichePicker } from './niche-picker';
 
 // A search's state in words, the same on the dashboard and in the history.
 function SearchBadge({s}:{s:Search}){
@@ -80,6 +81,7 @@ export function SearchView({data,reload,notify}:ViewProps){
   const [requestId,setRequestId]=useState(()=>crypto.randomUUID());
   const [otherDraft,setOtherDraft]=useState(()=>fieldOf(filters.sector)?'':filters.sector),[other,setOther]=useState(()=>!!filters.sector&&!fieldOf(filters.sector));
   const [editing,setEditing]=useState(false);
+  const [nichePending,setNichePending]=useState(false);
   const listedTitle=(title:string)=>!title||(titles as readonly string[]).includes(title);
   const [titleOther,setTitleOther]=useState(()=>!listedTitle(filters.title)),[titleDraft,setTitleDraft]=useState(()=>listedTitle(filters.title)?'':filters.title);
   const [describe,setDescribe]=useState(''),[thinking,setThinking]=useState(false),[aiNote,setAiNote]=useState('');
@@ -114,7 +116,7 @@ export function SearchView({data,reload,notify}:ViewProps){
     }catch(e){setAiNote((e as Error).message);setAiState('error');}finally{setThinking(false);}
   }
   const displayCity=lang==='ar'?(Object.entries(cityNames).find(([,en])=>en===filters.city)?.[0]||filters.city):filters.city;
-  const companies=filters.mode==='companies',field=fieldOf(filters.sector) as FieldName|'';
+  const companies=filters.mode==='companies';
   const audience=JSON.stringify({mode:filters.mode,sector:filters.sector,countries:filters.countries,city:filters.city,title:companies?'':filters.title,size:filters.size});
   // Free count of matching people or companies, so a too-narrow search is visible before any credit is spent.
   useEffect(()=>{
@@ -126,7 +128,7 @@ export function SearchView({data,reload,notify}:ViewProps){
   },[data.provider?.configured,audience,method]);
   const currentMatch=match?.audience===audience?match:null;
   const few=currentMatch?.total!==undefined&&currentMatch.total<filters.count;
-  const pending=other&&filters.sector!==otherDraft.trim()||!companies&&titleOther&&filters.title!==titleDraft.trim();
+  const pending=nichePending||other&&filters.sector!==otherDraft.trim()||!companies&&titleOther&&filters.title!==titleDraft.trim();
   const who=companies?t('الشركات المطابقة','matching companies'):t('الأشخاص المطابقين','matching people');
   const ready=filters.sector.length>=2&&!pending;
   const validCount=Number.isInteger(filters.count)&&filters.count>=1&&filters.count<=maxCount;
@@ -146,7 +148,7 @@ export function SearchView({data,reload,notify}:ViewProps){
       router.push('/leads?search='+result.id);
     }catch(e){setError((e as Error).message);}finally{setBusy(false);}
   }
-  const status=pending||filters.sector.length<2?t('اكتب مجالك ثم اضغط «اعتماد».','Type your field, then press “Apply”.')
+  const status=nichePending?t('اختر النشاط من الاقتراحات أو اعتمد نشاطًا مخصصًا.','Choose an activity from the suggestions or apply a custom activity.'):pending||filters.sector.length<2?t('اختر النشاط، أو اكتب نشاطك ثم اضغط «اعتماد».','Choose an activity, or type your own and press “Apply”.')
     :!currentMatch?t('نحسب عدد ','Counting ')+who+'…':currentMatch.error?currentMatch.error
     :(other&&currentMatch.industryLabels?.length?t('سنبحث في: ','We will search in: ')+(lang==='en'?currentMatch.industries??[]:currentMatch.industryLabels).join(lang==='en'?', ':'، ')+'. ':'')
       +(currentMatch.total===0&&!currentMatch.supplementary?t('لا يوجد ما يطابق هذه المعايير. وسّع البحث: احذف المدينة أو حجم الشركة.','Nothing matches. Widen the search: remove the city or company size.')
@@ -169,11 +171,11 @@ export function SearchView({data,reload,notify}:ViewProps){
         <button type="button" className={'chip'+(!companies?' on':'')} aria-pressed={!companies} onClick={()=>change({mode:'people'})}>{t('أشخاص داخل الشركات','People in companies')}</button>
         <button type="button" className={'chip'+(companies?' on':'')} aria-pressed={companies} onClick={()=>change({mode:'companies'})}>{t('إيميلات الشركات','Company emails')}</button></div>
         <small>{companies?t('بريد عمل عام تابع للشركة، بعد العثور عليه والتحقق منه.','A verified business email belonging to the company.'):t('إيميل العمل لشخص داخل الشركة. إن لم يكفِ، نكمّل بإيميلات الشركات نفسها.','A person’s work email. If not enough, we fill in with the companies’ own emails.')}</small></div>
-      <div className="form-grid">
-        <Field label={t('المجال','Field')}><select value={other?OTHER:field} onChange={e=>{if(e.target.value===OTHER){setOther(true);change({sector:otherDraft.trim()});}else{setOther(false);change({sector:e.target.value});}}}><option value="" disabled>{t('اختر المجال','Choose a field')}</option>{(Object.keys(fields) as FieldName[]).map(f=><option key={f} value={f}>{names.label(f)}</option>)}<option value={OTHER}>{t('أخرى (اكتب مجالك)','Other (type it)')}</option></select></Field>
-        {other?<div className="field"><span>{t('اكتب مجالك','Your field')}</span><div className="other-row"><input value={otherDraft} onChange={e=>setOtherDraft(e.target.value)} maxLength={60} placeholder={t('مثلًا: محلات العطور','e.g. perfume shops')} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();if(otherDraft.trim().length>=2)change({sector:otherDraft.trim()});}}}/>
+      <NichePicker value={filters.sector} onChange={sector=>apply({sector})} onPendingChange={setNichePending} disabled={busy||thinking}/>
+      <div>
+        {other?<div className="field"><span>{t('اكتب نشاطك','Your activity')}</span><div className="other-row"><input aria-label={t('اكتب نشاطك المخصص','Type a custom activity')} value={otherDraft} onChange={e=>setOtherDraft(e.target.value)} maxLength={60} placeholder={t('مثلًا: محلات العطور','e.g. perfume shops')} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();if(otherDraft.trim().length>=2)change({sector:otherDraft.trim()});}}}/>
           <Button type="button" variant="secondary" disabled={otherDraft.trim().length<2||!pending} onClick={()=>change({sector:otherDraft.trim()})}>{pending?t('اعتماد','Apply'):t('معتمد','Applied')}</Button></div></div>
-        :field?<Field label={t('التخصص','Specialty')}><select value={filters.sector} onChange={e=>change({sector:e.target.value})}><option value={field}>{t('كل التخصصات','All specialties')}</option>{field&&fields[field].map(s=><option key={s} value={s}>{names.label(s)}</option>)}</select></Field>:null}
+        :null}
       </div>
       <CountryPicker value={filters.countries} onChange={countries=>change({countries})}/>
       <div className="form-grid">

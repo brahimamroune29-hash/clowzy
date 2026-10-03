@@ -1,9 +1,10 @@
 import type { SearchInput } from './schemas';
 import { countryFromText } from './places';
+import { niches, type NicheName } from './niches';
 
 // What the member picks from: a main field, then one of its specialties or the whole field. The server maps each label to
 // exact provider names (src/lib/audience.ts); anything typed under «أخرى» is mapped by the AI there.
-export const fields = {
+const legacyFields = {
   'الصحة والطب': ['الصحة والعيادات', 'عيادات الأسنان', 'المستشفيات', 'المختبرات الطبية', 'العيون والبصريات', 'الصحة النفسية', 'الصيدليات والأدوية',
     'الأجهزة الطبية', 'الطب البيطري', 'اللياقة والصحة العامة'],
   'التقنية والاتصالات': ['التقنية والبرمجيات', 'الاتصالات'],
@@ -16,8 +17,12 @@ export const fields = {
   'الصناعة والطاقة والنقل': ['الصناعة', 'النفط والغاز والطاقة', 'الزراعة', 'النقل والخدمات اللوجستية', 'الأمن والحماية'],
   'الحكومة والمنظمات': ['الجهات الحكومية', 'الجمعيات والمنظمات غير الربحية'],
 } as const;
-export type FieldName = keyof typeof fields;
-export type Specialty = (typeof fields)[FieldName][number];
+export type FieldName = keyof typeof legacyFields;
+export type LegacySpecialty = (typeof legacyFields)[FieldName][number];
+export type Specialty = LegacySpecialty | NicheName;
+// Preserve stored fields/specialties while adding the precise business activities used by the new picker.
+export const fields = Object.fromEntries(Object.entries(legacyFields).map(([field, specialties]) =>
+  [field,[...new Set([...specialties,...niches.filter(n=>n.field===field).map(n=>n.label)])]])) as unknown as Record<FieldName,readonly Specialty[]>;
 export const sectors = Object.values(fields).flat() as Specialty[];
 // The field a stored sector belongs to (itself when the whole field was chosen), or '' for the member's own words.
 export const fieldOf = (sector: string) => (Object.keys(fields) as FieldName[]).find(f => f === sector || (fields[f] as readonly string[]).includes(sector)) ?? '';
@@ -68,6 +73,7 @@ export type Candidate = Omit<Contact, 'id' | 'user_id' | 'search_id' | 'created_
 
 // English names of what the member picks from (Arabic is the stored value; English is for display only).
 export const labelsEn: Record<string, string> = {
+  ...Object.fromEntries(niches.map(n=>[n.label,n.en])),
   'الصحة والطب': 'Health & medicine', 'التقنية والاتصالات': 'Technology & telecom', 'العقارات والبناء': 'Real estate & construction',
   'التجارة والمتاجر': 'Retail & trade', 'المطاعم والضيافة': 'Food & hospitality', 'التسويق والإعلام': 'Marketing & media',
   'المال والخدمات المهنية': 'Finance & professional services', 'التعليم والتدريب': 'Education & training',

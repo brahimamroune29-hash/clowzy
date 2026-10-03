@@ -1,6 +1,7 @@
 import { countryFromText, cityNames, norm } from './places';
 import type { Candidate, Resolved } from './contracts';
 import type { Store } from './store';
+import { nicheKeywords } from './niches';
 
 export const crmEnabled = () => process.env.CRM_ENABLED === 'true';
 export const reuseEnabled = () => crmEnabled() && process.env.CATALOG_REUSE_ENABLED === 'true';
@@ -32,7 +33,8 @@ export async function rememberCandidates(store: Store, candidates: Candidate[]) 
 }
 
 export async function catalogMatches(store: Store, userId: string, input: Resolved, limit: number) {
-  if (!reuseEnabled()) return [];
+  // The catalog stores industry, not verified specialty evidence. A broad record cannot satisfy a narrower activity.
+  if (!reuseEnabled() || nicheKeywords(input.sector).length) return [];
   const [min, max] = input.size === 'all' ? [0, 2147483647] : input.size.split('-').map(Number);
   // SQL does the filtering and ownership exclusion; missing attributes never satisfy a narrower filter.
   return (await store.db.all<{ payload: Candidate }>(`SELECT l.payload FROM lead_catalog l

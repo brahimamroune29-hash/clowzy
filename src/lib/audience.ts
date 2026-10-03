@@ -1,4 +1,5 @@
-import { type FieldName, fields, type Resolved, type SearchInput, type Specialty, titles, withCountries } from './contracts';
+import { type FieldName, fields, type LegacySpecialty, type Resolved, type SearchInput, sectors, type Specialty, titles, withCountries } from './contracts';
+import { nicheOf } from './niches';
 import { resolvedSchema } from './schemas';
 import { INDUSTRIES } from './industries';
 import { norm } from './places';
@@ -6,7 +7,7 @@ import { AppError, type Store } from './store';
 import { type AiMapper, openRouter } from './ai';
 
 // Listed sectors -> exact Icypeas industry names (checked against INDUSTRIES by tests/audience.test.ts).
-export const SECTOR_INDUSTRIES: Record<Specialty, string[]> = {
+const LEGACY_INDUSTRIES: Record<LegacySpecialty, string[]> = {
   'الصحة والعيادات': ['Hospitals and Health Care', 'Medical Practices', 'Hospitals', 'Outpatient Care Centers', 'Physicians'],
   'عيادات الأسنان': ['Dentists'],
   'المستشفيات': ['Hospitals', 'Hospitals and Health Care'],
@@ -55,6 +56,9 @@ export const SECTOR_INDUSTRIES: Record<Specialty, string[]> = {
   'الجهات الحكومية': ['Government Administration'],
   'الجمعيات والمنظمات غير الربحية': ['Non-profit Organizations', 'Non-profit Organization Management', 'Civic and Social Organizations'],
 };
+export const SECTOR_INDUSTRIES = Object.fromEntries(sectors.map(s => [s,
+  nicheOf(s) ? [...nicheOf(s)!.industries] : LEGACY_INDUSTRIES[s as LegacySpecialty],
+])) as Record<Specialty,string[]>;
 // A whole field searches all its specialties' provider names; «التعليم والتدريب» adds the general education ones (it was a
 // single sector before the fields, and old searches still name it).
 const extra: Partial<Record<FieldName, string[]>> = { 'التعليم والتدريب': ['Education', 'Education Management'] };
