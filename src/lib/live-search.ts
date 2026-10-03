@@ -2,6 +2,7 @@ import type { Resolved, Search } from './contracts';
 import { catalogMatches, crmEnabled, rememberCandidates } from './catalog';
 import { audienceOf } from './audience';
 import { WEB_ROUNDS } from './web-companies';
+import {recordCoverage} from './coverage';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { AppError, DAILY_PEOPLE, dailyLimit, Store } from './store';
 import { BATCH, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadName, personKey, publishedEnabled, queryOf, siteOf, stageCount, submissionTask, submitCap, webStage } from './icypeas';
@@ -183,8 +184,18 @@ export class LiveSearch {
       }
       if (!batch.length) return this.end(userId, id, input);
       if (batch[0].published) {
-        batch = await this.client.published(batch);
-        await this.patch(id, { people: JSON.stringify(batch) });
+        if(this.elapsed()>8000&&batch.some(l=>l.publicationPending))return this.pause(userId,id,batch,input);
+        const pending=new Set(batch.filter(l=>l.publicationPending).map(siteOf));
+        const prepared=await this.client.published(batch);
+        await this.store.transaction(async()=>{
+          batch=[];
+          for(const lead of prepared)if(!pending.has(siteOf(lead))||await this.store.claimPerson(userId,personKey(lead),leadName(lead),lead.lastCompanyName||'',siteOf(lead)))batch.push(lead);
+          await this.patch(id,{people:JSON.stringify(batch)});
+          if(pending.size){
+            const sites=prepared.filter(l=>pending.has(siteOf(l)));
+            await recordCoverage(this.store,userId,id,'site',{companies:pending.size,withEmail:sites.length,queued:batch.filter(l=>pending.has(siteOf(l))).length,addresses:sites.reduce((n,l)=>n+1+(l.alternateEmails?.length||0),0)});
+          }
+        });
         if (!batch.length) return this.pause(userId, id, [], input);
       }
       while (!await this.takeSlot('bulk')) {
@@ -280,6 +291,7 @@ export class LiveSearch {
           AND EXISTS (SELECT 1 FROM searches WHERE id=? AND status='awaiting_provider')`, Date.now(), id, run.file, id) !== 1) return null;
         await rememberCandidates(this.store, result.candidates);
         const delivered = await this.store.deliverBatch(userId, id, result.candidates.map(c => ({ ...c, sector: input.sector })));
+        if(delivered!==null&&result.coverage)await recordCoverage(this.store,userId,id,'verification',result.coverage);
         if (delivered !== null) await this.release(userId, cursorKey(input), result.unpaid); // rows the provider could not pay for were never searched
         if (!closeOnly && !result.unpaid.length && delivered !== null && delivered < search.requested && result.missing.length) {
           const c = await this.store.cursor(userId, cursorKey(input));

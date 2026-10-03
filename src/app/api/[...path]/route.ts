@@ -13,6 +13,7 @@ import { assist } from '@/lib/ai';
 import { englishBody } from '@/lib/en';
 import { crmEnabled } from '@/lib/catalog';
 import { crmState, crmAction, crmOperations, approveDeletion, requireCrm } from '@/lib/crm';
+import {coverageReport} from '@/lib/coverage';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -111,6 +112,7 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
     }
     if (req.method === 'GET' && path === 'crm') return json(await crmState(store,user.id));
     if (req.method === 'GET' && path === 'admin/crm') return json(await crmOperations(store,user.id));
+    if(req.method==='GET'&&path==='admin/coverage')return json(await coverageReport(store,user.id,z.string().uuid().parse(req.nextUrl.searchParams.get('searchId'))));
     if (req.method === 'GET' && path === 'bootstrap') {
       const reserved=await store.reserved(user.id);
       const features={crm:crmEnabled()},wallet=(balance:number)=>({total:balance,reserved,available:Math.max(0,balance-reserved)});

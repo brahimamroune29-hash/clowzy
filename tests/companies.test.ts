@@ -4,10 +4,33 @@ import { randomUUID } from 'node:crypto';
 import { audienceOf } from '../src/lib/audience';
 import { companiesQuery, cursorKey, IcypeasClient, stageCount } from '../src/lib/icypeas';
 import { contactsCsv } from '../src/lib/csv';
+import {coverageReport} from '../src/lib/coverage';
 import { item, live, testStore } from './pg';
 
 const companies = (count = 2, extra = {}) => audienceOf(JSON.stringify({ mode: 'companies', sector: 'العقارات', countries: ['SA', 'AE'], city: '', title: '', size: '11-50', count, confirmed: true, requestId: randomUUID(), ...extra }));
 const company = (id: string, o: Record<string, unknown> = {}) => ({ name: 'Company ' + id, url: 'https://www.linkedin.com/company/' + id, address: 'Riyadh, Riyadh, Saudi Arabia', website: 'https://www.' + id + '.example/about', industry: 'Real Estate', numberOfEmployees: 20, ...o });
+
+test('a rejected published address falls back to another address on that site, with one customer and one debit',async()=>{
+  const flag=process.env.PUBLISHED_EMAIL_ENABLED;process.env.PUBLISHED_EMAIL_ENABLED='true';
+  const store=await testStore(),user=await store.addUser('Alternate trial','alternate@example.com','secure-password','member',5),owner=await store.addUser('QA Owner','qa-owner@example.com','secure-password','admin');
+  const sent:{task:string;data:string[][]}[]=[];let reads=0;
+  const transport:typeof fetch=async(url,init)=>{const path=String(url).split('/').pop(),b=JSON.parse(String(init?.body));
+    if(path==='find-companies')return Response.json({success:true,leads:b.query.location.exclude?[]:[company('a')]});
+    if(path==='bulk-search'){sent.push(b);return Response.json({success:true,file:'f'+sent.length});}
+    if(path==='read'){const submission=sent[Number(b.file.slice(1))-1];return Response.json({success:true,items:[item(0,submission.data[0][0]==='sales@a.example'?'sales@a.example':null)]});}
+    throw Error('Unexpected '+path);};
+  const client=new IcypeasClient('test',transport,async()=>{reads++;return 'info@a.example sales@a.example contact@a.example';});
+  try{const request=companies(2);let result=await live(store,client).start(user.id,request);
+    for(let n=0;n<8&&result.status==='awaiting_provider';n++){await store.db.run('UPDATE provider_runs SET updated_at=0');const polled=await Promise.all([live(store,client).poll(user.id,result.id),live(store,client).poll(user.id,result.id)]);result=polled.find(s=>s.status!=='awaiting_provider')||polled[0];}
+    assert.equal(result.delivered,1);assert.equal(result.status,'partial');assert.equal((await store.user(user.id)).balance,4);assert.equal(await store.reserved(user.id),0);
+    assert.deepEqual(sent.map(s=>s.data),[[['a.example']],[['info@a.example']],[['sales@a.example']]]);assert.equal(reads,1);
+    const contacts=(await store.snapshot(user.id)).contacts;assert.equal(contacts.length,1);assert.equal(contacts[0].email,'sales@a.example');
+    const report=await coverageReport(store,owner.id,result.id);assert.equal(report.phases.verification.attempted,3);assert.equal(report.phases.verification.accepted,1);assert.equal(report.phases.verification.notFound,2);assert.equal(report.phases.site.addresses,3);assert.equal(report.events,4,'overlapping polls cannot record or deliver the same batch twice');assert(!JSON.stringify(report).includes('sales@a.example'));
+    await assert.rejects(coverageReport(store,user.id,result.id),/مالك المنصة/);
+    await live(store,client).start(user.id,companies(2));assert.equal(sent.length,3,'a new request cannot verify the same mail or a third mail for an already delivered company');
+    assert.equal((await store.user(user.id)).balance,4);
+  }finally{await store.close();if(flag===undefined)delete process.env.PUBLISHED_EMAIL_ENABLED;else process.env.PUBLISHED_EMAIL_ENABLED=flag;}
+});
 
 // Company pages and domain-discovery result files; no website network access is needed.
 function mock(o: { pages?: unknown[][]; files?: unknown[][] } = {}) {

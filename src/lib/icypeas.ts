@@ -3,9 +3,10 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { z } from 'zod';
 import { SUBMIT_MULTIPLE, type Candidate, type Resolved } from './contracts';
 import { cityNames, countryLabel, englishName, placeOf } from './places';
-import { abortable, bestEmail, companyEmail, emailsIn, freeMail, safeGet, type Get } from './site-email';
+import { bestEmail, companyEmails, emailsIn, freeMail, safeGet, type Get } from './site-email';
 import { directoryPath, webCompanies, webEnabled } from './web-companies';
 import { nicheKeywords } from './niches';
+import type {CoverageCounts} from './coverage';
 
 // status: HTTP status for the API response. uncertain: a paid request may have reached Icypeas.
 // rejected: Icypeas refused this exact request (validation / 4xx), e.g. an expired pagination token.
@@ -89,7 +90,7 @@ export const queryOf = (input: Audience, stage = 0) => webStage(input, stage)
 // A member's place in the results, per audience: covers both stages, so a changed broad query never reuses an old token.
 export const cursorKey = (input: Audience) => {
   const queries = Array.from({ length: stageCount(input) }, (_, stage) => queryOf(input, stage));
-  return JSON.stringify(input.mode === 'companies' ? { discovery: 'domain-search', ...(publishedEnabled() ? { published: 1 } : {}), queries } : queries);
+  return JSON.stringify(input.mode === 'companies' ? { discovery: 'domain-search', ...(publishedEnabled() ? { published: 2 } : {}), queries } : queries);
 };
 
 const text = z.string().nullish();
@@ -99,7 +100,7 @@ const leadSchema = z.object({
   email: text, // companies search only: the email read from the company's site, sent for verification
 });
 const companySchema = z.object({ name: text, description: text, url: text, address: text, website: text, industry: text, numberOfEmployees: z.number().nullish() });
-export type Lead = z.infer<typeof leadSchema> & { kind?: 'company'; suppressed?: boolean; published?: boolean; publicationPending?: boolean };
+export type Lead = z.infer<typeof leadSchema> & { kind?: 'company'; suppressed?: boolean; published?: boolean; publicationPending?: boolean; alternateEmails?: string[] };
 const itemSchema = z.object({
   _id: z.string(), status: z.string(),
   userData: z.object({ externalId: z.string().nullish() }).nullish(),
@@ -125,7 +126,7 @@ const inCountries = (lead: Lead, codes: string[]) => { const { code } = placeOf(
 // A company found by the companies search stands under its own name.
 export const leadName = (lead: Lead) => [lead.firstname, lead.lastname].filter(Boolean).join(' ').trim() || (lead.kind === 'company' || lead.email ? lead.lastCompanyName?.trim() || '' : '');
 const nameKey = (name: string, company: string) => (name + '|' + company).trim().toLowerCase();
-export const personKey = (lead: Lead) => createHash('sha256').update(lead.kind === 'company' ? (lead.published ? 'published-email:' : 'domain-search:') + siteOf(lead) : lead.profileUrl?.trim().toLowerCase() || nameKey(leadName(lead), lead.lastCompanyName || '')).digest('hex');
+export const personKey = (lead: Lead) => createHash('sha256').update(lead.kind === 'company' ? (lead.published ? 'published-email-v2:' : 'domain-search:') + siteOf(lead) + (lead.published && !lead.publicationPending && lead.email ? ':'+lead.email.toLowerCase() : '') : lead.profileUrl?.trim().toLowerCase() || nameKey(leadName(lead), lead.lastCompanyName || '')).digest('hex');
 export const submissionTask = (l: Lead) => l.kind === 'company' && !l.published ? 'domain-search' : l.email || l.published ? 'email-verification' : 'email-search';
 export function safeWebsite(value: string | null | undefined) {
   try { const u = new URL(/^https?:\/\//i.test(value || '') ? value! : 'https://' + value); return value && ['https:', 'http:'].includes(u.protocol) ? u.href : ''; } catch { return ''; }
@@ -220,8 +221,8 @@ export class IcypeasClient {
     return (await Promise.all(leads.map(async lead => {
       if (!lead.publicationPending) return lead;
       const signal = AbortSignal.timeout(8000);
-      const email = await abortable(companyEmail(lead.lastCompanyWebsite || '', this.siteReader, signal, true), signal).catch(() => '');
-      return { ...lead, email, publicationPending: false };
+      const emails = await companyEmails(lead.lastCompanyWebsite || '', this.siteReader, signal, true).catch(() => []);
+      return { ...lead, email:emails[0]||'', alternateEmails:emails.slice(1), publicationPending: false };
     }))).filter(lead => !!lead.email);
   }
   // Discovery costs 1 provider credit per found person/domain. Published contact addresses use verification, never guessing.
@@ -240,7 +241,7 @@ export class IcypeasClient {
   // One read (a batch has at most BATCH rows). Read-only; safe to repeat. Candidates come from finished rows only and
   // include emails Icypeas rates ultra_sure / very_sure (<1% expected bounce) or probable (<5%; charged anyway, so delivered
   // and labelled rather than wasted), sure ones first. Malformed rows are skipped, not fatal.
-  async results(file: string, leads: Lead[]): Promise<{ done: boolean; candidates: Candidate[]; unpaid: Lead[]; missing: Lead[] }> {
+  async results(file: string, leads: Lead[]): Promise<{ done: boolean; candidates: Candidate[]; unpaid: Lead[]; missing: Lead[]; coverage?:CoverageCounts }> {
     const raw = await this.request('bulk-single-searchs/read', { mode: 'bulk', file, limit: BATCH });
     const rows = Array.isArray(raw.items) ? raw.items : [];
     const items = rows.map(i => itemSchema.safeParse(i)).flatMap(r => r.success ? [r.data] : []);
@@ -268,9 +269,21 @@ export class IcypeasClient {
     // Rows the provider could not pay for (its balance ran out after the batch was accepted) were never searched.
     const unpaid = finished.filter(i => i.status === 'INSUFFICIENT_FUNDS').flatMap(i => { const lead = leadOf(i); return lead && !lead.suppressed ? [lead] : []; });
     const missing = publishedEnabled() ? [...new Set(finished.filter(i => i.status !== 'INSUFFICIENT_FUNDS').map(leadOf))]
-      .filter((lead): lead is Lead => !!lead && lead.kind === 'company' && !lead.published && !lead.suppressed && !delivered.has(lead))
-      .map(lead => ({ ...lead, email: '', published: true, publicationPending: true })) : [];
+      .filter((lead): lead is Lead => !!lead && lead.kind === 'company' && !lead.suppressed && !delivered.has(lead))
+      .flatMap<Lead>(lead=>!lead.published?[{...lead,email:'',published:true,publicationPending:true}]
+        :lead.alternateEmails?.length?[{...lead,email:lead.alternateEmails[0],alternateEmails:lead.alternateEmails.slice(1),publicationPending:false}]:[]) : [];
     candidates.sort((a, b) => Number(a.email_status === 'PROBABLE') - Number(b.email_status === 'PROBABLE'));
-    return { done: finished.length + malformed >= leads.length, candidates, unpaid, missing }; // a malformed row counts as finished without email
+    const coverage:CoverageCounts={attempted:leads.length,accepted:delivered.size,notFound:0,ownershipRejected:0,verificationRejected:0,unpaid:unpaid.length,unreturned:0,native:0,published:0};
+    for(const lead of leads){
+      if(delivered.has(lead)){coverage[lead.published?'published':'native']++;continue;}
+      if(unpaid.includes(lead)||lead.suppressed)continue;
+      const rows=finished.filter(i=>leadOf(i)===lead);
+      if(!rows.length){coverage.unreturned++;continue;}
+      if(rows.every(i=>/NOT_FOUND/.test(i.status)||!i.results?.emails?.length)){coverage.notFound++;continue;}
+      const addresses=rows.flatMap(i=>i.results?.emails||[]);
+      if(!addresses.some(e=>z.email().safeParse(e.email).success&&(!freeMail.test(e.email.split('@')[1])||lead.published)&&(!lead.email||e.email.toLowerCase()===lead.email.toLowerCase())&&(lead.kind!=='company'||(bestEmail([e.email])&&(lead.published||emailsIn(e.email,siteOf(lead)).length>0)))))coverage.ownershipRejected++;
+      else coverage.verificationRejected++;
+    }
+    return { done: finished.length + malformed >= leads.length, candidates, unpaid, missing,coverage }; // a malformed row counts as finished without email
   }
 }

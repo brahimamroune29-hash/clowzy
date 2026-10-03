@@ -4,7 +4,18 @@ import http from 'node:http';
 import dns from 'node:dns/promises';
 import { PassThrough } from 'node:stream';
 import { EventEmitter } from 'node:events';
-import { bestEmail, companyEmail, emailsIn, privateAddress, safeGet } from '../src/lib/site-email';
+import { bestEmail, companyEmail, companyEmails, emailsIn, privateAddress, safeGet } from '../src/lib/site-email';
+
+test('publication collection retains alternate business mailboxes, deduplicates and caps at three',async()=>{
+  const get=async(url:string)=>url.endsWith('/contact-us')?'contact@clinic.example sales@clinic.example billing@clinic.example privacy@clinic.example':'info@clinic.example info@clinic.example <a href="/contact-us">contact</a>';
+  assert.deepEqual(await companyEmails('https://clinic.example',get),['info@clinic.example','contact@clinic.example','sales@clinic.example']);
+  assert.equal(await companyEmail('https://clinic.example',get),'info@clinic.example','the existing single-email interface still stops at its first address');
+});
+test('publication collection keeps emails already found if a later contact page stalls',async()=>{
+  const controller=new AbortController();
+  const get=async(url:string)=>{if(url==='https://clinic.example/')return 'info@clinic.example';queueMicrotask(()=>controller.abort());return new Promise<string>(()=>{});};
+  assert.deepEqual(await companyEmails('https://clinic.example',get,controller.signal),['info@clinic.example']);
+});
 
 test('a company email is read from its own site: exact domain only, Cloudflare-hidden ones too, placeholders and images never', () => {
   const cf = (email: string, key = 0x42) => key.toString(16).padStart(2, '0') + [...email].map(ch => (ch.charCodeAt(0) ^ key).toString(16).padStart(2, '0')).join('');

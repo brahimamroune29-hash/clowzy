@@ -36,8 +36,14 @@ const rank = (email: string) => /^(info|contact|hello|sales|enquir|inquir|office
 export const bestEmail = (emails: string[]) => emails.filter(e => rank(e) < 2).sort((a, b) => rank(a) - rank(b))[0] ?? '';
 
 export async function companyEmail(website: string, get: Get = safeGet, signal?: AbortSignal, publishedContact = false): Promise<string> {
+  return (await companyEmails(website,get,signal,publishedContact,1))[0]||'';
+}
+// Collect a bounded set so an invalid first contact mailbox does not discard the whole business.
+export async function companyEmails(website:string,get:Get=safeGet,signal?:AbortSignal,publishedContact=false,limit=3):Promise<string[]> {
+  const found=new Set<string>();
+  limit=Math.min(3,Math.max(1,Math.floor(limit)||1));
   let origin: URL;
-  try { origin = new URL(new URL(/^https?:\/\//i.test(website) ? website : 'https://' + website).origin); } catch { return ''; }
+  try { origin = new URL(new URL(/^https?:\/\//i.test(website) ? website : 'https://' + website).origin); } catch { return []; }
   // The discovered URL may already be the real localized contact page; read it before guessing common paths.
   const suppliedPath = new URL(/^https?:\/\//i.test(website) ? website : 'https://' + website).pathname;
   let decodedPath = suppliedPath;
@@ -45,10 +51,11 @@ export async function companyEmail(website: string, get: Get = safeGet, signal?:
   const paths = [...new Set([/contact|اتصل|تواصل/i.test(decodedPath) ? suppliedPath : '/', suppliedPath, ...CONTACT_PAGES])];
   for (let index = 0; index < paths.length; index++) {
     const path = paths[index];
-    if (signal?.aborted) return '';
-    const html = await get(new URL(path, origin).href, signal, publishedContact).catch(() => '');
-    const email = bestEmail(emailsIn(html, origin.hostname, publishedContact));
-    if (email) return email;
+    if (signal?.aborted) break;
+    const reading=get(new URL(path,origin).href,signal,publishedContact);
+    const html=await (signal?abortable(reading,signal):reading).catch(()=>'');
+    for(const email of emailsIn(html,origin.hostname,publishedContact))if(rank(email)<2)found.add(email);
+    if(found.size>=limit)break;
     // Prefer the site's own contact links, including localized and nested paths, within the same bounded read.
     if (paths.length < 9) for (const match of html.matchAll(/href\s*=\s*["']([^"']+)["']/gi)) {
       try {
@@ -57,7 +64,7 @@ export async function companyEmail(website: string, get: Get = safeGet, signal?:
       } catch { /* malformed links are not contact evidence */ }
     }
   }
-  return '';
+  return [...found].sort((a,b)=>rank(a)-rank(b)).slice(0,limit);
 }
 
 export function privateAddress(ip: string) {
