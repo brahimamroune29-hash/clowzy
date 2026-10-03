@@ -1,9 +1,10 @@
-# Every 15 minutes: the site/database answer and active searches have progressed within 30 minutes.
+# Every 30 minutes: the site/database answer and active searches have progressed within 30 minutes.
+# 1,488 one-minute runs in a 31-day month leave room in the 2,000 included minutes for backups and CI.
 # Failed runs appear in Actions; email delivery depends on the owner's GitHub notification settings.
 name: uptime
 run-name: ${{ inputs.test_alert && 'TEST ONLY - alert delivery' || 'Production availability' }}
 on:
-  schedule: [{ cron: '7,22,37,52 * * * *' }]
+  schedule: [{ cron: '27,57 * * * *' }]
   workflow_dispatch:
     inputs:
       test_alert:
