@@ -284,8 +284,9 @@ export class Store {
   }
   // True only for the one request that claims this person for the member: not already a contact, and not already
   // sent to the provider (the insert is the atomic claim), so no one is paid for twice, even by overlapping searches.
-  async claimPerson(userId: string, key: string, name: string, company: string) {
-    if (await this.db.get('SELECT 1 FROM contacts WHERE user_id=? AND lower(name)=lower(?::text) AND lower(company)=lower(?::text)', userId, name.trim(), company.trim())) return false;
+  async claimPerson(userId: string, key: string, name: string, company: string, companyDomain = '') {
+    if (await this.db.get(`SELECT 1 FROM contacts WHERE user_id=? AND ((lower(name)=lower(?::text) AND lower(company)=lower(?::text))
+      OR (?<>'' AND kind='company' AND split_part(regexp_replace(lower(website),'^(https{0,1}://){0,1}(www[0-9]*\\.){0,1}|[/#].*$','','g'),chr(63),1)=?))`, userId, name.trim(), company.trim(), companyDomain, companyDomain)) return false;
     return await this.db.run('INSERT INTO provider_seen(user_id,person_key) VALUES(?,?) ON CONFLICT DO NOTHING', userId, key) === 1;
   }
   unmarkSeen(userId: string, keys: string[]) {

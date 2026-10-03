@@ -46,6 +46,7 @@ const sentences: Record<string, string> = {
   'لم نجد شركات جديدة مطابقة تعرض بريدها على موقعها حاليًا.': 'No new matching companies show an email on their website right now.',
   'لم نجد شركات جديدة مطابقة لها نطاق عمل صالح للبحث حاليًا.': 'No new matching companies have a usable business domain right now.',
   'دفعة بحث غير متجانسة. أعد المحاولة.': 'The search batch is inconsistent. Please retry.',
+  'لم يكتمل فحص البريد المنشور.': 'The published email check has not finished.',
   'لا يوجد أشخاص جدد مطابقون لهذه المعايير حاليًا.': 'No new people match these filters right now.',
   'جرّبنا كل المطابقين المتاحين.': 'We have tried everyone available.',
   'تعذّرت قراءة نتائج دفعة مدفوعة؛ راجع حساب المزوّد.': 'A paid batch could not be read; check the provider account.',

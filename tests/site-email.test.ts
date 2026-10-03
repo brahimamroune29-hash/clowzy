@@ -29,6 +29,18 @@ test('the contact pages are read when the home page has no email; nothing found 
   assert.equal(asked[0], 'https://acme.ae/', 'the home page first');
   assert.equal(await companyEmail('https://silent.ae', async () => ''), '');
   assert.equal(await companyEmail('not a url', get), '');
+  assert.equal(await companyEmail('https://acme.ae/%broken', get), 'info@acme.ae');
+});
+
+test('published business webmail needs a real mailto link on the business site, and localized contact paths are followed', async () => {
+  const html = 'a visitor: visitor@gmail.com <a href="mailto:Clinic@gmail.com">البريد الإلكتروني</a> <a href="mailto:jobs@gmail.com">Jobs</a>';
+  assert.deepEqual(emailsIn(html, 'clinic.example'), []);
+  assert.deepEqual(emailsIn(html, 'clinic.example', true), ['clinic@gmail.com', 'jobs@gmail.com']);
+  assert.equal(bestEmail(emailsIn(html, 'clinic.example', true)), 'clinic@gmail.com');
+  const asked: string[] = [];
+  const get = async (url: string) => { asked.push(url); return url.endsWith('/ar/pages/contact-us') ? html : '<a href="/ar/pages/contact-us">تواصل معنا</a><a href="https://another.example/contact">partner</a>'; };
+  assert.equal(await companyEmail('https://clinic.example', get, undefined, true), 'clinic@gmail.com');
+  assert(asked.includes('https://clinic.example/ar/pages/contact-us')); assert(asked.every(u => new URL(u).hostname === 'clinic.example'));
 });
 
 test('the site reader never reaches private or internal addresses', async t => {
@@ -49,6 +61,7 @@ test('the site reader never reaches private or internal addresses', async t => {
   assert.equal(await safeGet('http://93.184.216.34/in'), '', 'a redirect into the private network is refused');
   assert.deepEqual(hops, ['http://93.184.216.34/in'], 'the private address is never requested');
   assert.equal(await safeGet('http://93.184.216.34/out'), 'info@acme.ae', 'a public redirect is followed');
+  assert.equal(await safeGet('http://93.184.216.34/out', undefined, true), '', 'published business webmail cannot come from a different redirected host');
   t.mock.restoreAll();
   for (const url of ['http://127.0.0.1/', 'http://localhost/', 'http://169.254.169.254/latest/meta-data/', 'file:///etc/passwd', 'http://acme.ae:8080/', 'http://user:pw@acme.ae/'])
     assert.equal(await safeGet(url), '', url);

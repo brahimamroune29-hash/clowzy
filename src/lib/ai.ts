@@ -47,8 +47,8 @@ const FACTS = 'Facts: members find business emails two ways: (1) people inside c
   + 'city, job title and company size; (2) companies\' own emails: the general email on a company\'s website, verified before delivery. One credit '
   + 'per new email delivered, with provider confidence of at least 95% (an estimate, not a guarantee); nothing is charged for people without an email or for duplicates. A people search that falls '
   + 'short is completed with the same companies\' own verified emails. Counting matches before a search is free. Up to 50 emails per search. '
-  + 'Results download as a CSV file to import into a CRM such as GoHighLevel. No personal emails (Gmail etc.), no phone numbers. Credits are added '
-  + 'by the platform owner. Members must follow the anti-spam and data-protection laws of each country: consent, say who you are, easy unsubscribe.';
+  + 'Results download as a CSV file to import into a CRM such as GoHighLevel. No private personal emails or phone numbers. Credits are added '
+  + 'by the platform owner. A Gmail or similar address is eligible only when published as a company contact on its official site and verified; this does not authorize finding private personal email addresses. Members must follow the anti-spam and data-protection laws of each country: consent, say who you are, easy unsubscribe.';
 const searchShape = z.object({
   mode: z.enum(['people', 'companies']).catch('people'), field: z.string().catch(''), specialty: z.string().catch(''), other: z.string().catch(''),
   countries: z.array(z.string()).catch([]), city: z.string().catch(''), title: z.string().catch(''),

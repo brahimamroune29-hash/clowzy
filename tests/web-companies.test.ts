@@ -87,10 +87,12 @@ test('web discovery is bounded, resumes excluding seen domains, and does not rep
     const body = calls[0] as { tools: { parameters: { max_uses: number; max_total_results: number } }[] };
     assert.equal(body.tools[0].parameters.max_uses, 3); assert.equal(body.tools[0].parameters.max_total_results, 40);
     const next = await webCompanies(scope, page.token, transport); assert.equal(next.companies.length, 0); assert(next.token);
-    const last = await webCompanies(scope, next.token, transport); assert.equal(last.token, null, 'empty grounded pages still advance, but at most three');
-    assert.deepEqual(calls.filter(c => c.tools).map(c => (c.tools as { parameters: { engine: string } }[])[0].parameters.engine), ['parallel', 'exa', 'perplexity']);
+    let last = next;
+    for(let round=2;round<6;round++) last=await webCompanies(scope,last.token,transport);
+    assert.equal(last.token, null, 'empty grounded pages still advance, but at most six');
+    assert.deepEqual(calls.filter(c => c.tools).map(c => (c.tools as { parameters: { engine: string } }[])[0].parameters.engine), ['parallel', 'exa', 'perplexity', 'parallel', 'exa', 'perplexity']);
     const before = calls.length;
-    await webCompanies(scope, JSON.stringify({ round: 3, seen: [] }), transport); assert.equal(calls.length, before);
+    await webCompanies(scope, JSON.stringify({ round: 6, seen: [] }), transport); assert.equal(calls.length, before);
   } finally {
     if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = oldKey;
     if (oldFlag === undefined) delete process.env.WEB_DISCOVERY_ENABLED; else process.env.WEB_DISCOVERY_ENABLED = oldFlag;

@@ -1,9 +1,10 @@
 import type { Resolved, Search } from './contracts';
 import { catalogMatches, crmEnabled, rememberCandidates } from './catalog';
 import { audienceOf } from './audience';
+import { WEB_ROUNDS } from './web-companies';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { AppError, DAILY_PEOPLE, dailyLimit, Store } from './store';
-import { BATCH, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadName, personKey, queryOf, stageCount, submitCap, webStage } from './icypeas';
+import { BATCH, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadName, personKey, publishedEnabled, queryOf, siteOf, stageCount, submissionTask, submitCap, webStage } from './icypeas';
 
 type Run = { search_id: string; phase: string; people: string; file: string | null; scanned: number; fetched: number; submitted: number; submitted_at: number | null; message: string; updated_at: number; read_errors: number; mode: 'companies' | null; people_checked: number };
 // The audience a run continues with: the stored filters, switched to companies once a people search has fallen back.
@@ -132,7 +133,7 @@ export class LiveSearch {
     try {
       const search = await this.store.getSearch(userId, id), run = (await this.run(id))!;
       batch = (JSON.parse(run.people) as Lead[]).filter(l => !l.suppressed); // picked (and claimed) by an earlier request of this search, not sent yet
-      if (input.mode === 'companies') batch = batch.map(l => ({ ...l, kind: 'company', email: '' })); // unsent legacy batches use domain discovery too
+      if (input.mode === 'companies') batch = batch.map(l => ({ ...l, kind: 'company', email: l.published ? l.email : '' }));
       const want = Math.min(BATCH, submitCap(search.requested) - run.submitted, Math.ceil((search.requested - search.delivered) / EXPECTED_FIND_RATE[input.mode]));
       const cursor = await this.store.cursor(userId, queryKey);
       let pool = (JSON.parse(cursor.leftovers) as Lead[]).filter(l => !l.suppressed), token = cursor.token, stage = cursor.stage, wrapped = false, scanned = run.scanned, fetched = run.fetched, pages = 0;
@@ -149,7 +150,7 @@ export class LiveSearch {
             // Web discovery and classification together have a 42 s ceiling. Start them in a fresh request,
             // persist the result, then pause before any paid email submission if the submit window has passed.
             if (this.elapsed() > 5000) return this.pause(userId, id, batch, input);
-            await this.store.hit('web-search:' + id, 3, 86400000, 'بلغ البحث حد اكتشاف المواقع. حُفظت النتائج المتاحة.');
+            await this.store.hit('web-search:' + id, WEB_ROUNDS, 86400000, 'بلغ البحث حد اكتشاف المواقع. حُفظت النتائج المتاحة.');
             await this.store.hit('web-day:' + userId, 12, 86400000, 'بلغت حد اكتشاف المواقع اليومي. حُفظت النتائج المتاحة.');
           }
           pages++;
@@ -164,14 +165,27 @@ export class LiveSearch {
         // and the cursor in the same transaction, so an interruption never leaves a person claimed but unrecorded.
         await this.store.transaction(async () => {
           while (pool.length && batch.length < want) {
-            const lead = pool.shift()!;
-            if (await this.store.claimPerson(userId, personKey(lead), leadName(lead), lead.lastCompanyName || '')) batch.push(lead);
+            if (batch.length && (submissionTask(pool[0]) !== submissionTask(batch[0]) || (batch[0].published && batch.length >= 3))) break;
+            let lead = pool.shift()!;
+            let claimed = await this.store.claimPerson(userId, personKey(lead), leadName(lead), lead.lastCompanyName || '', lead.kind === 'company' ? siteOf(lead) : '');
+            if (!claimed && lead.kind === 'company' && !lead.published && publishedEnabled()) {
+              lead = { ...lead, email: '', published: true, publicationPending: true };
+              if (batch.length && submissionTask(lead) !== submissionTask(batch[0])) { pool.unshift(lead); break; }
+              claimed = await this.store.claimPerson(userId, personKey(lead), leadName(lead), lead.lastCompanyName || '', siteOf(lead));
+            }
+            if (claimed) batch.push(lead);
           }
           await this.store.saveCursor(userId, queryKey, stage, token, JSON.stringify(pool));
           await this.patch(id, { scanned, fetched, people: JSON.stringify(batch) });
         });
+        if (batch.length && (batch[0].published || (pool.length && submissionTask(pool[0]) !== submissionTask(batch[0])))) break;
       }
       if (!batch.length) return this.end(userId, id, input);
+      if (batch[0].published) {
+        batch = await this.client.published(batch);
+        await this.patch(id, { people: JSON.stringify(batch) });
+        if (!batch.length) return this.pause(userId, id, [], input);
+      }
       while (!await this.takeSlot('bulk')) {
         if (this.elapsed() + this.gaps.bulk > SUBMIT_MS) return this.pause(userId, id, batch, input);
         await this.patch(id, {}); await sleep(this.gaps.bulk);
@@ -266,6 +280,10 @@ export class LiveSearch {
         await rememberCandidates(this.store, result.candidates);
         const delivered = await this.store.deliverBatch(userId, id, result.candidates.map(c => ({ ...c, sector: input.sector })));
         if (delivered !== null) await this.release(userId, cursorKey(input), result.unpaid); // rows the provider could not pay for were never searched
+        if (!closeOnly && !result.unpaid.length && delivered !== null && delivered < search.requested && result.missing.length) {
+          const c = await this.store.cursor(userId, cursorKey(input));
+          await this.store.saveCursor(userId, cursorKey(input), c.stage, c.token, JSON.stringify([...JSON.parse(c.leftovers), ...result.missing]));
+        }
         return delivered;
       });
       if (delivered === null) return this.view(userId, id);

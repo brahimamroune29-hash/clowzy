@@ -154,3 +154,58 @@ test('a people search short of its count is completed with the companies\' own v
     assert.equal((await store.user(user.id)).balance, 9);
   } finally { await store.close(); }
 });
+
+test('missing domain results resume from a durable published-contact queue, verify the exact business Gmail, and debit once', async () => {
+  const before = process.env.PUBLISHED_EMAIL_ENABLED; process.env.PUBLISHED_EMAIL_ENABLED = 'true';
+  const store = await testStore(), user = await store.addUser('Publication trial', 'publication@example.com', 'secure-password', 'member', 5);
+  const calls: {task:string;data:string[][]}[] = [];
+  const transport: typeof fetch = async (url, init) => {
+    const path = String(url).split('/').pop(), body = JSON.parse(String(init?.body));
+    if (path === 'find-companies') return Response.json({ success:true,leads:body.query.location.exclude ? [] : [company('a'),company('b')] });
+    if (path === 'bulk-search') { calls.push(body); return Response.json({ success:true,file:'f'+calls.length }); }
+    if (path === 'read') return Response.json({ success:true,items:body.file === 'f1' ? [item(0,null),item(1,null)] : [item(0,'clinic-a@gmail.com'),item(1,'different@gmail.com')] });
+    throw Error('Unexpected '+path);
+  };
+  const client = new IcypeasClient('test', transport, async url => '<a href="mailto:clinic-'+new URL(url).hostname.replace(/^www\./,'')[0]+'@gmail.com">Contact</a>');
+  const request = companies(1);
+  try {
+    let result = await live(store,client).start(user.id,request);
+    await store.db.run('UPDATE provider_runs SET updated_at=0');
+    result = await live(store,client).poll(user.id,result.id);
+    assert.equal(calls[1].task,'email-verification'); assert.deepEqual(calls[1].data,[['clinic-a@gmail.com'],['clinic-b@gmail.com']]);
+    await store.db.run('UPDATE provider_runs SET updated_at=0');
+    result = await live(store,client).poll(user.id,result.id);
+    assert.equal(result.delivered,1); assert.equal(result.status,'completed'); assert.equal((await store.user(user.id)).balance,4); assert.equal(await store.reserved(user.id),0);
+    assert.equal((await store.snapshot(user.id)).contacts[0].email,'clinic-a@gmail.com');
+    assert.equal(await store.claimPerson(user.id,'different-key','اسم آخر للعيادة','اسم آخر للعيادة','a.example'),false,'a changed brand spelling must not create a second customer from the same domain');
+    await live(store,client).poll(user.id,result.id); await live(store,client).start(user.id,request);
+    assert.equal(calls.length,2); assert.equal((await store.user(user.id)).balance,4);
+    const native = await client.results('f2',[{kind:'company',lastCompanyName:'A',lastCompanyWebsite:'https://a.example',email:''}]);
+    assert.equal(native.candidates.length,0,'a provider Gmail without publication evidence is still rejected');
+  } finally { await store.close(); if(before===undefined)delete process.env.PUBLISHED_EMAIL_ENABLED;else process.env.PUBLISHED_EMAIL_ENABLED=before; }
+});
+
+test('fifty missing company emails can fill from bounded published-contact batches without replay or extra debit', async () => {
+  const before=process.env.PUBLISHED_EMAIL_ENABLED;process.env.PUBLISHED_EMAIL_ENABLED='true';
+  const store=await testStore(),user=await store.addUser('Fifty publications','fifty-publications@example.com','secure-password','member',50);
+  const submissions:{task:string;data:string[][]}[]=[];
+  const transport:typeof fetch=async(url,init)=>{
+    const path=String(url).split('/').pop(),body=JSON.parse(String(init?.body));
+    if(path==='find-companies')return Response.json({success:true,leads:body.query.location.exclude?[]:Array.from({length:50},(_,i)=>company('c'+i))});
+    if(path==='bulk-search'){submissions.push(body);return Response.json({success:true,file:'f'+submissions.length});}
+    if(path==='read'){const batch=submissions[Number(body.file.slice(1))-1];return Response.json({success:true,items:batch.data.map((row,i)=>item(i,batch.task==='domain-search'?null:row[0]))});}
+    throw Error('Unexpected '+path);
+  };
+  const client=new IcypeasClient('test',transport,async url=>'<a href="mailto:'+new URL(url).hostname.replace(/^www\./,'').split('.')[0]+'@gmail.com">Contact</a>');
+  try{
+    const request=companies(50,{countries:['SA'],city:'الرياض'});let result=await live(store,client).start(user.id,request);
+    for(let n=0;n<25&&result.status==='awaiting_provider';n++){
+      await store.db.run('UPDATE provider_runs SET updated_at=0');
+      result=await live(store,client).poll(user.id,result.id);
+    }
+    assert.equal(result.status,'completed');assert.equal(result.delivered,50);assert.equal((await store.user(user.id)).balance,0);assert.equal(await store.reserved(user.id),0);
+    assert.equal(new Set((await store.snapshot(user.id)).contacts.map(c=>c.website)).size,50);
+    assert(submissions.filter(s=>s.task==='email-verification').every(s=>s.data.length<=3));
+    const paid=submissions.length;await live(store,client).start(user.id,request);assert.equal(submissions.length,paid);
+  }finally{await store.close();if(before===undefined)delete process.env.PUBLISHED_EMAIL_ENABLED;else process.env.PUBLISHED_EMAIL_ENABLED=before;}
+});
