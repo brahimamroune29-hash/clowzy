@@ -77,6 +77,35 @@ test('killed mid-searching, then abandoned: closing it releases the people never
   } finally { await store.close(); }
 });
 
+test('background processing: a returning member cannot prematurely close a paused search by starting another', async t => {
+  process.env.CRM_ENABLED='true';t.after(()=>delete process.env.CRM_ENABLED);
+  const m=killedWhileCollecting(),{store,user}=await setup();t.after(()=>store.close());
+  void live(store,m.client).start(user.id,input(3));
+  while(m.count('find-people')<2)await tick();
+  const original=(await one<{id:string}>(store,'SELECT id FROM searches'))!.id;
+  await store.db.run("UPDATE provider_runs SET phase='paused',updated_at=0");
+  await assert.rejects(live(new Store(store.db),m.client).start(user.id,input(1)),/قيد التنفيذ/);
+  assert.equal((await store.getSearch(user.id,original)).status,'awaiting_provider');
+  assert.equal(await store.reserved(user.id),3,'the original target remains reserved');
+  assert.equal(m.count('bulk-search'),1,'resumes the original batch exactly once');
+  assert.equal((await one<{n:number}>(store,'SELECT count(*)::int n FROM searches'))?.n,1);
+});
+
+test('concurrent background polls wait for shared provider read slots and all make progress', async t => {
+  const {store}=await setup();t.after(()=>store.close());
+  const times:number[]=[];
+  const m=mock({pages:[{leads:['a','b','c','d'].map(lead)}],files:Array.from({length:3},()=>[item(0,'a@company-a.example'),item(1,null),item(2,null),item(3,null)]),onRead:()=>{times.push(Date.now());}});
+  const jobs=[];
+  for(let i=0;i<3;i++){
+    const user=await store.addUser('Parallel '+i,`parallel-${i}@test.com`,'long-password','member',1);
+    jobs.push({user,search:await live(store,m.client).start(user.id,input(1))});
+  }
+  await store.db.run('UPDATE provider_runs SET updated_at=0');
+  const results=await Promise.all(jobs.map(({user,search})=>new LiveSearch(store,m.client,{read:30,bulk:0}).poll(user.id,search.id)));
+  assert.deepEqual(results.map(s=>s.delivered),[1,1,1]);
+  assert.equal(times.length,3);assert.ok(times[1]-times[0]>=25&&times[2]-times[1]>=25,'provider calls stay spaced');
+});
+
 // A run left in 'delivering' by a request killed under the previous code: the next poll re-reads the (repeatable, already
 // paid) results instead of closing the search.
 test('killed during delivery: the stale poll must re-deliver the paid batch, not close it', async () => {

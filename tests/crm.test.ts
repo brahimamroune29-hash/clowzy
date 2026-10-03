@@ -45,6 +45,29 @@ test('Worker: durable lease, closed-tab completion, idempotent notifications',as
   const failed=await live(store,new IcypeasClient('test',async()=>{throw new Error('offline');})).start(user.id,input(1));
   assert.equal(failed.status,'failed');assert.equal((await crmState(store,user.id)).notifications.length,2);assert.equal((await store.user(user.id)).balance,2);
 });
+test('Worker: leased jobs cannot hide the queue; parallel attempts and failures are bounded',async t=>{
+  process.env.CRM_ENABLED='true';t.after(()=>delete process.env.CRM_ENABLED);
+  const store=await testStore();t.after(()=>store.close());
+  for(let i=0;i<12;i++){
+    const user=await store.addUser('Queue '+i,`queue-${i}@test.com`,'long-password','member',1),search=await store.enqueueSearch(user.id,input(1));
+    await store.db.run("UPDATE searches SET status='awaiting_provider' WHERE id=?",search.id);
+    if(i<11)await store.db.run('INSERT INTO crm_worker_leases(search_id,token,expires_at) VALUES(?,?,?)',search.id,'busy',Date.now()+60000);
+  }
+  const finish=async(uid:string,sid:string)=>{await store.finishSearch(sid);return store.getSearch(uid,sid);};
+  assert.equal(await searchTick(store,finish,3),1,'unleased work beyond the first ten must progress');
+  await store.db.run('DELETE FROM crm_worker_leases');
+  let active=0,peak=0;
+  assert.equal(await searchTick(store,async(uid,sid)=>{
+    peak=Math.max(peak,++active);await new Promise(r=>setTimeout(r,30));active--;
+    return finish(uid,sid);
+  },3),3);
+  assert.equal(peak,3,'a slow search must not serialize other members');
+  let attempts=0;
+  assert.equal(await searchTick(store,async()=>{attempts++;throw new Error('Expected test failure');},2),0);
+  assert.equal(attempts,2,'failed attempts also consume the per-tick limit');
+  assert.equal((await store.db.get<{n:number}>('SELECT count(*)::int n FROM crm_worker_leases'))?.n,2,'failed jobs back off so other jobs can progress');
+  assert.equal(await searchTick(store,finish,3),3);
+});
 test('Private schema: API roles denied; trusted backend role works under RLS and cannot directly delete contacts',async t=>{
   const {testDb}=await import('./pg');const db=await testDb(true,true);t.after(()=>db.end());
   await db.run('GRANT USAGE ON SCHEMA clowzy TO clowzy_app,anon,authenticated');

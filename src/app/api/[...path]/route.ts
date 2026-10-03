@@ -60,8 +60,7 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
         const ok = crmEnabled() && !!state && state.stale === 0;
         return json({ok,...state},ok?200:503);
       }
-      // ponytail: one search step/minute bounds this function to 60s; a dedicated worker if queue latency becomes material.
-      return json({ handled: await searchTick(getStore(), undefined, 1) });
+      return json({ handled: await searchTick(getStore()) });
     }
     guard(req);
     const store = getStore();

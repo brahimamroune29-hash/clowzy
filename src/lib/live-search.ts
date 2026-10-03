@@ -1,5 +1,5 @@
 import type { Resolved, Search } from './contracts';
-import { catalogMatches, rememberCandidates } from './catalog';
+import { catalogMatches, crmEnabled, rememberCandidates } from './catalog';
 import { audienceOf } from './audience';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { AppError, DAILY_PEOPLE, dailyLimit, Store } from './store';
@@ -172,7 +172,10 @@ export class LiveSearch {
         });
       }
       if (!batch.length) return this.end(userId, id, input);
-      while (!await this.takeSlot('bulk')) { await this.patch(id, {}); await sleep(this.gaps.bulk); }
+      while (!await this.takeSlot('bulk')) {
+        if (this.elapsed() + this.gaps.bulk > SUBMIT_MS) return this.pause(userId, id, batch, input);
+        await this.patch(id, {}); await sleep(this.gaps.bulk);
+      }
       if (this.elapsed() > SUBMIT_MS) return this.pause(userId, id, batch, input); // checked once the slot is ours: the submit starts now
       await this.patch(id, { phase: 'submitting', people: JSON.stringify(batch) });
       if ((await this.store.getSearch(userId, id)).status !== 'awaiting_provider' || (await this.run(id))?.phase !== 'submitting') { await this.release(userId, queryKey, batch); return this.view(userId, id); }
@@ -193,10 +196,11 @@ export class LiveSearch {
     }
   }
   async recoverStale(userId: string) {
-    // Close this member's abandoned or interrupted searches first, so they do not hold credits or pending slots.
+    // With a background worker, leaving the page does not abandon the authorized target. Resume it;
+    // capacity checks will keep a second search from interrupting it. Legacy browser-only mode closes abandoned work.
     const stale = await this.store.db.all<{ search_id: string }>(`SELECT r.search_id FROM provider_runs r JOIN searches s ON s.id=r.search_id WHERE s.user_id=? AND s.status='awaiting_provider'
       AND ((r.phase='waiting' AND r.submitted_at<?) OR (r.phase<>'waiting' AND r.updated_at<?))`, userId, Date.now() - BATCH_DEADLINE, Date.now() - STALE);
-    for (const { search_id } of stale) { if (this.elapsed() > 10000) break; await this.poll(userId, search_id, true); } // the rest close next time
+    for (const { search_id } of stale) { if (this.elapsed() > 10000) break; await this.poll(userId, search_id, !crmEnabled()); }
   }
   async start(userId: string, input: Resolved): Promise<Search> {
     queryOf(input);
@@ -242,7 +246,11 @@ export class LiveSearch {
       }
       return this.view(userId, id);
     }
-    if (!run.file || Date.now() - run.updated_at < 5000 || !await this.takeSlot('read')) return this.view(userId, id);
+    if (!run.file || Date.now() - run.updated_at < 5000) return this.view(userId, id);
+    while (!await this.takeSlot('read')) {
+      if (this.elapsed() + this.gaps.read > 10000) return this.view(userId, id);
+      await sleep(this.gaps.read);
+    }
     // Read-only polling may safely resume after an interruption; the row lock spaces out concurrent readers.
     const locked = await this.store.db.run('UPDATE provider_runs SET updated_at=? WHERE search_id=? AND updated_at=?', Date.now(), id, run.updated_at);
     if (!locked) return this.view(userId, id);
