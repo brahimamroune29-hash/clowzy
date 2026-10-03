@@ -1,8 +1,8 @@
-# Hourly: the site answers, and the API reaches the database (a well-formed unknown invitation is a 410 only then).
+# Every 15 minutes: the site/database answer and active searches have progressed within 30 minutes.
 # Failed runs appear in Actions; email delivery depends on the owner's GitHub notification settings.
 name: uptime
 on:
-  schedule: [{ cron: '17 * * * *' }]
+  schedule: [{ cron: '7,22,37,52 * * * *' }]
   workflow_dispatch:
 permissions: {}
 jobs:
@@ -10,9 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Site and database answer
-        env: { APP_URL: "${{ vars.APP_URL || 'https://app.clowzy.io' }}" }
+      - name: Site, database, and search processing are healthy
+        env:
+          APP_URL: "${{ vars.APP_URL || 'https://app.clowzy.io' }}"
+          CRON_SECRET: '${{ secrets.CRON_SECRET }}'
         run: |
           code() { curl -s -o /dev/null -w '%{http_code}' --max-time 30 --retry 2 "$1"; }
           test "$(code "$APP_URL/")" = 200
           test "$(code "$APP_URL/api/invitation?token=000000000000000000000000000000000000000000000000")" = 410
+          test -n "$CRON_SECRET"
+          curl -fsS --max-time 30 --retry 2 -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/api/cron/health"

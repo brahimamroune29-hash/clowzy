@@ -18,5 +18,22 @@ jobs:
           export PGSSLMODE=verify-full PGSSLROOTCERT="$PWD/db/supabase-ca.pem"
           pg_dump "$BACKUP_DATABASE_URL" --schema=clowzy --enable-row-security --inserts --no-owner --no-privileges -Fc -f clowzy.dump
           test "$(pg_restore --list clowzy.dump | grep -c 'TABLE DATA')" -ge 27
+      - name: Restore the copy in an isolated database before retaining it
+        shell: bash
+        run: |
+          gosu postgres initdb -D /tmp/backup-restore --auth-local=trust --auth-host=reject >/dev/null
+          gosu postgres pg_ctl -D /tmp/backup-restore -l /tmp/backup-restore.log -o "-h '' -k /tmp" -w start
+          trap 'gosu postgres pg_ctl -D /tmp/backup-restore -m fast -w stop' EXIT
+          export PGHOST=/tmp PGUSER=postgres PGDATABASE=postgres PGSSLMODE=disable
+          psql -v ON_ERROR_STOP=1 -c 'CREATE ROLE clowzy_app; CREATE ROLE clowzy_backup;'
+          pg_restore --no-owner --no-privileges --exit-on-error -d postgres clowzy.dump
+          test "$(psql -Atc "SELECT count(*) FROM pg_tables WHERE schemaname='clowzy'")" -ge 27
+          sha256sum clowzy.dump > clowzy.dump.sha256
       - uses: actions/upload-artifact@v4
-        with: { name: 'clowzy-${{ github.run_id }}', path: clowzy.dump, retention-days: 30 }
+        with:
+          name: 'clowzy-${{ github.run_id }}'
+          path: |
+            clowzy.dump
+            clowzy.dump.sha256
+          retention-days: 30
+          if-no-files-found: error

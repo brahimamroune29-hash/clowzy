@@ -391,3 +391,19 @@ test('cron API requires its own bearer secret and does not accept a member sessi
   const response=await GET(req,{params:Promise.resolve({path:['cron','search']})});
   assert.equal(response.status,200);assert.deepEqual(await response.json(),{handled:0});
 });
+
+test('operational health rejects members and detects stalled searches without exposing customer data', async t => {
+  const {member,store}=await setup(t);
+  const oldSecret=process.env.CRON_SECRET,oldCrm=process.env.CRM_ENABLED;
+  process.env.CRON_SECRET='health-check-secret-'.repeat(3);process.env.CRM_ENABLED='true';
+  t.after(()=>{if(oldSecret===undefined)delete process.env.CRON_SECRET;else process.env.CRON_SECRET=oldSecret;if(oldCrm===undefined)delete process.env.CRM_ENABLED;else process.env.CRM_ENABLED=oldCrm;});
+  assert.equal((await member('cron/health')).status,401);assert.equal((await member('cron/health',{})).status,401);
+  const health=()=>GET(new NextRequest(APP+'/api/cron/health',{headers:{authorization:'Bearer '+process.env.CRON_SECRET}}),{params:Promise.resolve({path:['cron','health']})});
+  const empty=await health();assert.equal(empty.status,200);assert.deepEqual(await empty.json(),{ok:true,pending:0,stale:0});
+  provider({neverDone:true});const started=await member('search',form(1));assert.equal(started.status,200);
+  assert.equal((await health()).status,200);
+  await store.db.run('UPDATE provider_runs SET updated_at=? WHERE search_id=?',Date.now()-31*60000,started.data.id);
+  const stale=await health();assert.equal(stale.status,503);assert.deepEqual(await stale.json(),{ok:false,pending:1,stale:1});
+  await store.finishSearch(started.data.id);assert.equal((await health()).status,200);
+  process.env.CRM_ENABLED='false';assert.equal((await health()).status,503);
+});

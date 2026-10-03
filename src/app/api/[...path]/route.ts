@@ -49,8 +49,17 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
   try {
     const path = (await params).path.join('/');
     // Vercel may invoke the deployment hostname. The cron authenticates with its server secret, not a browser origin/cookie.
-    if (path === 'cron/search') {
+    if (path === 'cron/search' || path === 'cron/health') {
       if (req.method !== 'GET' || !workerAuthorized(req.headers.get('authorization'))) return json({ error: 'Unauthorized' }, 401);
+      if (path === 'cron/health') {
+        // An answering homepage does not prove abandoned searches are still progressing. Counts only: no member data.
+        const state = await getStore().db.get<{pending:number;stale:number}>(`SELECT count(*)::int pending,
+          count(*) FILTER (WHERE COALESCE(r.updated_at,extract(epoch FROM s.created_at::timestamptz)*1000) < ?)::int stale
+          FROM searches s JOIN users u ON u.id=s.user_id LEFT JOIN provider_runs r ON r.search_id=s.id
+          WHERE s.status IN ('queued','awaiting_provider') AND u.active=1`, Date.now()-30*60000);
+        const ok = crmEnabled() && !!state && state.stale === 0;
+        return json({ok,...state},ok?200:503);
+      }
       // ponytail: one search step/minute bounds this function to 60s; a dedicated worker if queue latency becomes material.
       return json({ handled: await searchTick(getStore(), undefined, 1) });
     }
