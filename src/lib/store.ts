@@ -115,7 +115,7 @@ export class Store {
           (SELECT count(*) FROM exports WHERE user_id=u.id) AS exports
           FROM users u WHERE role='member' ORDER BY created_at DESC`),
         this.db.all<Invitation>('SELECT id,name,email,credits,expires_at,used_at,created_at FROM invitations ORDER BY created_at DESC'),
-        this.db.all<AuditEvent>('SELECT id,action,detail,created_at FROM audit ORDER BY created_at DESC LIMIT 80'),
+        this.db.all<AuditEvent>("SELECT id,action,detail,created_at FROM audit WHERE action<>'search-coverage' ORDER BY created_at DESC LIMIT 80"),
         this.db.get<{ n: number }>("SELECT COALESCE(-sum(amount),0) AS n FROM ledger WHERE kind='debit'"),
       ]);
       snapshot.admin = {
@@ -165,7 +165,7 @@ export class Store {
             FROM (SELECT * FROM users WHERE role='member' ORDER BY created_at DESC,id DESC LIMIT 5) u
             ORDER BY u.created_at DESC,u.id DESC`),
           invitations: [],
-          audit: await this.db.all<AuditEvent>('SELECT id,action,detail,created_at FROM audit ORDER BY created_at DESC,id DESC LIMIT 4'),
+          audit: await this.db.all<AuditEvent>("SELECT id,action,detail,created_at FROM audit WHERE action<>'search-coverage' ORDER BY created_at DESC,id DESC LIMIT 4"),
           recovery: !!await this.db.get('SELECT 1 FROM users WHERE id=? AND recovery_hash IS NOT NULL', id), // the settings page (an overview view)
           totals: { ...totals, ...memberCounts },
         };
@@ -406,6 +406,8 @@ export class Store {
     await this.admin(adminId);
     return this.transaction(async () => {
       const target = await this.user(userId, true);
+      // Members only: a hijacked owner session must not mint a reset link for the owner's own account.
+      if (target.role !== 'member') throw new AppError('المشترك غير موجود.', 404);
       await this.revokeResets(userId);
       const token = await this.resetToken(userId, 3600000);
       await this.audit(adminId, 'رابط استعادة الوصول', target.name);

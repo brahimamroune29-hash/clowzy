@@ -1,4 +1,5 @@
-# Every 30 minutes: the site/database answer and active searches have progressed within 30 minutes.
+# Scheduled every 30 minutes, but GitHub starts scheduled runs late or drops them (3-6 h apart on 2026-10-03/04):
+# the external monitor on / and /api/cron/health is the timely alarm; this is the backup check.
 # 1,488 one-minute runs in a 31-day month leave room in the 2,000 included minutes for backups and CI.
 # Failed runs appear in Actions; email delivery depends on the owner's GitHub notification settings.
 name: uptime

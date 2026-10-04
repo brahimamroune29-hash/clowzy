@@ -77,6 +77,10 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
       // Counted in the database: Vercel runs several instances, each with its own memory. Per IP only: a per-email
       // limit would let anyone lock the owner out.
       await store.hit('auth:' + ip, 30);
+      // Every auth request may run scrypt: a platform-wide cap keeps traffic from many addresses from using up the hosting
+      // plan's monthly CPU (which would pause the whole site). ponytail: under attack, sign-in waits too; sessions last 7 days.
+      await store.hit('auth-all', 20);
+      await store.hit('auth-all-hour', 200, 3600000);
       const b = await body(req);
       if (path === 'auth/login') {
         const data = z.object({email:z.email(),password:z.string().min(1).max(128)}).parse(b);

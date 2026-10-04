@@ -297,3 +297,14 @@ test('reset creation rolls back revocation on failure and locks the account befo
     assert.equal(outcomes.filter(r=>r.status==='fulfilled').length,1,'the old password authorizes only the first change');
   } finally {await store.close();}
 });
+
+test('reset links are for members only, and per-search coverage rows stay out of the owner activity log',async()=>{
+  const {store,admin,alice}=await setup();
+  try {
+    await assert.rejects(store.createReset(admin.id,admin.id),(e:AppError)=>e.status===404,'no reset link for the owner account');
+    await store.createReset(admin.id,alice.id);
+    await store.db.run("INSERT INTO audit(id,actor_id,action,detail,created_at) VALUES(?,?,'search-coverage','{}',?)",randomUUID(),alice.id,new Date(Date.now()+1000).toISOString());
+    assert.ok(!(await store.snapshot(admin.id)).admin!.audit.some(a=>a.action==='search-coverage'));
+    assert.ok(!(await store.overview(admin.id)).admin!.audit.some(a=>a.action==='search-coverage'));
+  } finally {await store.close();}
+});
