@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { cursorKey, freeMail, IcypeasClient, IcypeasError, peopleQuery, personKey, safeWebsite } from '../src/lib/icypeas';
+import { cursorKey, IcypeasClient, IcypeasError, peopleQuery, personKey, safeWebsite } from '../src/lib/icypeas';
 import { LiveSearch } from '../src/lib/live-search';
 import { Store } from '../src/lib/store';
-import { emailTrust } from '../src/lib/contracts';
+import { emailTrust, freeMail } from '../src/lib/contracts';
 import { SECTOR_INDUSTRIES } from '../src/lib/audience';
 import { hookDb, input, item, lead, live, testStore } from './pg';
 
@@ -99,13 +99,13 @@ test('a probable email (95% sure, paid by the provider anyway) is delivered and 
   const { candidates } = await m.client.results('file1', ['a', 'b', 'c', 'd', 'e', 'f'].map(lead) as never);
   assert.deepEqual(candidates.map(c => [c.email, c.email_status]), [['c@company-c.example', 'VERIFIED'], ['d2@company-d.example', 'VERIFIED'], ['b@company-b.example', 'PROBABLE']],
     'sure first, and the sure address of a person with both; personal mailboxes and unknown or missing certainty are refused');
-  assert.equal(emailTrust('PROBABLE'), 'ثقة المزوّد ٩٥٪'); assert.equal(emailTrust('VERIFIED'), 'ثقة المزوّد ٩٩٪');
+  assert.equal(emailTrust('PROBABLE'), 'محتمل · ثقة المزوّد ٩٥٪'); assert.equal(emailTrust('VERIFIED'), 'ثقة المزوّد ٩٩٪');
 });
 test('short batches top up from the next people page, never submitting more than 20x the requested count, then try the companies', async () => {
   const people = 'abcdefghijklmnopqrstuvwxyz'.split('');
   const pages = [{ leads: people.slice(0, 4).map(lead), token: 't1' }, { leads: people.slice(4).map(lead) }];
   const nf = (n: number) => Array.from({ length: n }, (_, i) => item(i, null));
-  const m = mockTransport({ pages, files: [nf(4), nf(4), nf(4), nf(4), nf(4)] });
+  const m = mockTransport({ pages, files: [nf(4), nf(16)] }); // 0 found in 4: the next batch takes the rest of the cap at once
   const { store, user } = await setup(), search = live(store, m.client);
   try {
     const first = await search.start(user.id, input(1));
@@ -281,11 +281,11 @@ test('a transient error keeps the member\'s cursor; only a rejected token restar
 
 test('count is free: both stages via the count endpoint only, summed; Arabic free text is a 400 before any call', async () => {
   const m = mockTransport();
-  assert.deepEqual(await m.client.count({ ...input(), city: 'الرياض', titles: ['Marketing Director'] }), { total: 10, strict: 5 }, 'stage 0 + stage 1 (each mocked at 5)');
-  assert.deepEqual(m.calls.map(c => c.path), ['find-people/count', 'find-people/count'], 'no paid find-people or bulk-search call');
-  assert.deepEqual(m.calls.map(c => c.body.query?.profileLocation), [{ include: ['Riyadh, SA'] }, { include: ['Riyadh, Saudi Arabia', 'الرياض السعودية'], exclude: ['Riyadh, SA'] }]);
+  assert.deepEqual(await m.client.count({ ...input(), city: 'الرياض', titles: ['Marketing Director'] }), { total: 10, strict: 5, reachable: 10 }, 'stage 0 + stage 1 (each mocked at 5), then the same at companies with a headcount');
+  assert.deepEqual(m.calls.map(c => c.path), Array(4).fill('find-people/count'), 'no paid find-people or bulk-search call');
+  assert.deepEqual(m.calls.slice(0, 2).map(c => c.body.query?.profileLocation), [{ include: ['Riyadh, SA'] }, { include: ['Riyadh, Saudi Arabia', 'الرياض السعودية'], exclude: ['Riyadh, SA'] }]);
   await assert.rejects(m.client.count({ ...input(), city: 'تبوك' }), (e: unknown) => e instanceof IcypeasError && e.status === 400);
-  assert.equal(m.calls.length, 2);
+  assert.equal(m.calls.length, 4, 'the refused city made no call');
 });
 
 test('provider out of credits: a clear message, the search fails unpaid, the member keeps the reservation back', async () => {
@@ -421,7 +421,7 @@ test('a link page or social profile is not the company domain: the email search 
   const { store, user } = await setup();
   try {
     await live(store, m.client).start(user.id, input(2));
-    assert.deepEqual(m.calls.find(c => c.path === 'bulk-search')?.body.data?.map(r => r[2]), ['Company a', 'Company b', 'gomla.sa', 'Company d', 'Company e', 'shop-f.example', 'Company g']);
+    assert.deepEqual(m.calls.find(c => c.path === 'bulk-search')?.body.data?.map(r => r[2]), ['gomla.sa', 'shop-f.example', 'Company a', 'Company b', 'Company d', 'Company e', 'Company g'], 'own websites first');
   } finally { await store.close(); }
 });
 
@@ -442,7 +442,7 @@ test('the company domain is the website\'s real host; free mail, short links and
   const { store, user } = await setup();
   try {
     await live(store, m.client).start(user.id, input(2));
-    assert.deepEqual(m.calls.find(c => c.path === 'bulk-search')?.body.data?.map(r => r[2]), ['Company a', 'Company b', 'Company c', 'shop-d.com.sa', 'Company e', 'Company h']);
+    assert.deepEqual(m.calls.find(c => c.path === 'bulk-search')?.body.data?.map(r => r[2]), ['shop-d.com.sa', 'Company a', 'Company b', 'Company c', 'Company e', 'Company h'], 'own websites first');
   } finally { await store.close(); }
 });
 
@@ -460,12 +460,12 @@ test('a personal mailbox (gmail, hotmail...) is never delivered or charged: the 
 });
 
 test('a search that ends short says why (people checked, verified emails found) and what to do next; the snapshot carries it', async () => {
-  const widen = 'لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو المسمى الوظيفي.', tried = 'جرّبنا كل المطابقين المتاحين. ' + widen;
+  const widen = 'لنتائج أكثر، أضف دولًا أو اختر نشاطًا أوسع.', tried = 'جرّبنا كل المطابقين المتاحين. ' + widen; // no filter set: none to remove
   const abc = [{ leads: ['a', 'b', 'c'].map(lead) }];
   const cases: [number, Parameters<typeof mockTransport>[0], string][] = [
     [1, { pages: abc, files: [[item(0, null), item(1, null), item(2, null)]] }, 'بحثنا عن بريد 3 من الأشخاص المطابقين، ولم نجد بريدًا موثّقًا لأيّ منهم. ' + tried],
     [3, { pages: abc, files: [[item(0, 'a@company-a.example'), item(1, 'a@company-a.example'), item(2, null)]] }, 'بحثنا عن بريد 3 من الأشخاص المطابقين، ووجدنا بريدًا موثّقًا لـ 2 منهم، منها 1 مكرر مستبعد. ' + tried],
-    [1, { pages: [{ leads: Array.from({ length: 22 }, (_, i) => lead('p' + i)), token: 't1' }, { leads: [lead('z')] }], files: [4, 4, 4, 4, 4].map(n => Array.from({ length: n }, (_, i) => item(i, null))) },
+    [1, { pages: [{ leads: Array.from({ length: 22 }, (_, i) => lead('p' + i)), token: 't1' }, { leads: [lead('z')] }], files: [4, 16].map(n => Array.from({ length: n }, (_, i) => item(i, null))) },
       'بحثنا عن بريد 20 من الأشخاص المطابقين، ولم نجد بريدًا موثّقًا لأيّ منهم. أعد البحث بالمعايير نفسها لتجربة أشخاص آخرين، أو وسّعها لنتائج أكثر.'],
   ];
   for (const [count, opts, expected] of cases) {
@@ -499,11 +499,11 @@ test('starting a new search closes the member\'s abandoned ones with what came b
 });
 
 test('a database error while explaining a short search does not fail the poll: the search is already closed and released', async () => {
-  const m = mockTransport({ pages: [{ leads: Array.from({ length: 10 }, (_, i) => lead('p' + i)), token: 't1' }], files: [4, 4, 2].map(n => Array.from({ length: n }, (_, i) => item(i, null))) });
+  const m = mockTransport({ pages: [{ leads: Array.from({ length: 10 }, (_, i) => lead('p' + i)), token: 't1' }], files: [4, 6].map(n => Array.from({ length: n }, (_, i) => item(i, null))) });
   const { store, user } = await setup(), search = live(store, m.client);
   try {
     const first = await search.start(user.id, input(1));
-    await eligible(store); await search.poll(user.id, first.id); await eligible(store); await search.poll(user.id, first.id); // batches 2 and 3: the cap
+    await eligible(store); await search.poll(user.id, first.id); // batch 2: 0 found in 4, so everyone left (6) at once
     // Cursor reads on the last poll: the people search's next page, the companies fallback, then the shortfall message (fails).
     let reads = 0;
     hookDb(store, text => { if (text.startsWith('SELECT stage,token,leftovers') && ++reads === 3) throw new Error('connection reset'); });

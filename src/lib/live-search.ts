@@ -1,11 +1,11 @@
-import type { Resolved, Search } from './contracts';
+import { MIN_FIND_RATE, type Candidate, type Resolved, type Search } from './contracts';
 import { catalogMatches, crmEnabled, rememberCandidates } from './catalog';
 import { audienceOf } from './audience';
 import { WEB_ROUNDS } from './web-companies';
 import {recordCoverage} from './coverage';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { AppError, DAILY_PEOPLE, dailyLimit, Store } from './store';
-import { BATCH, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadName, personKey, publishedEnabled, queryOf, siteOf, stageCount, submissionTask, submitCap, webStage } from './icypeas';
+import { BATCH, companyKeys, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadKeys, leadName, personKey, publishedEnabled, queryOf, siteOf, stageCount, submissionTask, submitCap, webStage } from './icypeas';
 
 type Run = { search_id: string; phase: string; people: string; file: string | null; scanned: number; fetched: number; submitted: number; submitted_at: number | null; message: string; updated_at: number; read_errors: number; mode: 'companies' | null; people_checked: number };
 // The audience a run continues with: the stored filters, switched to companies once a people search has fallen back.
@@ -18,10 +18,15 @@ const STALE = 90000; // no request lives this long (maxDuration 60 s): a run unt
 // no paid submit after 25 s (a submit can take ~31 s: a 10.5 s connect timeout, then one 20 s retry). Past that the search
 // pauses with its picked people saved, and the next poll resumes it.
 const PAGES_PER_CALL = 3, COLLECT_MS = 20000, SUBMIT_MS = 25000;
-// Batch sizing assumes an optimistic 30% find rate (measured ~20-23% on GCC samples, outputs/gulf-email-provider-research-2026-09-26.md):
-// smaller first batches mean fewer found-but-undelivered emails paid for; later batches top up within the submit cap.
-// Native company-domain discovery also needs topping up; no assumption that a public site email is deliverable.
-const EXPECTED_FIND_RATE = { people: 0.3, companies: 0.3 };
+// Batch sizing: until a batch of this mode has come back, an optimistic 30% find rate (measured ~20-23% on GCC samples,
+// outputs/gulf-email-provider-research-2026-09-26.md) keeps the first paid batch small. After that, the rate this search measured
+// (floored at 5%): restaurants in Saudi Arabia found 10 in 185 (5.4%), and assuming 30% took 13 small batches (2026-10-05).
+// ponytail: a rate measured low can over-find by up to a 100-person batch; those extra finds cost provider credits and are not
+// delivered (owner's choice, 2026-10-05). Cap the batch by the provider balance if that spend starts to matter.
+const PRIOR_FIND_RATE = 0.3;
+// ponytail: people without a website wait in the member's list (at most this many per filter set) until no page is left; the rest
+// come back when the list starts over.
+const LATER_KEPT = 100;
 
 // Search = batches: take people from this member's cursor for these filters (leftovers, then next pages) -> submit
 // for email discovery -> read results -> deliver, repeated until the requested count, the submit cap, or no new people.
@@ -50,8 +55,8 @@ export class LiveSearch {
   }
   private async view(userId: string, id: string): Promise<Search> {
     const search = await this.store.getSearch(userId, id), run = await this.run(id);
-    // checked: people sent for email discovery so far (the live progress the results page shows while searching).
-    return { ...search, checked: (run?.people_checked ?? 0) + (run?.submitted ?? 0), message: run?.message || (search.status === 'awaiting_provider' ? 'جارٍ البحث والتحقق من الإيميلات.' : '') };
+    // checked: people (and companies) sent for email discovery so far, the live progress the results page shows while searching.
+    return { ...search, checked: (run?.people_checked ?? 0) + (run?.submitted ?? 0), ...(run?.mode ? { companiesChecked: run.submitted } : {}), message: run?.message || (search.status === 'awaiting_provider' ? 'جارٍ البحث والتحقق من الإيميلات.' : '') };
   }
   private stop(userId: string, id: string, message: string, uncertain = false) {
     return this.store.transaction(async () => {
@@ -67,9 +72,11 @@ export class LiveSearch {
   // Why a search ended short and what to do next, so an empty result never reads as a silent failure.
   private async shortfall(userId: string, search: Search, run: Run) {
     const input = audienceOf(search.filters), companies = input.mode === 'companies', checked = run.mode ? run.people_checked : run.submitted;
-    if (run.mode && run.submitted) return `بحثنا عن بريد ${run.people_checked} من الأشخاص المطابقين، ثم حاولنا استكمال العدد ببريد الشركات عبر ${run.submitted} محاولة فحص، فوصلك ${search.delivered} من ${search.requested}. `
-      + 'لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو المسمى الوظيفي.'; // a fallback that found no company email reads as the people search
-    const widen = companies ? 'لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو أضف دولًا.' : 'لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو المسمى الوظيفي.';
+    // The advice names only the filters this search set (a salons search with none was told to remove three, 2026-10-05).
+    const set = [input.size !== 'all' && 'حجم الشركة', input.city.trim() && 'المدينة', !companies && input.title.trim() && 'المسمى الوظيفي'].filter(Boolean);
+    const widen = set.length ? `لنتائج أكثر، وسّع المعايير: احذف ${set.join(' أو ')} أو أضف دولًا.` : 'لنتائج أكثر، أضف دولًا أو اختر نشاطًا أوسع.';
+    if (run.mode && run.submitted) return `بحثنا عن بريد ${run.people_checked} من الأشخاص المطابقين، ثم أجرينا ${run.submitted} عملية بحث عن بريد الشركات نفسها، فوصلك ${search.delivered} من ${search.requested}. `
+      + widen; // a fallback that found no company email reads as the people search
     if (!checked) return (companies ? 'لم نجد شركات جديدة مطابقة لها نطاق عمل صالح للبحث حاليًا. ' : 'لا يوجد أشخاص جدد مطابقون لهذه المعايير حاليًا. ') + widen;
     const cursor = await this.store.cursor(userId, cursorKey(input));
     const found = search.delivered + search.duplicates, dup = search.duplicates ? `، منها ${search.duplicates} مكرر مستبعد` : '';
@@ -78,14 +85,25 @@ export class LiveSearch {
       : `بحثنا عن بريد ${checked} من الأشخاص المطابقين، ${found ? `ووجدنا بريدًا موثّقًا لـ ${found} منهم${dup}` : 'ولم نجد بريدًا موثّقًا لأيّ منهم'}. `)
       + (!cursor.stage && !cursor.token && cursor.leftovers === '[]' ? (webStage(input, stageCount(input) - 1) ? 'انتهت جولات البحث المتاحة لهذا الطلب. ' : 'جرّبنا كل المطابقين المتاحين. ') + widen : `أعد البحث بالمعايير نفسها لتجربة ${companies ? 'شركات أخرى' : 'أشخاص آخرين'}، أو وسّعها لنتائج أكثر.`);
   }
+  // Colleagues held back for a company this search delivered would open the next search with the same filters: they leave the
+  // member's lists (the people one and the companies fallback's). Never claimed, so they come back once a list starts over.
+  private async dropHeld(userId: string, search: Search) {
+    const taken = await this.store.takenCompanies(search.id);
+    if (taken.size) await this.store.transaction(async () => {
+      for (const mode of ['people', 'companies'] as const) {
+        const key = cursorKey({ ...audienceOf(search.filters), mode }), c = await this.store.cursor(userId, key), left = JSON.parse(c.leftovers) as Lead[];
+        const kept = left.filter(l => !leadKeys(l).some(k => taken.has(k)));
+        if (kept.length < left.length) await this.store.saveCursor(userId, key, c.stage, c.token, JSON.stringify(kept));
+      }
+    });
+  }
   private async finish(userId: string, id: string, message = '') {
     await this.store.finishSearch(id);
-    if (!message) {
-      const search = await this.store.getSearch(userId, id);
-      // Best effort: the search is already closed and released; a failed read only leaves the page's generic text.
-      if (search.delivered < search.requested) message = await this.shortfall(userId, search, (await this.run(id))!)
-        .catch(e => { console.warn('Shortfall message skipped:', e instanceof Error ? e.message : 'unknown'); return ''; });
-    }
+    const search = await this.store.getSearch(userId, id);
+    // Best effort: the search is already closed and released; a failure only leaves the page's generic text (or the colleagues).
+    await this.dropHeld(userId, search).catch(e => console.warn('Held colleagues kept:', e instanceof Error ? e.message : 'unknown'));
+    if (!message && search.delivered < search.requested) message = await this.shortfall(userId, search, (await this.run(id))!)
+      .catch(e => { console.warn('Shortfall message skipped:', e instanceof Error ? e.message : 'unknown'); return ''; });
     await this.patch(id, { phase: 'finished', message });
     return this.view(userId, id);
   }
@@ -136,14 +154,27 @@ export class LiveSearch {
       const search = await this.store.getSearch(userId, id), run = (await this.run(id))!;
       batch = (JSON.parse(run.people) as Lead[]).filter(l => !l.suppressed); // picked (and claimed) by an earlier request of this search, not sent yet
       if (input.mode === 'companies') batch = batch.map(l => ({ ...l, kind: 'company', email: l.published ? l.email : '' }));
-      const want = Math.min(BATCH, submitCap(search.requested) - run.submitted, Math.ceil((search.requested - search.delivered) / EXPECTED_FIND_RATE[input.mode]));
+      // The rate counts what the provider found: the fallback its own attempts (submitted restarts at 0) and emails (company rows),
+      // never emails the saved catalog delivered before any batch (2 catalog emails in 7 people read as a 29% rate).
+      const contacts = await this.store.db.all<Candidate & { catalog: boolean }>("SELECT kind,website,email,company,EXISTS(SELECT 1 FROM crm_deliveries d WHERE d.contact_id=c.id AND d.origin='catalog') catalog FROM contacts c WHERE search_id=?", id);
+      const found = contacts.filter(c => !c.catalog && (!run.mode || c.kind === 'company')).length + (run.mode ? 0 : search.duplicates); // a duplicate was found too
+      const rate = run.submitted ? Math.max(MIN_FIND_RATE, found / run.submitted) : PRIOR_FIND_RATE;
+      const want = Math.min(BATCH, submitCap(search.requested) - run.submitted, Math.ceil((search.requested - search.delivered) / rate));
+      // One email per company in a search: a colleague of someone delivered or already in this batch waits in the member's list
+      // (held), and is tried in a later batch only if that company still has no email. People whose company has no website rarely
+      // have a findable email (0 of 200 salon people, 0 of 227 dental people): they wait (later) until no other page is left.
+      const taken = new Set([...contacts.flatMap(companyKeys), ...batch.flatMap(leadKeys)]);
+      const held: Lead[] = [], later: Lead[] = [];
       const cursor = await this.store.cursor(userId, queryKey);
-      let pool = (JSON.parse(cursor.leftovers) as Lead[]).filter(l => !l.suppressed), token = cursor.token, stage = cursor.stage, wrapped = false, scanned = run.scanned, fetched = run.fetched, pages = 0;
+      let pool = (JSON.parse(cursor.leftovers) as Lead[]).filter(l => !l.suppressed), token = cursor.token, stage = cursor.stage, wrapped = false, daily = false, scanned = run.scanned, fetched = run.fetched, pages = 0;
+      const exhausted = () => scanned >= fetchCap(search.requested) || wrapped || daily;
       while (want > 0 && batch.length < want) {
+        if (!pool.length && exhausted() && later.length) pool = later.splice(0);
         if (!pool.length) {
-          if (scanned >= fetchCap(search.requested) || wrapped) break;
+          if (exhausted()) break;
           if (pages >= PAGES_PER_CALL || this.elapsed() > COLLECT_MS) return this.pause(userId, id, batch, input);
           if (await this.store.dailyFetched(userId) >= DAILY_PEOPLE) { // the member's daily provider work: send who was picked, then stop
+            if (later.length) { daily = true; continue; } // no page is left today: the people without a website go now
             if (batch.length) break;
             return this.finish(userId, id, 'حُسب فقط ما وصل. ' + dailyLimit);
           }
@@ -167,17 +198,20 @@ export class LiveSearch {
         // and the cursor in the same transaction, so an interruption never leaves a person claimed but unrecorded.
         await this.store.transaction(async () => {
           while (pool.length && batch.length < want) {
-            if (batch.length && (submissionTask(pool[0]) !== submissionTask(batch[0]) || (batch[0].published && batch.length >= 3))) break;
+            if (batch.length && (submissionTask(pool[0]) !== submissionTask(batch[0]) || (batch[0].published && batch.length >= 6))) break;
             let lead = pool.shift()!;
+            const keys = leadKeys(lead);
+            if (keys.some(k => taken.has(k))) { held.push(lead); continue; }
+            if (lead.kind !== 'company' && !siteOf(lead) && !exhausted()) { later.push(lead); continue; }
             let claimed = await this.store.claimPerson(userId, personKey(lead), leadName(lead), lead.lastCompanyName || '', lead.kind === 'company' ? siteOf(lead) : '');
             if (!claimed && lead.kind === 'company' && !lead.published && publishedEnabled()) {
               lead = { ...lead, email: '', published: true, publicationPending: true };
               if (batch.length && submissionTask(lead) !== submissionTask(batch[0])) { pool.unshift(lead); break; }
               claimed = await this.store.claimPerson(userId, personKey(lead), leadName(lead), lead.lastCompanyName || '', siteOf(lead));
             }
-            if (claimed) batch.push(lead);
+            if (claimed) { batch.push(lead); keys.forEach(k => taken.add(k)); }
           }
-          await this.store.saveCursor(userId, queryKey, stage, token, JSON.stringify(pool));
+          await this.store.saveCursor(userId, queryKey, stage, token, JSON.stringify([...pool, ...held, ...later.slice(0, LATER_KEPT)]));
           await this.patch(id, { scanned, fetched, people: JSON.stringify(batch) });
         });
         if (batch.length && (batch[0].published || (pool.length && submissionTask(pool[0]) !== submissionTask(batch[0])))) break;
@@ -273,6 +307,7 @@ export class LiveSearch {
       return this.view(userId, id);
     }
     if (!run.file || Date.now() - run.updated_at < 5000) return this.view(userId, id);
+    if (this.elapsed() > COLLECT_MS) return this.view(userId, id); // a read can take 31 s: none starts late in a worker tick (60 s limit)
     while (!await this.takeSlot('read')) {
       if (this.elapsed() + this.gaps.read > 10000) return this.view(userId, id);
       await sleep(this.gaps.read);
@@ -291,7 +326,7 @@ export class LiveSearch {
           AND EXISTS (SELECT 1 FROM searches WHERE id=? AND status='awaiting_provider')`, Date.now(), id, run.file, id) !== 1) return null;
         await rememberCandidates(this.store, result.candidates);
         const delivered = await this.store.deliverBatch(userId, id, result.candidates.map(c => ({ ...c, sector: input.sector })));
-        if(delivered!==null&&result.coverage)await recordCoverage(this.store,userId,id,'verification',result.coverage);
+        if(delivered!==null&&result.coverage)await recordCoverage(this.store,userId,id,'verification',{...result.coverage,waitMs:age}); // how long the provider took
         if (delivered !== null) await this.release(userId, cursorKey(input), result.unpaid); // rows the provider could not pay for were never searched
         if (!closeOnly && !result.unpaid.length && delivered !== null && delivered < search.requested && result.missing.length) {
           const c = await this.store.cursor(userId, cursorKey(input));

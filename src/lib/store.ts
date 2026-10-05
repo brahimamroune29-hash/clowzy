@@ -5,6 +5,8 @@ import { TERMS_VERSION, type AdminUser, type AuditEvent, type Candidate, type Co
 import { Db, pgDriver } from './db';
 import { weekBoundaries } from './overview';
 import { crmEnabled } from './catalog';
+import { recordCoverage } from './coverage';
+import { companyKeys } from './icypeas';
 
 export class AppError extends Error {
   constructor(message: string, public status = 400) { super(message); }
@@ -245,14 +247,20 @@ export class Store {
     if (crmEnabled()) await this.db.run('LOCK TABLE catalog_suppressions IN SHARE MODE');
     const current = count(await this.db.get<{ n: number }>('SELECT delivered AS n FROM searches WHERE id=?', search.id));
     const sector = (JSON.parse(search.filters) as Resolved).sector, seen = new Set<string>();
-    let delivered = 0, duplicates = 0;
+    // One email per company in a search, from every source (the saved catalog too). Checked after the duplicate check, so an
+    // address the member already has never takes a new one's place (Kudu 3 times and Al Tazaj twice in one search, 2026-10-05).
+    const taken = await this.takenCompanies(search.id);
+    let delivered = 0, duplicates = 0, sameCompany = 0;
     for (const candidate of candidates.slice(0, 1000)) {
       const email = normalizeEmail(candidate.email || '');
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) continue;
       if (crmEnabled() && await this.db.get("SELECT 1 FROM catalog_suppressions WHERE email=? UNION ALL SELECT 1 FROM crm_exclusions WHERE user_id=? AND (value=? OR value=split_part(?::text,'@',2)) LIMIT 1",email,search.user_id,email,email)) continue;
       if (seen.has(email) || await this.db.get('SELECT 1 FROM contacts WHERE user_id=? AND email=?', search.user_id, email)) { duplicates++; continue; }
       seen.add(email);
+      const keys = companyKeys(candidate);
+      if (keys.some(k => taken.has(k))) { sameCompany++; continue; }
       if (current + delivered >= search.requested) break;
+      keys.forEach(k => taken.add(k));
       const cid = randomUUID(), c: Candidate = { ...candidate, email };
       await this.db.run('INSERT INTO contacts(id,user_id,search_id,kind,name,email,company,title,sector,country,city,website,size,source,email_status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         cid, search.user_id, search.id, c.kind ?? 'person', c.name, c.email, c.company, c.title, c.sector, c.country, c.city, c.website, c.size, c.source, c.email_status, now());
@@ -261,7 +269,12 @@ export class Store {
       delivered++;
     }
     await this.db.run('UPDATE searches SET delivered=delivered+?,duplicates=duplicates+? WHERE id=?', delivered, duplicates, search.id);
+    if (sameCompany) await recordCoverage(this, search.user_id, search.id, 'delivery', { sameCompany }); // found (and paid at the provider), not charged
     return current + delivered;
+  }
+  // The companies a search already has an email for (companyKeys): one email per company in a search.
+  async takenCompanies(searchId: string) {
+    return new Set((await this.db.all<Candidate>('SELECT website,email,company FROM contacts WHERE search_id=?', searchId)).flatMap(companyKeys));
   }
   // Provider flow (live-search.ts): deliver one batch into a search that is still waiting on the provider.
   // Returns the search's delivered total, or null when the search is no longer waiting (closed, cancelled).

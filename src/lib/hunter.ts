@@ -1,5 +1,6 @@
 import {z} from 'zod';
-import {bestEmail,emailsIn,freeMail} from './site-email';
+import {bestEmail,emailsIn} from './site-email';
+import {freeMail} from './contracts';
 
 export const hunterEnabled=()=>process.env.HUNTER_ENABLED==='true'&&!!process.env.HUNTER_API_KEY?.trim();
 export type HunterLookup={email:string;outcome:'found'|'empty'|'rejected'|'unavailable'|'unconfigured';status?:number};

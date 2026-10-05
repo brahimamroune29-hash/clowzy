@@ -9,7 +9,7 @@ import { audienceOf } from '../src/lib/audience';
 import { testStore, hookDb } from './pg';
 
 // Three synthetic contacts (the CSV test's second row relies on the demo status and label).
-const demoCatalog:Candidate[]=[0,1,2].map(i=>({name:'خالد '+i+' الحسن',email:'contact-'+i+'@example.com',company:'شركة '+i,title:'مدير التسويق',sector:'التقنية والبرمجيات',country:'السعودية',city:'الرياض',size:'1-10',website:'https://example.com',source:'كتالوج تجريبي محلي',email_status:'demo'}));
+const demoCatalog:Candidate[]=[0,1,2].map(i=>({name:'خالد '+i+' الحسن',email:'contact-'+i+'@company'+i+'.example',company:'شركة '+i,title:'مدير التسويق',sector:'التقنية والبرمجيات',country:'السعودية',city:'الرياض',size:'1-10',website:'https://company'+i+'.example',source:'كتالوج تجريبي محلي',email_status:'demo'}));
 const input=(count=2):Resolved=>audienceOf(JSON.stringify({sector:'التقنية والبرمجيات',countries:['SA'],city:'',title:'',size:'all',count,confirmed:true,requestId:randomUUID()}));
 async function setup(){
   const store=await testStore();
@@ -114,7 +114,7 @@ test('CSV keeps each contact stored email status; only demo rows carry the demo 
   assert.ok(real.includes(',"clowzy",')&&!real.includes('FullEnrich'),'the provider name never reaches the member\'s file: '+real);
   assert.ok(demo.endsWith(',"DEMO — not real contact data"'),demo);
   const [,probable]=contactsCsv([{...demoCatalog[0],...row,email_status:'PROBABLE'}]).split('\r\n');
-  assert.ok(probable.endsWith(',"ثقة المزوّد ٩٥٪"'),'the member reads how sure each email is: '+probable);
+  assert.ok(probable.endsWith(',"محتمل · ثقة المزوّد ٩٥٪"'),'the member reads how sure each email is: '+probable);
 });
 test('invitations accepted once, preserve assigned credits, reject expired token',async()=>{
   const {store,admin}=await setup();

@@ -14,7 +14,7 @@ export async function api<T>(path: string, data?: unknown): Promise<T> {
       body: data === undefined ? undefined : JSON.stringify(data),
       cache:'no-store', signal: AbortSignal.timeout(65000),
     });
-  } catch { throw new Error(say('تعذّر الاتصال بالخادم. تحقّق من الإنترنت وحاول مجددًا.', 'Could not reach the server. Check your connection and try again.')); }
+  } catch { throw Object.assign(new Error(say('تعذّر الاتصال بالخادم. تحقّق من الإنترنت وحاول مجددًا.', 'Could not reach the server. Check your connection and try again.')), { offline: true }); }
   const result = await response.json().catch(() => null); // e.g. an HTML error page during a redeploy
   if (!response.ok || !result) throw Object.assign(new Error(result?.error || say('تعذّر إكمال الطلب.', 'The request could not be completed.')), { status: response.status }); // 401: signed out
   return result as T;

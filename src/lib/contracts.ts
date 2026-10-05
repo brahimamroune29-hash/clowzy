@@ -49,10 +49,18 @@ export type User = { id: string; name: string; email: string; role: Role; active
 // Never later than the deploy: acceptances would count as old until then (a test checks it is in the past).
 export const TERMS_VERSION = '2026-10-02T00:00:00.000Z';
 export const termsCurrent = (user: Pick<User, 'terms_accepted_at'>) => !!user.terms_accepted_at && user.terms_accepted_at >= TERMS_VERSION;
-// How sure the provider is that the email exists: VERIFIED <1% expected bounce, PROBABLE <5% (Icypeas certainties).
-export const emailTrust = (status: string, en = false) => status === 'PROBABLE' ? (en ? 'Provider confidence 95%' : 'ثقة المزوّد ٩٥٪') : status === 'VERIFIED' ? (en ? 'Provider confidence 99%' : 'ثقة المزوّد ٩٩٪') : status;
+// How sure the provider is that the email exists: VERIFIED <1% expected bounce, PROBABLE <5% (Icypeas certainties), which
+// the member reads as «likely» rather than as a bare percentage.
+export const emailTrust = (status: string, en = false) => status === 'PROBABLE' ? (en ? 'Likely · provider confidence 95%' : 'محتمل · ثقة المزوّد ٩٥٪') : status === 'VERIFIED' ? (en ? 'Provider confidence 99%' : 'ثقة المزوّد ٩٩٪') : status;
+// The provider finds the email of about 1 in 20 people at a company with a page (restaurants in Saudi Arabia: 10 in 185, 2026-10-05):
+// fewer of them than 20 per email asked for, and the search will likely end short. Said before it starts.
+export const MIN_FIND_RATE = 0.05; // also the batch-size floor in live-search.ts; the warning's «one in twenty» follows it
+export const fewReachable = (reachable: number | undefined, count: number) => reachable !== undefined && reachable * MIN_FIND_RATE < count;
+// Webmail and internet-provider domains (Gmail, Hotmail, IDM in Lebanon...): an address there belongs to a person, never to a
+// company's own domain, and two salons with an IDM address are not one company (review 2026-10-05).
+export const freeMail = /^((gmail|googlemail|hotmail|outlook|live|msn|yahoo|ymail|icloud|aol|protonmail|proton|yandex|gmx)(\.[a-z]{2,3}){1,2}|(me|mac|mail|rocketmail)\.com|emirates\.net\.ae|eim\.ae|batelco\.com\.bh|omantel\.net\.om|qatar\.net\.qa|qualitynet\.net|(idm|cyberia|terra|sodetel)\.net\.lb|(awalnet|nesma)\.net\.sa|tedata\.net\.eg|link\.net|zoho\.com|mail\.ru|(orange|wanadoo|free|sfr)\.fr|laposte\.net|web\.de|libero\.it)$/i;
 export type Contact = { kind?: 'person' | 'company'; id: string; user_id: string; search_id: string; name: string; email: string; company: string; title: string; sector: string; country: string; city: string; website: string; size: string; source: string; email_status: string; created_at: string };
-export type Search = { id: string; user_id: string; filters: string; title: string; requested: number; delivered: number; duplicates: number; status: string; created_at: string; message?: string; checked?: number };
+export type Search = { id: string; user_id: string; filters: string; title: string; requested: number; delivered: number; duplicates: number; status: string; created_at: string; message?: string; checked?: number; companiesChecked?: number }; // companiesChecked: of checked, the companies looked up after a people search fell back to company emails
 export type Ledger = { id: string; amount: number; kind: string; reason: string; created_at: string; balance_after: number };
 export type ExportEvent = { id: string; row_count: number; created_at: string };
 export type Invitation = { id: string; name: string; email: string; credits: number; expires_at: string; used_at: string | null; created_at: string };

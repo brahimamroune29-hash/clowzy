@@ -168,11 +168,12 @@ test('a people search short of its count is completed with the companies\' own v
     const first = await live(store, m.client).start(user.id, people);
     assert.equal(m.count('find-people'), 2, 'the people first (both stages, nobody)');
     assert.equal(m.calls.find(c => c.path === 'bulk-search')?.body.task, 'domain-search', 'then the companies of the same filters');
+    assert.deepEqual([first.checked, first.companiesChecked], [2, 2], 'the progress line names the companies looked up after the people');
     await store.db.run('UPDATE provider_runs SET updated_at=0');
     const done = await live(store, m.client).poll(user.id, first.id);
     assert.equal(done.delivered, 1); assert.equal(done.status, 'partial');
     assert.equal((await store.snapshot(user.id)).contacts[0].kind, 'company');
-    assert.equal(done.message, 'بحثنا عن بريد 0 من الأشخاص المطابقين، ثم حاولنا استكمال العدد ببريد الشركات عبر 2 محاولة فحص، فوصلك 1 من 2. لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو المسمى الوظيفي.');
+    assert.equal(done.message, 'بحثنا عن بريد 0 من الأشخاص المطابقين، ثم أجرينا 2 عملية بحث عن بريد الشركات نفسها، فوصلك 1 من 2. لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المسمى الوظيفي أو أضف دولًا.', 'only the filters this search set');
     assert.equal(m.count('find-people'), 2, 'never back to the people after the fallback');
     assert.equal((await store.user(user.id)).balance, 9);
   } finally { await store.close(); }
@@ -184,7 +185,7 @@ test('missing domain results resume from a durable published-contact queue, veri
   const calls: {task:string;data:string[][]}[] = [];
   const transport: typeof fetch = async (url, init) => {
     const path = String(url).split('/').pop(), body = JSON.parse(String(init?.body));
-    if (path === 'find-companies') return Response.json({ success:true,leads:body.query.location.exclude ? [] : [company('a'),company('b')] });
+    if (path === 'find-companies') return Response.json({ success:true,leads:body.query.location.exclude ? [] : [company('alpha'),company('bravo')] }); // the site's domain carries the name
     if (path === 'bulk-search') { calls.push(body); return Response.json({ success:true,file:'f'+calls.length }); }
     if (path === 'read') return Response.json({ success:true,items:body.file === 'f1' ? [item(0,null),item(1,null)] : [item(0,'clinic-a@gmail.com'),item(1,'different@gmail.com')] });
     throw Error('Unexpected '+path);
@@ -201,7 +202,7 @@ test('missing domain results resume from a durable published-contact queue, veri
     assert.equal(result.delivered,1); assert.equal(result.status,'partial'); assert.equal((await store.user(user.id)).balance,4); assert.equal(await store.reserved(user.id),0);
     assert.match(result.message??'',/4 محاولة/, 'two companies with two checks each must not be reported as four different companies');
     assert.equal((await store.snapshot(user.id)).contacts[0].email,'clinic-a@gmail.com');
-    assert.equal(await store.claimPerson(user.id,'different-key','اسم آخر للعيادة','اسم آخر للعيادة','a.example'),false,'a changed brand spelling must not create a second customer from the same domain');
+    assert.equal(await store.claimPerson(user.id,'different-key','اسم آخر للعيادة','اسم آخر للعيادة','alpha.example'),false,'a changed brand spelling must not create a second customer from the same domain');
     await live(store,client).poll(user.id,result.id); await live(store,client).start(user.id,request);
     assert.equal(calls.length,2); assert.equal((await store.user(user.id)).balance,4);
     const native = await client.results('f2',[{kind:'company',lastCompanyName:'A',lastCompanyWebsite:'https://a.example',email:''}]);
@@ -215,7 +216,7 @@ test('fifty missing company emails can fill from bounded published-contact batch
   const submissions:{task:string;data:string[][]}[]=[];
   const transport:typeof fetch=async(url,init)=>{
     const path=String(url).split('/').pop(),body=JSON.parse(String(init?.body));
-    if(path==='find-companies')return Response.json({success:true,leads:body.query.location.exclude?[]:Array.from({length:50},(_,i)=>company('c'+i))});
+    if(path==='find-companies')return Response.json({success:true,leads:body.query.location.exclude?[]:Array.from({length:50},(_,i)=>company('clinic'+i))});
     if(path==='bulk-search'){submissions.push(body);return Response.json({success:true,file:'f'+submissions.length});}
     if(path==='read'){const batch=submissions[Number(body.file.slice(1))-1];return Response.json({success:true,items:batch.data.map((row,i)=>item(i,batch.task==='domain-search'?null:row[0]))});}
     throw Error('Unexpected '+path);
@@ -229,7 +230,7 @@ test('fifty missing company emails can fill from bounded published-contact batch
     }
     assert.equal(result.status,'completed');assert.equal(result.delivered,50);assert.equal((await store.user(user.id)).balance,0);assert.equal(await store.reserved(user.id),0);
     assert.equal(new Set((await store.snapshot(user.id)).contacts.map(c=>c.website)).size,50);
-    assert(submissions.filter(s=>s.task==='email-verification').every(s=>s.data.length<=3));
+    assert(submissions.filter(s=>s.task==='email-verification').every(s=>s.data.length<=6)); // six websites read per round
     const paid=submissions.length;await live(store,client).start(user.id,request);assert.equal(submissions.length,paid);
   }finally{await store.close();if(before===undefined)delete process.env.PUBLISHED_EMAIL_ENABLED;else process.env.PUBLISHED_EMAIL_ENABLED=before;}
 });

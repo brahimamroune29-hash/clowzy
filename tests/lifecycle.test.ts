@@ -154,7 +154,7 @@ test('reservation shrinks as emails arrive; a second search waits for the active
   try {
     const a = await store.enqueueSearch(user.id, input(5));
     await store.db.run("UPDATE searches SET status='awaiting_provider' WHERE id=?", a.id);
-    const c = (e: string): Candidate => ({ name: e, email: e + '@x.example', company: 'C', title: '', sector: '', country: '', city: '', website: '', size: '', source: 'Icypeas', email_status: 'VERIFIED' });
+    const c = (e: string): Candidate => ({ name: e, email: e + '@' + e + '.example', company: 'C' + e, title: '', sector: '', country: '', city: '', website: '', size: '', source: 'Icypeas', email_status: 'VERIFIED' });
     await store.deliverBatch(user.id, a.id, ['a', 'b', 'c', 'd'].map(c)); // 4 of 5 delivered: balance 6, A can charge at most 1 more
     assert.equal((await store.user(user.id)).balance, 6);
     assert.equal(await store.reserved(user.id), 1);

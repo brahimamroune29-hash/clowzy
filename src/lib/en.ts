@@ -44,7 +44,7 @@ const sentences: Record<string, string> = {
   'قاعدة البيانات غير مهيأة على الخادم. تواصل مع مالك المنصة.': 'The database is not set up on the server. Contact the platform owner.',
   'جارٍ البحث والتحقق من الإيميلات.': 'Searching and verifying emails.',
   'لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو المسمى الوظيفي.': 'For more results, widen the search: remove the company size, the city or the job title.',
-  'لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو أضف دولًا.': 'For more results, widen the search: remove the company size or the city, or add countries.',
+  'لنتائج أكثر، أضف دولًا أو اختر نشاطًا أوسع.': 'For more results, add countries or pick a broader activity.',
   'لم نجد شركات جديدة مطابقة تعرض بريدها على موقعها حاليًا.': 'No new matching companies show an email on their website right now.',
   'لم نجد شركات جديدة مطابقة لها نطاق عمل صالح للبحث حاليًا.': 'No new matching companies have a usable business domain right now.',
   'دفعة بحث غير متجانسة. أعد المحاولة.': 'The search batch is inconsistent. Please retry.',
@@ -98,7 +98,13 @@ const sentences: Record<string, string> = {
   'المساعد غير متاح الآن. حاول بعد قليل.': 'The assistant is unavailable right now. Try again shortly.',
   'وصلت حد المساعد اليومي. حاول غدًا.': 'You have reached today’s assistant limit. Try again tomorrow.',
 };
+const filterNames: Record<string, string> = { 'حجم الشركة': 'the company size', 'المدينة': 'the city', 'المسمى الوظيفي': 'the job title' };
+const either = (items: string[]) => items.length > 1 ? items.slice(0, -1).join(', ') + ' or ' + items.at(-1) : items[0];
 const patterns: [RegExp, (...m: string[]) => string][] = [
+  [/لنتائج أكثر، وسّع المعايير: احذف (.+?) أو أضف دولًا\./g, // the filters the search set (live-search.ts shortfall)
+    (_, names) => `For more results, widen the search: remove ${either(names.split(' أو ').map(n => filterNames[n] ?? n))}, or add countries.`],
+  [/بحثنا عن بريد (\d+) من الأشخاص المطابقين، ثم أجرينا (\d+) عملية بحث عن بريد الشركات نفسها، فوصلك (\d+) من (\d+)\./g,
+    (_, p, a, d, r) => `We looked for the emails of ${p} matching people, then ran ${a} searches for the companies' own emails: you received ${d} of ${r}.`],
   [/نفّذنا (\d+) محاولة للعثور على بريد الشركات المطابقة والتحقق منه، فوصلك (\d+) من (\d+)\./g,
     (_, a, d, r) => `We made ${a} attempts to find and verify matching companies' emails: you received ${d} of ${r}.`],
   [/بحثنا عن بريد (\d+) من الأشخاص المطابقين، ثم حاولنا استكمال العدد ببريد الشركات عبر (\d+) محاولة فحص، فوصلك (\d+) من (\d+)\./g,

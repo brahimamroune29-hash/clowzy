@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { z } from 'zod';
-import { SUBMIT_MULTIPLE, type Candidate, type Resolved } from './contracts';
-import { cityNames, countryLabel, englishName, placeOf } from './places';
-import { bestEmail, companyEmails, emailsIn, freeMail, safeGet, type Get } from './site-email';
+import { freeMail, SUBMIT_MULTIPLE, type Candidate, type Resolved } from './contracts';
+import { cityNames, countryLabel, englishName, norm, placeOf } from './places';
+import { bestEmail, categoryWords, companyEmails, emailsIn, safeGet, type Get } from './site-email';
 import { directoryPath, webCompanies, webEnabled } from './web-companies';
-import { anyIndustry, nicheKeywords, ANY_INDUSTRY_EXCLUDED } from './niches';
+import { anyIndustry, nicheKeywords, nicheNames, ANY_INDUSTRY_EXCLUDED } from './niches';
 import type {CoverageCounts} from './coverage';
 
 // status: HTTP status for the API response. uncertain: a paid request may have reached Icypeas.
@@ -37,6 +37,9 @@ export type Audience = Pick<Resolved, 'countries' | 'city' | 'size' | 'industrie
 const dentalOnly = (input: Audience) => input.industries.length === 1 && input.industries[0] === 'Dentists';
 const dataStages = (input: Audience) => (input.mode === 'companies' && dentalOnly(input)) || anyIndustry(input.sector) ? 4 : STAGES;
 export const webStage = (input: Audience, stage: number) => webEnabled(input) && stage === dataStages(input);
+// The broadened data stages of an anyIndustry niche keep a business only when its name says what it is (nicheNames).
+const onNiche = (input: Audience, stage: number, company?: string | null) => stage < 2 || stage >= dataStages(input) || !anyIndustry(input.sector)
+  || nicheNames(input.sector).some(w => norm(company || '').includes(norm(w)));
 export const stageCount = (input: Audience) => dataStages(input) + Number(webEnabled(input));
 const dentalExclusions = ['lab', 'labs', 'laboratory', 'laboratories', 'مختبر', 'معمل', 'supplies', 'supply', 'supplier', 'suppliers', 'equipment', 'study', 'academy', 'education', 'course', 'courses', 'factory', 'تجهيز', 'مستلزمات', 'مصنع', 'دورات'];
 const nonClinic = /\b(labs?|laborator(?:y|ies)|suppl(?:y|ies|iers?)|equipment|study|academy|education|courses?|factory)\b|مختبر|معمل|تجهيز|مستلزمات|مصنع|دورات/i;
@@ -113,10 +116,10 @@ const itemSchema = z.object({
   results: z.object({ emails: z.array(z.object({ email: z.string(), certainty: z.string().nullish() })).nullish() }).nullish(),
 });
 const pending = ['NONE', 'SCHEDULED', 'IN_PROGRESS'];
-// Link pages, social networks, store builders, forms and short links host many companies: their domain is not the company's.
-const sharedHost = /(^|\.)(linktr\.ee|lnk\.bio|linkin\.bio|bio\.link|beacons\.ai|taplink\.cc|instagram\.com|instagr\.am|facebook\.com|fb\.com|fb\.me|x\.com|twitter\.com|t\.co|tiktok\.com|snapchat\.com|linkedin\.com|youtube\.com|youtu\.be|wa\.me|wa\.link|whatsapp\.com|t\.me|goo\.gl|google\.com|business\.site|blogspot\.com|wordpress\.com|wixsite\.com|myshopify\.com|salla\.sa|zid\.store|youcan\.shop|expandcart\.com|wuilt\.com|zyda\.com|odoo\.com|forms\.gle|bit\.ly|tinyurl\.com|calendly\.com|about\.me|carrd\.co|github\.io|notion\.site)$/i;
+// Link pages, social networks, store builders, forms, short links and booking platforms (salons book through Fresha, Booksy...)
+// host many companies: their domain is not the company's (a salon delivered hello@fresha.com on 2026-10-05).
+const sharedHost = /(^|\.)(linktr\.ee|lnk\.bio|linkin\.bio|bio\.link|beacons\.ai|taplink\.cc|instagram\.com|instagr\.am|facebook\.com|fb\.com|fb\.me|x\.com|twitter\.com|t\.co|tiktok\.com|snapchat\.com|linkedin\.com|youtube\.com|youtu\.be|wa\.me|wa\.link|whatsapp\.com|t\.me|goo\.gl|google\.com|business\.site|blogspot\.com|wordpress\.com|wixsite\.com|myshopify\.com|salla\.sa|zid\.store|youcan\.shop|expandcart\.com|wuilt\.com|zyda\.com|odoo\.com|forms\.gle|bit\.ly|tinyurl\.com|calendly\.com|about\.me|carrd\.co|github\.io|notion\.site|fresha\.com|booksy\.com|vagaro\.com|setmore\.com|square\.site|squareup\.com|treatwell\.[a-z.]+|planity\.com|mindbodyonline\.com|simplybook\.me|glossgenius\.com|styleseat\.com|schedulicity\.com|gettimely\.com|zenoti\.com|phorest\.com|acuityscheduling\.com|godaddysites\.com|site123\.me|webflow\.io)$/i;
 const sure = ['ultra_sure', 'very_sure'];
-export { freeMail } from './site-email';
 // Placeholder employers: without a website there is nothing to find an email at.
 const genericCompany = /^(confidential\b|private (company|office|sector)$|self[- ]?employed|freelancer?$|stealth\b|n\/?a$|none$|-+$)/i;
 export const siteOf = (lead: Lead) => {
@@ -127,8 +130,45 @@ export const siteOf = (lead: Lead) => {
   } catch { return ''; }
 };
 const domainOf = (lead: Lead) => { const name = (lead.lastCompanyName || '').trim(); return siteOf(lead) || (genericCompany.test(name) ? '' : name); };
-// The provider matched the search by profile location; the address is checked too, so nobody from another country is sent.
-const inCountries = (lead: Lead, codes: string[]) => { const { code } = placeOf(lead.address); return !code || codes.includes(code); };
+// The organisation behind a lead or a delivered contact: its own website (never a shared host), its email's domain (webmail
+// names nobody's company), and its name without legal words or a second spelling after « - » or « | » (Kudu's staff share no
+// website, 2026-10-05). A search delivers one email per organisation: two that share a key are the same company.
+// ponytail: two different businesses with one name count as one within a search; add the city to the name key if that bites.
+const legalWords = /\b(co|company|llc|l\.l\.c|ltd|limited|inc|corp|est|wll|w\.l\.l|sal|s\.a\.l|sarl)\b\.?|^(شركه|مؤسسه) /g;
+const orgName = (company: string) => {
+  const name = genericCompany.test(company.trim()) ? '' : norm(company.split(/\s[-–—|]\s|[|(]/)[0]).replace(legalWords, ' ').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  return name.split(' ').every(w => w.length < 2 || categoryWords.has(w)) ? '' : name; // «Beauty Salon» is many salons' company name
+};
+export const companyKeys = (c: { website?: string | null; email?: string | null; company?: string | null }) => {
+  const domain = (c.email || '').split('@')[1]?.trim().toLowerCase() || '', name = orgName(c.company || '');
+  return [siteOf({ lastCompanyWebsite: c.website }), domain && !freeMail.test(domain) ? domain : '', name && 'name:' + name].filter(Boolean);
+};
+export const leadKeys = (l: Lead) => companyKeys({ website: l.lastCompanyWebsite, email: l.email, company: l.lastCompanyName });
+// Who answers for a company, most likely first, when several of its people match: owner, CEO or general manager, marketing
+// heads, other heads, managers, supervisors and specialists, then everyone else. A product owner, an HR business partner or a
+// vice president is none of the first two (review 2026-10-05); an assistant or deputy ranks one step down, a trainee last.
+const TIERS = [/\b(owner|co-?founder|founder|proprietor|partner)\b|مالك|مؤسس|صاحب|شريك/i,
+  /\b(ceo|chief executive|general manager|managing director|gm|president)\b|المدير العام|مدير عام|الرئيس التنفيذي|المدير التنفيذي/i,
+  /\bcmo\b|\b(marketing|growth|brand)\b.*\b(head|director|manager|chief|lead)\b|\b(head|director|chief|vp) of (marketing|growth|brand)\b|(مدير|رئيس) (قسم )?(ال)?تسويق/i,
+  /\b(chief|c[otfi]o|vp|director|head)\b|رئيس|مدير إدارة/i,
+  /\bmanager\b|مدير/i,
+  /\b(supervisor|lead|specialist|coordinator|executive|officer)\b|مشرف|منسق|أخصائي|اخصائي|مسؤول/i];
+const notOwner = /\b(product|process) owner\b|\b(business|channel|hr|account) partner\b|\bpartner (manager|success|relations)\b/gi;
+export const titleTier = (title: string) => {
+  const t = title.replace(notOwner, ' ').replace(/\bvice[- ]president\b/gi, 'vp'), i = TIERS.findIndex(re => re.test(t)), tier = i < 0 ? TIERS.length : i;
+  return /\b(intern|trainee|junior)\b|متدرب/i.test(t) ? TIERS.length : /\b(assistant|deputy)\b|مساعد/i.test(t) ? Math.min(tier + 1, TIERS.length) : tier;
+};
+// The provider matched the country; the address is checked too, so nobody from another country is sent. US towns carry the
+// names of Arab countries and match them as text (Lebanon in Ohio and New Hampshire: 2 of 5 «Lebanese» salons on 2026-10-05),
+// so an address naming a US state or the US is dropped. Any other address we cannot read passes: the provider matched it on
+// location data the address may not show, and Gulf profiles come in forms placeOf cannot parse ('Kuwait City', 'السعودية - جدة').
+const usStates = 'Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming';
+const usCodes = 'AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC';
+const usPlace = new RegExp(`,\\s*((${usStates})(\\s+Area)?|(${usCodes})(\\s+\\d{5}(-\\d{4})?)?)\\s*(,|$)|\\b(US|USA)\\s*$`);
+const inCountries = (lead: Lead, codes: string[]) => {
+  const { code } = placeOf(lead.address), us = usPlace.exec(lead.address || '');
+  return code ? codes.includes(code) : !us || codes.includes(us[4] ?? ''); // 'Tunis, TN' in a Tunisia search is Tunisia
+};
 // A company found by the companies search stands under its own name.
 export const leadName = (lead: Lead) => [lead.firstname, lead.lastname].filter(Boolean).join(' ').trim() || (lead.kind === 'company' || lead.email ? lead.lastCompanyName?.trim() || '' : '');
 const nameKey = (name: string, company: string) => (name + '|' + company).trim().toLowerCase();
@@ -186,14 +226,18 @@ export class IcypeasClient {
     return { ok: true, credits: Math.floor(account.data.credits), low: account.data.credits < LOW_CREDITS };
   }
   // Free: people matching the search across both stages (stage 1 excludes stage 0), shown before the member pays for anything.
+  // reachable: those working at a company with a page and a headcount, the only ones whose email the provider finds (salons in
+  // Lebanon: 483 people, 192 such, 2026-10-05); with a size filter every counted person is one already.
   async count(input: Audience) {
     const queries = Array.from({ length: dataStages(input) }, (_, stage) => queryOf(input, stage)); // free database counts only; web has no known stock
-    const totals = await Promise.all(queries.map(async query => {
+    const counts = (list: object[]) => Promise.all(list.map(async query => {
       const n = z.number().int().nonnegative().safeParse((await this.request(input.mode === 'companies' ? 'find-companies/count' : 'find-people/count', { query })).total);
       if (!n.success) throw new IcypeasError('تغيّرت صيغة نتائج مزوّد البيانات. يلزم مراجعة الربط.');
       return n.data;
     }));
-    return { total: totals.reduce((a, b) => a + b, 0), strict: totals[0], ...(webEnabled(input) ? { supplementary: true } : {}) };
+    const sum = (n: number[]) => n.reduce((a, b) => a + b, 0), totals = await counts(queries), total = sum(totals);
+    const reachable = input.mode === 'companies' ? undefined : input.size === 'all' ? sum(await counts(queries.map(q => ({ ...q, 'currentCompany.headcount': { '>=': 1 } })))) : total;
+    return { total, strict: totals[0], ...(reachable === undefined ? {} : { reachable }), ...(webEnabled(input) ? { supplementary: true } : {}) };
   }
   // One page of PAGE people (0.02 Icypeas credit each). token: continue where the previous page stopped.
   async people(input: Audience, token?: string | null, stage = 0): Promise<{ leads: Lead[]; returned: number; token: string | null }> {
@@ -201,7 +245,10 @@ export class IcypeasClient {
     const parsed = z.array(leadSchema).max(200).safeParse(raw.leads ?? []);
     if (!parsed.success) throw new IcypeasError('تغيّرت صيغة نتائج مزوّد البيانات. يلزم مراجعة الربط.');
     const next = z.object({ token: z.string().min(1) }).safeParse(raw.pagination);
-    return { leads: parsed.data.filter(lead => leadName(lead) && domainOf(lead) && inCountries(lead, input.countries)), returned: parsed.data.length, token: next.success ? next.data.token : null };
+    const leads = parsed.data.filter(lead => leadName(lead) && domainOf(lead) && inCountries(lead, input.countries) && onNiche(input, stage, lead.lastCompanyName));
+    // ponytail: ranks within one page of 25, not a company's whole staff; query decision makers first if owners stay out of reach.
+    leads.sort((a, b) => titleTier(a.lastJobTitle || '') - titleTier(b.lastJobTitle || ''));
+    return { leads, returned: parsed.data.length, token: next.success ? next.data.token : null };
   }
   // Use the provider's native domain discovery. A missing/slow website must not discard a company whose mail server
   // works. These domains enter the same durable, bounded bulk queue as people; no client-side email guessing.
@@ -219,15 +266,16 @@ export class IcypeasClient {
     const next = z.object({ token: z.string().min(1) }).safeParse(raw.pagination);
     const leads: Lead[] = parsed.data.filter(c => !dentalOnly(input) || !supplierDescription.test(c.description || '')).map(c => ({ kind: 'company' as const, firstname: '', lastname: '', profileUrl: c.url, lastJobTitle: '', address: c.address, lastCompanyName: c.name,
       lastCompanyWebsite: c.website, lastCompanyIndustry: c.industry, lastCompanySize: c.numberOfEmployees, email: '' }))
-      .filter(l => l.lastCompanyName?.trim() && siteOf(l) && inCountries(l, input.countries) && (!dentalOnly(input) || !nonClinic.test(l.lastCompanyName)));
+      .filter(l => l.lastCompanyName?.trim() && siteOf(l) && inCountries(l, input.countries) && onNiche(input, stage, l.lastCompanyName) && (!dentalOnly(input) || !nonClinic.test(l.lastCompanyName)));
     return { leads, returned: parsed.data.length, token: next.success ? next.data.token : null };
   }
-  // Three website reads at a time fit one server request; the caller persists the remaining queue before another call.
+  // Six website reads at a time (in parallel, 8 s each) fit one server request; the caller persists the remaining queue before
+  // another call. Three a round made the salons fallback 6 rounds of ~42 s (2026-10-05).
   async published(leads: Lead[]): Promise<Lead[]> {
     return (await Promise.all(leads.map(async lead => {
       if (!lead.publicationPending) return lead;
       const signal = AbortSignal.timeout(8000);
-      const emails = await companyEmails(lead.lastCompanyWebsite || '', this.siteReader, signal, true).catch(() => []);
+      const emails = await companyEmails(lead.lastCompanyWebsite || '', this.siteReader, signal, true, 3, lead.lastCompanyName || '').catch(() => []);
       return { ...lead, email:emails[0]||'', alternateEmails:emails.slice(1), publicationPending: false };
     }))).filter(lead => !!lead.email);
   }

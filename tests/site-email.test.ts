@@ -45,13 +45,13 @@ test('the contact pages are read when the home page has no email; nothing found 
 
 test('published business webmail needs a real mailto link on the business site, and localized contact paths are followed', async () => {
   const html = 'a visitor: visitor@gmail.com <a href="mailto:Clinic@gmail.com">البريد الإلكتروني</a> <a href="mailto:jobs@gmail.com">Jobs</a>';
-  assert.deepEqual(emailsIn(html, 'clinic.example'), []);
-  assert.deepEqual(emailsIn(html, 'clinic.example', true), ['clinic@gmail.com', 'jobs@gmail.com']);
-  assert.equal(bestEmail(emailsIn(html, 'clinic.example', true)), 'clinic@gmail.com');
+  assert.deepEqual(emailsIn(html, 'nour-clinic.example'), []);
+  assert.deepEqual(emailsIn(html, 'nour-clinic.example', true, 'Nour Clinic'), ['clinic@gmail.com', 'jobs@gmail.com']);
+  assert.equal(bestEmail(emailsIn(html, 'nour-clinic.example', true, 'Nour Clinic')), 'clinic@gmail.com');
   const asked: string[] = [];
   const get = async (url: string) => { asked.push(url); return url.endsWith('/ar/pages/contact-us') ? html : '<a href="/ar/pages/contact-us">تواصل معنا</a><a href="https://another.example/contact">partner</a>'; };
-  assert.equal(await companyEmail('https://clinic.example', get, undefined, true), 'clinic@gmail.com');
-  assert(asked.includes('https://clinic.example/ar/pages/contact-us')); assert(asked.every(u => new URL(u).hostname === 'clinic.example'));
+  assert.deepEqual(await companyEmails('https://nour-clinic.example', get, undefined, true, 1, 'Nour Clinic'), ['clinic@gmail.com']);
+  assert(asked.includes('https://nour-clinic.example/ar/pages/contact-us')); assert(asked.every(u => new URL(u).hostname === 'nour-clinic.example'));
 });
 
 test('the site reader never reaches private or internal addresses', async t => {

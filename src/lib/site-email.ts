@@ -3,10 +3,12 @@ import { isIP } from 'node:net';
 import http from 'node:http';
 import https from 'node:https';
 
+import { freeMail } from './contracts';
+import { norm } from './places';
+
 // A company's own contact email, read from its public website (free). The companies search then has the provider verify it.
 export type Get = (url: string, signal?: AbortSignal, sameHost?: boolean) => Promise<string>;
 const CONTACT_PAGES = ['contact-us', 'contact', 'contactus', 'en/contact-us'];
-export const freeMail = /^((gmail|googlemail|hotmail|outlook|live|msn|yahoo|ymail|icloud|aol|protonmail|proton|yandex|gmx)(\.[a-z]{2,3}){1,2}|(me|mac|mail|rocketmail)\.com|emirates\.net\.ae|eim\.ae|batelco\.com\.bh|omantel\.net\.om|qatar\.net\.qa|qualitynet\.net)$/i;
 // Bounded parts (RFC lengths): an unbounded pattern backtracks quadratically, and a 1 MB page could block the server for minutes.
 const emailPattern = /[a-z0-9._%+-]{1,64}@[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63}){0,8}\.[a-z]{2,24}/gi;
 const placeholder = /\.(png|jpe?g|gif|webp|svg|css|js)$|^(you|your|name|user|email|example)@|@(example|domain|company|email|yourdomain|sentry)\./i;
@@ -19,10 +21,24 @@ const cloudflare = (hex: string) => {
   return (hex.slice(2).match(/../g) ?? []).map(b => String.fromCharCode(parseInt(b, 16) ^ key)).join('');
 };
 
-export function emailsIn(html: string, host: string, publishedContact = false): string[] {
+// A webmail address speaks for the business only on a site that is visibly the business's: a word of its name in the domain
+// (guys-dolls-beauty-salon.com), the domain in its name (leahd.com for LEA HD Beauty Concept), or its Arabic name on the page.
+// A developer's portfolio filed as a perfume shop listed his own Gmail (abdallah.mobi, «Mobarak Perfumes», 2026-10-05).
+// Words that name a kind of business, not one business: «Beauty Salon» or «مطعم» proves nothing and names no company (review 2026-10-05).
+export const categoryWords = new Set(['salon', 'salons', 'beauty', 'hair', 'nail', 'nails', 'spa', 'barber', 'barbershop', 'studio', 'lounge', 'center', 'centre',
+  'clinic', 'clinics', 'dental', 'medical', 'restaurant', 'restaurants', 'cafe', 'coffee', 'shop', 'store', 'company', 'group', 'services', 'service', 'trading',
+  'ladies', 'gents', 'private', 'the', 'and', 'al', 'el', 'صالون', 'تجميل', 'مركز', 'عياده', 'مطعم', 'مقهي', 'كافيه', 'محل', 'متجر', 'شركه', 'مؤسسه', 'مجموعه',
+  'خدمات', 'تجاره', 'مشغل', 'نسائي', 'رجالي', 'اسنان', 'طبي', 'حلاق', 'حلاقه', 'سبا']);
+function businessSite(own: string, company: string, text: string) {
+  const name = norm(company), label = own.split('.')[0];
+  return name.split(/[^a-z0-9]+/).some(w => w.length >= 4 && !categoryWords.has(w) && own.includes(w))
+    || (label.length >= 3 && !categoryWords.has(label) && name.replace(/[^\p{L}\p{N}]/gu, '').includes(label))
+    || (/[؀-ۿ]/.test(name) && norm(text).includes(name));
+}
+export function emailsIn(html: string, host: string, publishedContact = false, company = ''): string[] {
   const text = html.replace(/(?:data-cfemail="|email-protection#)([0-9a-f]{6,})/gi, (_, hex: string) => ' ' + cloudflare(hex) + ' ').replace(/&#64;|&commat;/gi, '@');
   const own = ownHost(host);
-  const linkedEmails = new Set(publishedContact ? [...text.matchAll(/href\s*=\s*["']mailto:([^"'?\s]+)/gi)].map(m => m[1].toLowerCase()) : []);
+  const linkedEmails = new Set(publishedContact && businessSite(own, company, text) ? [...text.matchAll(/href\s*=\s*["']mailto:([^"'?\s]+)/gi)].map(m => m[1].toLowerCase()) : []);
   return [...new Set((text.match(emailPattern) ?? []).map(e => e.toLowerCase()))].filter(e => {
     const domain = e.split('@')[1];
     // Webmail qualifies only when the business itself publishes it as a contact link, never as guessed personal data.
@@ -39,7 +55,7 @@ export async function companyEmail(website: string, get: Get = safeGet, signal?:
   return (await companyEmails(website,get,signal,publishedContact,1))[0]||'';
 }
 // Collect a bounded set so an invalid first contact mailbox does not discard the whole business.
-export async function companyEmails(website:string,get:Get=safeGet,signal?:AbortSignal,publishedContact=false,limit=3):Promise<string[]> {
+export async function companyEmails(website:string,get:Get=safeGet,signal?:AbortSignal,publishedContact=false,limit=3,company=''):Promise<string[]> {
   const found=new Set<string>();
   limit=Math.min(3,Math.max(1,Math.floor(limit)||1));
   let origin: URL;
@@ -54,7 +70,7 @@ export async function companyEmails(website:string,get:Get=safeGet,signal?:Abort
     if (signal?.aborted) break;
     const reading=get(new URL(path,origin).href,signal,publishedContact);
     const html=await (signal?abortable(reading,signal):reading).catch(()=>'');
-    for(const email of emailsIn(html,origin.hostname,publishedContact))if(rank(email)<2)found.add(email);
+    for(const email of emailsIn(html,origin.hostname,publishedContact,company))if(rank(email)<2)found.add(email);
     if(found.size>=limit)break;
     // Prefer the site's own contact links, including localized and nested paths, within the same bounded read.
     if (paths.length < 9) for (const match of html.matchAll(/href\s*=\s*["']([^"']+)["']/gi)) {

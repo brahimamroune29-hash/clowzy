@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 import type {Store} from './store';
 
 export type CoverageCounts=Record<string,number>;
-export async function recordCoverage(store:Store,userId:string,searchId:string,phase:'site'|'verification',counts:CoverageCounts){
+export async function recordCoverage(store:Store,userId:string,searchId:string,phase:'site'|'verification'|'delivery',counts:CoverageCounts){
   // Counts only: no addresses, source HTML, keys or private contact data in the audit trail.
   await store.db.run('INSERT INTO audit(id,actor_id,action,detail,created_at) VALUES(?,?,?,?,?)',randomUUID(),userId,'search-coverage',JSON.stringify({searchId,phase,counts}),new Date().toISOString());
 }

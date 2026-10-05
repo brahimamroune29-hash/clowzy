@@ -128,7 +128,7 @@ test('journey: invited member searches, gets the requested emails, pays one cred
   const fake = provider();
   assert.equal((await browser()('auth/accept', { token, password: 'another-password' })).status, 410); // the link works once
   const count = await member('search/count', form(3));
-  assert.deepEqual(count.data, { total: 30, strict: 30, industryLabels: ['التقنية والبرمجيات'], industries: SECTOR_INDUSTRIES['التقنية والبرمجيات'] }, 'English pages show the provider names');
+  assert.deepEqual(count.data, { total: 30, strict: 30, reachable: 30, industryLabels: ['التقنية والبرمجيات'], industries: SECTOR_INDUSTRIES['التقنية والبرمجيات'] }, 'English pages show the provider names');
   const input = form(3), started = await member('search', input);
   assert.equal(started.status, 200);
   assert.equal((await member('search', input)).data.id, started.data.id); // a double click is the same search
