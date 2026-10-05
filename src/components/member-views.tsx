@@ -10,7 +10,7 @@ import type { ViewProps } from './platform';
 import { SearchProgress } from './search-progress';
 import { Badge,Button,Empty,Field,Forward,Modal,Notice,Open,PageHeading } from './ui';
 import { useLang,useNames,useT } from './lang';
-import { NichePicker } from './niche-picker';
+import { NichePicker, useCategories } from './niche-picker';
 
 // A search's state in words, the same on the dashboard and in the history.
 function SearchBadge({s}:{s:Search}){
@@ -82,6 +82,7 @@ export function SearchView({data,reload,notify}:ViewProps){
   const [otherDraft,setOtherDraft]=useState(()=>fieldOf(filters.sector)?'':filters.sector),[other,setOther]=useState(()=>!!filters.sector&&!fieldOf(filters.sector));
   const [editing,setEditing]=useState(false);
   const [nichePending,setNichePending]=useState(false);
+  const cats=useCategories(),typed=other&&!cats?.providerCategory(filters.sector); // a picked provider category is listed, not typed
   const listedTitle=(title:string)=>!title||(titles as readonly string[]).includes(title);
   const [titleOther,setTitleOther]=useState(()=>!listedTitle(filters.title)),[titleDraft,setTitleDraft]=useState(()=>listedTitle(filters.title)?'':filters.title);
   const [describe,setDescribe]=useState(''),[thinking,setThinking]=useState(false),[aiNote,setAiNote]=useState('');
@@ -150,7 +151,7 @@ export function SearchView({data,reload,notify}:ViewProps){
   }
   const status=nichePending?t('اختر النشاط من الاقتراحات أو اعتمد نشاطًا مخصصًا.','Choose an activity from the suggestions or apply a custom activity.'):pending||filters.sector.length<2?t('اختر النشاط، أو اكتب نشاطك ثم اضغط «اعتماد».','Choose an activity, or type your own and press “Apply”.')
     :!currentMatch?t('نحسب عدد ','Counting ')+who+'…':currentMatch.error?currentMatch.error
-    :(other&&currentMatch.industryLabels?.length?t('سنبحث في: ','We will search in: ')+(lang==='en'?currentMatch.industries??[]:currentMatch.industryLabels).join(lang==='en'?', ':'، ')+'. ':'')
+    :(typed&&currentMatch.industryLabels?.length?t('سنبحث في: ','We will search in: ')+(lang==='en'?currentMatch.industries??[]:currentMatch.industryLabels).join(lang==='en'?', ':'، ')+'. ':'')
       +(currentMatch.total===0&&!currentMatch.supplementary?t('لا يوجد ما يطابق هذه المعايير. وسّع البحث: احذف المدينة أو حجم الشركة.','Nothing matches. Widen the search: remove the city or company size.')
       :t('عدد '+who,companies?'Matching company records':'Matching people records')+': '+number(currentMatch.total!)+'. '+t('هذه سجلات مرشحة، وليست إيميلات متحققة. العدد المطلوب هدف للبحث، والمتاح فعليًا يتحدد بعد التحقق.','These are candidate records, not verified emails. Your requested count is a search target; availability is established after verification.')+(currentMatch.supplementary?' '+t('عند نقص النتائج، نبحث أيضًا في مواقع الشركات المطابقة ضمن حد البحث المتاح.','If results fall short, we also search matching company websites within the search allowance.'):few?' '+t('المصدر الحالي يحتوي سجلات أقل من العدد المطلوب.','The current source has fewer records than your target.') :''));
   function chooseMethod(next:'manual'|'ai'|null){
@@ -173,7 +174,7 @@ export function SearchView({data,reload,notify}:ViewProps){
         <small>{companies?t('بريد عمل عام تابع للشركة، بعد العثور عليه والتحقق منه.','A verified business email belonging to the company.'):t('إيميل العمل لشخص داخل الشركة. إن لم يكفِ، نكمّل بإيميلات الشركات نفسها.','A person’s work email. If not enough, we fill in with the companies’ own emails.')}</small></div>
       <NichePicker value={filters.sector} onChange={sector=>apply({sector})} onPendingChange={setNichePending} disabled={busy||thinking}/>
       <div>
-        {other?<div className="field"><span>{t('اكتب نشاطك','Your activity')}</span><div className="other-row"><input aria-label={t('اكتب نشاطك المخصص','Type a custom activity')} value={otherDraft} onChange={e=>setOtherDraft(e.target.value)} maxLength={60} placeholder={t('مثلًا: محلات العطور','e.g. perfume shops')} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();if(otherDraft.trim().length>=2)change({sector:otherDraft.trim()});}}}/>
+        {typed?<div className="field"><span>{t('اكتب نشاطك','Your activity')}</span><div className="other-row"><input aria-label={t('اكتب نشاطك المخصص','Type a custom activity')} value={otherDraft} onChange={e=>setOtherDraft(e.target.value)} maxLength={60} placeholder={t('مثلًا: محلات الساعات','e.g. watch shops')} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();if(otherDraft.trim().length>=2)change({sector:otherDraft.trim()});}}}/>
           <Button type="button" variant="secondary" disabled={otherDraft.trim().length<2||!pending} onClick={()=>change({sector:otherDraft.trim()})}>{pending?t('اعتماد','Apply'):t('معتمد','Applied')}</Button></div></div>
         :null}
       </div>
@@ -245,7 +246,7 @@ export function SearchView({data,reload,notify}:ViewProps){
         {method==='ai'&&editing&&manualControls}
         {!data.provider?.configured?<Notice error>{t('البحث غير متاح حاليًا. تواصل مع مالك المنصة.','Search is unavailable right now. Contact the platform owner.')}</Notice>
           :ready&&<div className={'match-count'+(currentMatch?.error||few||pending?' warn':'')} role="status"><UsersThree size={18}/><span>{status}</span></div>}
-        {ready&&other&&currentMatch?.industryLabels?.length&&<p className="search-footnote">{t('تصنيف مزوّد البيانات قد يكون أوسع من وصفك. راجعه قبل البدء.','The data provider’s category may be broader than your description. Review it before starting.')}</p>}
+        {ready&&typed&&currentMatch?.industryLabels?.length&&<p className="search-footnote">{t('تصنيف مزوّد البيانات قد يكون أوسع من وصفك. راجعه قبل البدء.','The data provider’s category may be broader than your description. Review it before starting.')}</p>}
         {error&&<Notice error>{error}</Notice>}
         {maxCount<1?<Notice error>{t('لا يوجد رصيد متاح. تواصل مع مالك المنصة لإضافة رصيد.','No credits available. Contact the platform owner to add credits.')}</Notice>:!validCount&&<Notice error>{t('العدد المتاح حاليًا من 1 إلى '+maxCount+' بريد.','You can request 1–'+maxCount+' emails right now.')} {filters.count>maxCount&&<button type="button" className="text-button" onClick={()=>change({count:maxCount})}>{t('استخدم '+maxCount,'Use '+maxCount)}</button>}</Notice>}
         {ready&&<><p className="search-footnote">{t('كريدت واحد لكل بريد جديد يصلك. لا خصم للتكرار أو النتائج غير المتاحة.','One credit per new email delivered. No charge for duplicates or unavailable results.')}</p>

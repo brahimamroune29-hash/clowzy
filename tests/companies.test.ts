@@ -74,7 +74,7 @@ test('dental coverage includes clinics classified as healthcare without widening
   assert.equal(stageCount(input),4);assert.equal(stageCount({...input,mode:'people'}),2);
   const exact=companiesQuery(input),extra=companiesQuery(input,2),broad=companiesQuery(input,3);
   assert.deepEqual(extra.location,exact.location);assert.deepEqual(extra.headcount,exact.headcount);
-  assert.deepEqual(extra.industry.exclude,['Dentists']);assert(extra.keyword?.include.includes('dental'));
+  assert.deepEqual(extra.industry.exclude,['Dentists']);assert(extra.keyword?.include?.includes('dental'));
   assert(extra.name?.exclude.includes('lab'));assert(extra.name?.exclude.includes('course'));
   assert.deepEqual(broad.location,companiesQuery(input,1).location);
   assert.equal(JSON.parse(cursorKey(input)).queries.length,4);

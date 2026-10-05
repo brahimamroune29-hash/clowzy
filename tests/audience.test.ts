@@ -21,7 +21,7 @@ test('every listed sector and title maps to exact Icypeas names; the lists the m
     for (const n of all) assert.ok(INDUSTRIES.includes(n), field + ': ' + n);
     assert.equal(fieldOf(field), field); for (const s of fields[field]) assert.equal(fieldOf(s), field);
   }
-  assert.equal(fieldOf('محلات العطور'), '', 'the member\'s own words belong to no field');
+  assert.equal(fieldOf('محلات الساعات'), '', 'the member\'s own words belong to no field');
   for (const [sector, names] of Object.entries(SECTOR_INDUSTRIES)) for (const n of names) assert.ok(INDUSTRIES.includes(n), sector + ': ' + n);
   assert.deepEqual(Object.keys(TITLE_VARIANTS), [...titles]);
   for (const variants of Object.values(TITLE_VARIANTS)) assert.ok(variants.some(v => /^[A-Za-z]/.test(v)) && variants.some(v => /[؀-ۿ]/.test(v)), 'Arabic and English titles together');
@@ -65,9 +65,9 @@ test('a typed sector maps to exact industry names only; nonsense or an AI outage
   const store = await testStore();
   const ai = (answer: { name: string; ar: string }[] | Error): AiMapper => ({ ...noAi, sector: async () => { if (answer instanceof Error) throw answer; return answer; } });
   try {
-    const perfume = await resolveAudience(store, form({ sector: 'محلات العطور' }), ai([{ name: 'Retail Health and Personal Care Products', ar: 'متاجر العناية الشخصية' }, { name: 'Perfume Kingdom', ar: 'مخترع' }, { name: 'Cosmetics', ar: 'مستحضرات التجميل' }]));
+    const perfume = await resolveAudience(store, form({ sector: 'محلات الساعات' }), ai([{ name: 'Retail Health and Personal Care Products', ar: 'متاجر العناية الشخصية' }, { name: 'Perfume Kingdom', ar: 'مخترع' }, { name: 'Cosmetics', ar: 'مستحضرات التجميل' }]));
     assert.deepEqual(perfume.industries, ['Retail Health and Personal Care Products', 'Cosmetics'], 'names outside the provider list are dropped');
-    assert.deepEqual(perfume.industryLabels, ['متاجر العناية الشخصية', 'مستحضرات التجميل']);
+    assert.deepEqual(perfume.industryLabels, ['محلات منتجات الصحة والعناية الشخصية', 'مستحضرات التجميل']);
     const cafes = await resolveAudience(store, form({ sector: 'مطاعم وكافيهات' }), ai([{ name: 'Restaurants', ar: 'المطاعم' }, { name: 'Bars, Taverns, and Nightclubs', ar: 'الحانات والنوادي الليلية' }]));
     assert.deepEqual(cafes.industryLabels, ['المطاعم'], 'alcohol, nightlife and gambling are never searched: they embarrass a Gulf member');
     let asked = 0;
@@ -76,7 +76,7 @@ test('a typed sector maps to exact industry names only; nonsense or an AI outage
     assert.equal(asked, 1, 'an answer with no usable industry is cached too: nonsense is not paid for on every field change');
     await assert.rejects(resolveAudience(store, form({ sector: 'محلات الورد' }), ai(new Error('down'))), (e: AppError) => e.status === 503);
     const english = await resolveAudience(store, form({ sector: 'متاجر الهدايا' }), ai([{ name: 'Retail Office Supplies and Gifts', ar: 'Gift shops' }]));
-    assert.deepEqual(english.industryLabels, ['متاجر الهدايا'], 'members read Arabic only: a label without Arabic falls back to their own words');
+    assert.deepEqual(english.industryLabels, ['محلات القرطاسية والهدايا'], 'members read the picker\'s fixed Arabic name, never the model\'s English');
     const listed = await resolveAudience(store, form({ sector: 'عيادات الأسنان' }), noAi);
     assert.deepEqual(listed.industries, ['Dentists']);
     const whole = await resolveAudience(store, form({ sector: 'التعليم والتدريب' }), noAi);

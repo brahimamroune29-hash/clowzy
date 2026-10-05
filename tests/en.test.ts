@@ -29,7 +29,7 @@ test('messages built from parts and numbers come out whole in English', () => {
     'حُسب فقط ما وصل. بلغت حد البحث اليومي لحسابك. يمكنك البحث مجددًا بعد 24 ساعة من أول بحث اليوم، أو تواصل مع مالك المنصة.',
   ];
   for (const ar of cases) assert.ok(!arabic.test(english(ar)), english(ar));
-  assert.equal(english('لم نجد مجالًا مهنيًا يطابق «محلات العطور». جرّب كلمات أوضح أو اختر من القائمة.'), 'No business field matches “محلات العطور”. Try clearer words or pick from the list.', 'the member\'s own words stay as typed');
+  assert.equal(english('لم نجد مجالًا مهنيًا يطابق «محلات الساعات». جرّب كلمات أوضح أو اختر من القائمة.'), 'No business field matches “محلات الساعات”. Try clearer words or pick from the list.', 'the member\'s own words stay as typed');
   assert.deepEqual(englishBody({ error: 'راجع البيانات المدخلة.', searches: [{ title: 'العقارات · السعودية', message: 'حُسب فقط ما وصل.' }] }),
     { error: 'Check what you entered.', searches: [{ title: 'العقارات · السعودية', message: 'You paid only for what arrived.' }] }, 'only errors and messages; data stays');
 });
@@ -39,7 +39,7 @@ test('the assistant\'s search is checked against the platform\'s lists before th
     { mode: 'people', field: 'الصحة والطب', specialty: 'عيادات الأسنان', other: '', countries: ['AE'], city: 'Dubai', title: 'مدير العيادة أو المدير الطبي', size: '11-50', count: 50 });
   const fixed = cleanSearch({ field: 'Health', specialty: 'المدارس', countries: ['SA', 'AE'], city: 'Riyadh', size: 'huge', mode: 'x' })!;
   assert.deepEqual([fixed.field, fixed.specialty, fixed.city, fixed.size, fixed.mode, fixed.count], ['التعليم والتدريب', 'المدارس', '', 'all', 'people', 10], 'a specialty finds its field; a city needs one country; bad values fall back');
-  assert.equal(cleanSearch({ field: 'غير موجود', other: 'محلات العطور', countries: ['KW'] })!.other, 'محلات العطور', 'no field fits: the member\'s own words');
+  assert.equal(cleanSearch({ field: 'غير موجود', other: 'محلات الساعات', countries: ['KW'] })!.other, 'محلات الساعات', 'no field fits: the member\'s own words');
   assert.equal(cleanSearch({ field: '', other: '' }), undefined, 'nothing to search for');
   assert.equal(cleanSearch({ mode: 'companies', field: 'العقارات والبناء', title: 'مدير التسويق' })!.title, '', 'a company has no job title');
 });

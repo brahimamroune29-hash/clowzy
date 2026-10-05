@@ -246,10 +246,10 @@ test('journey: member closes the tab mid-search -> the next search closes it wit
 test('journey: no credits left -> the search is refused before anything is spent', async t => {
   const { member } = await setup(t, 0);
   const fake = provider();
-  const r = await member('search', {...form(1), sector: 'محلات العطور'});
+  const r = await member('search', {...form(1), sector: 'محلات الساعات'});
   assert.equal(r.status, 400);
   assert.equal(fake.submits(), 0);
-  const count = await member('search/count', { ...form(1), sector: 'محلات العطور' });
+  const count = await member('search/count', { ...form(1), sector: 'محلات الساعات' });
   assert.equal(count.status, 400, 'no count (and no paid AI mapping) for a member who cannot search');
   assert.match(count.data.error, /رصيدك صفر/);
   assert.equal(fake.calls.length, 0, 'nothing reached the provider or the AI');
@@ -284,10 +284,10 @@ test('journey: owner deactivates a member mid-search -> signed out, search cance
 test('journey: several Gulf countries in one search, and «أخرى» typed in Arabic for the sector and the title', async t => {
   const { member } = await setup(t);
   const fake = provider();
-  const typed = { ...form(2), countries: ['SA', 'AE', 'QA'], sector: 'محلات العطور', title: 'مدير مستودع' };
+  const typed = { ...form(2), countries: ['SA', 'AE', 'QA'], sector: 'محلات الساعات', title: 'مدير مستودع' };
   const count = await member('search/count', typed);
   assert.equal(count.status, 200);
-  assert.deepEqual(count.data.industryLabels, ['متاجر العناية الشخصية', 'مستحضرات التجميل'], 'the member sees what their words were mapped to');
+  assert.deepEqual(count.data.industryLabels, ['محلات منتجات الصحة والعناية الشخصية', 'مستحضرات التجميل'], 'the member sees what their words were mapped to, by the picker\'s fixed names');
   const q = fake.queries.find(x => x?.profileLocation)!;
   assert.deepEqual(q.profileLocation, { include: ['AE', 'QA', 'SA'] });
   assert.deepEqual(q['currentCompany.industry']!.include, ['Retail Health and Personal Care Products', 'Cosmetics']);
@@ -297,7 +297,7 @@ test('journey: several Gulf countries in one search, and «أخرى» typed in A
   const done = await finish(t, member, started.data.id);
   assert.equal(done.delivered, 2);
   assert.equal(fake.calls.filter(c => c.startsWith('https://openrouter.ai/')).length, aiCalls, 'the search reuses the mapping: no second AI call, same query');
-  assert.match(done.title, /محلات العطور · السعودية، الإمارات، قطر/);
+  assert.match(done.title, /محلات الساعات · السعودية، الإمارات، قطر/);
 });
 
 test('journey: the AI is unavailable -> «أخرى» explains it; listed options keep working', async t => {

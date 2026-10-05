@@ -1,7 +1,8 @@
-import { type FieldName, fields, type LegacySpecialty, type Resolved, type SearchInput, sectors, type Specialty, titles, withCountries } from './contracts';
+import { type FieldName, fields, legacyFields, type LegacySpecialty, type Resolved, type SearchInput, sectors, type Specialty, titles, withCountries } from './contracts';
 import { nicheOf } from './niches';
 import { resolvedSchema } from './schemas';
 import { INDUSTRIES } from './industries';
+import { INDUSTRY_AR, providerCategory } from './industries-ar';
 import { norm } from './places';
 import { AppError, type Store } from './store';
 import { type AiMapper, openRouter } from './ai';
@@ -59,11 +60,26 @@ const LEGACY_INDUSTRIES: Record<LegacySpecialty, string[]> = {
 export const SECTOR_INDUSTRIES = Object.fromEntries(sectors.map(s => [s,
   nicheOf(s) ? [...nicheOf(s)!.industries] : LEGACY_INDUSTRIES[s as LegacySpecialty],
 ])) as Record<Specialty,string[]>;
-// A whole field searches all its specialties' provider names; «التعليم والتدريب» adds the general education ones (it was a
-// single sector before the fields, and old searches still name it).
-const extra: Partial<Record<FieldName, string[]>> = { 'التعليم والتدريب': ['Education', 'Education Management'] };
-export const fieldIndustries = (field: FieldName) => [...new Set([...(fields[field] as readonly Specialty[]).flatMap(s => SECTOR_INDUSTRIES[s]), ...(extra[field] ?? [])])];
-const listed = (sector: string) => Object.hasOwn(SECTOR_INDUSTRIES, sector) ? SECTOR_INDUSTRIES[sector as Specialty] : Object.hasOwn(fields, sector) ? fieldIndustries(sector as FieldName) : undefined;
+// A whole field searches its specialties' provider names plus a fixed list: the names the first 42 activities added (frozen
+// 2026-10-05, so the cursors of saved field searches stay valid and later activities never widen a field), and for
+// «التعليم والتدريب» the general education ones (it was a single sector before the fields, and old searches still name it).
+const extra: Partial<Record<FieldName, string[]>> = {
+  'الصحة والطب': ['Wholesale Machinery'],
+  'التقنية والاتصالات': ['Computer and Network Security', 'Data Security Software Products'],
+  'العقارات والبناء': ['Glass Product Manufacturing', 'Architectural and Structural Metal Manufacturing', 'Building Finishing Contractors'],
+  'التجارة والمتاجر': ['Consumer Goods Rental', 'Travel Arrangements', 'Luxury Goods & Jewelry', 'Wholesale Food and Beverage', 'Wholesale Machinery'],
+  'التسويق والإعلام': ['Photography'],
+  'المال والخدمات المهنية': ['Operations Consulting'],
+  'التعليم والتدريب': ['Education', 'Education Management'],
+  'الصناعة والطاقة والنقل': ['Solar Electric Power Generation', 'Building Equipment Contractors', 'HVAC and Refrigeration Equipment Manufacturing', 'Janitorial Services'],
+};
+export const fieldIndustries = (field: FieldName) => [...new Set([...(legacyFields[field] as readonly Specialty[]).flatMap(s => SECTOR_INDUSTRIES[s]), ...(extra[field] ?? [])])];
+const listed = (sector: string) => {
+  if (Object.hasOwn(SECTOR_INDUSTRIES, sector)) return SECTOR_INDUSTRIES[sector as Specialty];
+  if (Object.hasOwn(fields, sector)) return fieldIndustries(sector as FieldName);
+  const category = providerCategory(sector);
+  return category ? [category] : undefined;
+};
 // Listed titles -> what profiles say, Arabic and English together (Arabic alone finds a fraction: 896 vs 3,311 in Saudi Arabia).
 export const TITLE_VARIANTS: Record<(typeof titles)[number], string[]> = {
   'المالك أو المؤسس': ['Owner', 'Founder', 'Co-Founder', 'مالك', 'مؤسس'],
@@ -115,7 +131,7 @@ export async function resolveAudience<T extends AudienceForm>(store: Store, inpu
     const pick = (list: { name: string; ar: string }[]) => list.filter((x, i) => known.has(x.name) && list.findIndex(y => y.name === x.name) === i).slice(0, 5);
     const picked = pick(await cached(store, 'sector', input.sector, () => ai.sector(input.sector), userId).catch(e => { throw aiDown('sector', e); }));
     if (!picked.length) throw new AppError(`لم نجد مجالًا مهنيًا يطابق «${input.sector}». جرّب كلمات أوضح أو اختر من القائمة.`, 400);
-    industries = picked.map(x => x.name); industryLabels = picked.map(x => arabic.test(x.ar) ? x.ar.trim().slice(0, 80) : input.sector); // members read Arabic only
+    industries = picked.map(x => x.name); industryLabels = picked.map(x => INDUSTRY_AR[x.name]); // the picker's fixed Arabic names, whatever the model wrote
   }
   const title = input.mode === 'companies' ? '' : input.title.trim(); // a company has no job title: never sent to the AI
   let titles: string[] = [];

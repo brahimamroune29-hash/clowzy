@@ -59,12 +59,19 @@ async function main() {
     let invitation;
     await check('invite member, copy link, cancel dialog and filters',async()=>{
       await owner.getByRole('link',{name:'Invite a member',exact:true}).click();await heading(owner,'Invite a new member');await close(owner);
-      await owner.getByRole('button',{name:'Invite a member',exact:true}).click();await owner.getByLabel('Member name',{exact:true}).fill('Browser Member');await owner.getByLabel('Email',{exact:true}).fill('member@browser.invalid');await owner.getByLabel('Starting credits',{exact:true}).fill('60');await owner.getByRole('button',{name:'Create invitation link',exact:true}).click();
+      await owner.getByRole('button',{name:'Invite a member',exact:true}).click();await owner.getByLabel('Member name',{exact:true}).fill('Browser Member');await owner.getByLabel('Starting credits',{exact:true}).fill('60');await owner.getByRole('button',{name:'Create invitation link',exact:true}).click();
       invitation=await owner.getByLabel('Invitation link',{exact:true}).inputValue();await owner.getByRole('button',{name:'Copy link',exact:true}).click();await owner.getByText('Link copied.',{exact:true}).waitFor();await close(owner);
     });
     const memberContext=await context(), member=await page(memberContext);
-    await check('invitation acceptance and mandatory terms gate',async()=>{
-      await member.goto(invitation);await member.getByRole('button',{name:'English',exact:true}).click();await heading(member,'Welcome');await member.getByLabel('New password').fill(PASSWORD);await member.getByRole('button',{name:'Activate account',exact:true}).click();await heading(member,'Before you start');failures=['auth/logout'];await member.getByRole('button',{name:'Sign out',exact:true}).click();await member.getByRole('alert').filter({hasText:'Temporary test outage'}).waitFor();failures=[];assert(await member.getByRole('button',{name:'Accept and continue',exact:true}).isDisabled());await member.getByRole('checkbox').check();await member.getByRole('button',{name:'Accept and continue',exact:true}).click();await heading(member,'Hello Browser');
+    await check('invitation acceptance: the invited member picks the sign-in email and agrees to the terms',async()=>{
+      await member.goto(invitation);await member.getByRole('button',{name:'English',exact:true}).click();await heading(member,'Welcome');await member.getByLabel('Email',{exact:true}).fill('member@browser.invalid');await member.getByLabel('New password').fill(PASSWORD);assert(await member.getByRole('button',{name:'Create account and sign in',exact:true}).isDisabled());await member.getByRole('checkbox').check();await member.getByRole('button',{name:'Create account and sign in',exact:true}).click();await heading(member,'Hello Browser');
+    });
+    await check('activity picker: narrow niches and every provider category, which counts as a listed choice',async()=>{
+      await member.goto(APP+'/search?method=manual');await member.getByLabel('Business activity to reach').click();
+      await member.getByLabel('Search business activities').fill('salon');await member.getByRole('option',{name:/Beauty salons/}).waitFor();
+      await member.getByLabel('Search business activities').fill('personal care services');await member.getByRole('option',{name:/Personal Care Services.*Data provider category/}).click();
+      assert.match(await member.getByLabel('Business activity to reach').innerText(),/Personal Care Services/);assert.equal(await member.getByLabel('Type a custom activity').count(),0);
+      assert(await member.getByLabel('Choose an additional category').locator('optgroup[label="All data provider categories"] option').count()>400);
     });
     const user=await store.db.get('select id from users where email=?','member@browser.invalid');
     // Existing results exercise pagination and exports without paying a supplier.

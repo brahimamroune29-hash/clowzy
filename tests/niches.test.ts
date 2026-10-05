@@ -2,13 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { assist, cleanSearch } from '../src/lib/ai';
-import { audienceOf, resolveAudience } from '../src/lib/audience';
+import { audienceOf, fieldIndustries, resolveAudience } from '../src/lib/audience';
 import { fieldOf, labelsEn, type AssistContext } from '../src/lib/contracts';
 import { companiesQuery, cursorKey, peopleQuery } from '../src/lib/icypeas';
 import { findNiches, knownNiche, niches } from '../src/lib/niches';
 import { groundedCompanies } from '../src/lib/web-companies';
 import { testStore } from './pg';
 import { catalogMatches, rememberCandidates } from '../src/lib/catalog';
+import { INDUSTRIES } from '../src/lib/industries';
+import { findCategories, INDUSTRY_AR, providerCategories } from '../src/lib/industries-ar';
 
 const context:AssistContext={mode:'companies',sector:'عيادات الأسنان',countries:['SA'],city:'Riyadh',title:'',size:'all',count:50};
 const noAi={sector:async()=>{throw new Error('A listed activity must not use the model');},title:async()=>{throw new Error('No title translation needed');}};
@@ -18,7 +20,7 @@ test('every client activity and video example prepares the exact niche without a
   t.mock.method(globalThis,'fetch',async()=>{throw new Error('Listed activities must work when the AI is unavailable');});
   const store=await testStore();
   try{
-    assert.equal(niches.length,42);assert.equal(new Set(niches.map(n=>n.label)).size,42);
+    assert.equal(niches.length,89);assert.equal(new Set(niches.map(n=>n.label)).size,89);
     for(const n of niches){
       assert.equal(fieldOf(n.label),n.field);assert.ok(labelsEn[n.label]);
       const ar=await assist([{role:'user',content:n.label}],'ar',context);
@@ -40,14 +42,14 @@ test('activity suggestions search Arabic spelling variants, English aliases and 
   assert.ok(findNiches('معدات طبية').some(n=>n.label==='مورّدو المعدات الطبية'));
   assert.ok(findNiches('', 'التعليم والتدريب').every(n=>n.field==='التعليم والتدريب'));
   assert.deepEqual(findNiches('شيء غير موجود'),[]);assert.equal(knownNiche('أخصائيي التغذية')?.label,'أخصائيو التغذية');
-  assert.equal(cleanSearch({other:'محلات العطور',countries:['SA']})?.other,'محلات العطور');
+  assert.equal(cleanSearch({other:'محلات الساعات',countries:['SA']})?.other,'محلات الساعات');
 });
 
 test('narrow activities filter both people and companies by documented company keywords, without widening the city',()=>{
   const scopes=['عيادات التجميل','أخصائيو التغذية','شركات الطاقة الشمسية','تأجير السيارات','مورّدو المعدات الطبية'].map(s=>audienceOf(JSON.stringify(form(s))));
   for(const scope of scopes){
     const companies=companiesQuery(scope),people=peopleQuery({...scope,mode:'people'});
-    assert.ok(companies.keyword?.include.length);assert.deepEqual(people['currentCompany.keyword']?.include,companies.keyword?.include);
+    assert.ok(companies.keyword?.include?.length);assert.deepEqual(people['currentCompany.keyword']?.include,companies.keyword?.include);
     assert.deepEqual(companies.location.include,['Riyadh, SA']);assert.deepEqual(people.profileLocation.include,['Riyadh, SA']);
   }
   assert.notEqual(cursorKey(scopes[0]),cursorKey(scopes[1]),'overlapping provider categories must not share cursors across different niches');
@@ -70,4 +72,42 @@ test('shared industry-only inventory cannot bypass a specific activity filter',a
   await rememberCandidates(store,[{kind:'company',name:'General Practice',company:'General Practice',email:'info@general.example',title:'',sector:'Medical Practices',country:'السعودية',city:'Riyadh',website:'https://general.example',size:'12',source:'clowzy',email_status:'VERIFIED'}]);
   assert.equal((await catalogMatches(store,user.id,audienceOf(JSON.stringify(form('عيادات التجميل'))),50)).length,0);
   assert.equal((await catalogMatches(store,user.id,audienceOf(JSON.stringify(form('العيادات الخاصة'))),50)).length,1,'a general clinic request still uses matching inventory when sharing is explicitly enabled');
+});
+
+test('beauty salons: salon words in every category except unrelated ones, then personal-care companies without those words',async()=>{
+  const scope=audienceOf(JSON.stringify({...form('صالونات التجميل النسائية'),mode:'people',countries:['LB'],city:''}));
+  assert.deepEqual(scope.industries,['Personal Care Services']);
+  const [s0,s1,s2,s3]=[0,1,2,3].map(stage=>peopleQuery(scope,stage)),words=s0['currentCompany.keyword']?.include;
+  assert.ok(words?.includes('صالون')&&words.includes('beauty salon'));
+  assert.equal(s0['currentCompany.industry'].include,undefined,'most salons carry no provider category at all');
+  for(const never of ['Hotels and Motels','Bars, Taverns, and Nightclubs','Breweries','Distilleries','Gambling Facilities and Casinos','Wholesale Alcoholic Beverages','Wine & Spirits','Wineries'])assert.ok(s0['currentCompany.industry'].exclude?.includes(never),never);
+  assert.deepEqual([s0.profileLocation,s1.profileLocation,s2.profileLocation,s3.profileLocation].map(l=>l.exclude?'broad':'strict'),['strict','broad','strict','broad']);
+  for(const s of [s2,s3]){assert.deepEqual(s['currentCompany.industry'],{include:['Personal Care Services']});assert.deepEqual(s['currentCompany.keyword'],{exclude:words},'disjoint from the salon stages');}
+  const companies=companiesQuery({...scope,mode:'companies'},2);
+  assert.deepEqual(companies.industry,{include:['Personal Care Services']});assert.deepEqual(companies.keyword,{exclude:words});
+  assert.equal(JSON.parse(cursorKey(scope)).length,4);
+  assert.equal(peopleQuery(audienceOf(JSON.stringify(form('عيادات التجميل'))),1)['currentCompany.industry'].include?.length,2,'other niches keep their two stages and categories');
+});
+
+test('every provider category can be picked by its Arabic name and searches exactly that category, without a model',async()=>{
+  const store=await testStore();
+  try{
+    const arabic=Object.values(INDUSTRY_AR);
+    assert.deepEqual(Object.keys(INDUSTRY_AR),[...INDUSTRIES]);assert.equal(new Set(arabic).size,arabic.length);
+    for(const ar of arabic)assert.match(ar,/^[؀-ۿ\s()،-]{2,60}$/);
+    assert.ok(!INDUSTRIES.some(n=>/wine|spirits/i.test(n)),'alcohol is never searched');
+    const picked=providerCategories.find(c=>c.en==='Personal Care Services')!;
+    assert.deepEqual((await resolveAudience(store,form(picked.ar),noAi)).industries,['Personal Care Services']);
+    assert.equal(fieldOf(picked.ar),'','a category is its own choice, outside the fields');
+    for(const c of providerCategories)assert.equal(fieldOf(c.ar),'','names already in the lists stay with the list');
+    assert.ok(providerCategories.length>400);
+    assert.deepEqual(findCategories('personal care').map(c=>c.en).sort(),['Personal Care Product Manufacturing','Personal Care Services','Retail Health and Personal Care Products']);
+    assert.ok(findCategories(INDUSTRY_AR['Dentists'].slice(0,6)).some(c=>c.en==='Dentists')||fieldOf(INDUSTRY_AR['Dentists'])!=='');
+  }finally{await store.close();}
+});
+
+test('new activities never widen a whole field: «all health» stays the health categories',()=>{
+  const health=fieldIndustries('الصحة والطب'),retail=fieldIndustries('التجارة والمتاجر');
+  for(const n of ['Retail','Personal Care Services','Alternative Medicine'])assert.ok(!health.includes(n),n);
+  for(const n of ['Consumer Services','Wholesale Motor Vehicles and Parts'])assert.ok(!retail.includes(n),n);
 });

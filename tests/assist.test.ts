@@ -29,7 +29,7 @@ test('model patches preserve context, explanations do not mutate, and limits are
   const answers:unknown[]=[
     {reply:'تم.',action:'prepare',choices:[],search:{countries:['SA']}},
     {reply:'تم.',action:'prepare',choices:[],search:{mode:'people',title:'المالك أو المؤسس'}},
-    {reply:'تم.',action:'prepare',choices:[],search:{other:'محلات العطور'}},
+    {reply:'تم.',action:'prepare',choices:[],search:{other:'محلات الساعات'}},
     {reply:'كريدت واحد لكل بريد جديد.',action:'answer',choices:[],search:{count:50}},
     {reply:'تم.',action:'prepare',choices:[],search:{count:1000}},
     {reply:'من تريد الوصول إليه؟',action:'clarify',choices:['أصحاب العيادات'],search:null},
@@ -44,8 +44,8 @@ test('model patches preserve context, explanations do not mutate, and limits are
   assert.deepEqual([country.specialty,country.countries,country.city],['عيادات الأسنان',['SA'],'']);
   const owners=(await assist([{role:'user',content:'أريد المالكين'}],'ar',context)).search!;
   assert.equal(owners.mode,'people');assert.equal(owners.specialty,'عيادات الأسنان');assert.equal(owners.title,'المالك أو المؤسس');
-  const niche=(await assist([{role:'user',content:'محلات العطور'}],'ar',context)).search!;
-  assert.deepEqual([niche.field,niche.specialty,niche.other],['','','محلات العطور']);
+  const niche=(await assist([{role:'user',content:'محلات الساعات'}],'ar',context)).search!;
+  assert.deepEqual([niche.field,niche.specialty,niche.other],['','','محلات الساعات']);
   assert.equal((await assist([{role:'user',content:'كيف تحسبون رصيد عيادات الأسنان؟'}],'ar',context)).search,undefined);
   const large=await assist([{role:'user',content:'أريد 1000 بريد من العيادات'}],'ar',context);
   assert.equal(large.search?.count,50);assert.match(large.reply,/1 إلى 50/);

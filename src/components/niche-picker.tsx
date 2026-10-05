@@ -5,10 +5,22 @@ import { fields, type FieldName } from '@/lib/contracts';
 import { findNiches, nicheOf, niches } from '@/lib/niches';
 import { useLang, useNames, useT } from './lang';
 
+// The provider's own categories (about 480 names) load with the search page only, not with every page.
+type Categories = typeof import('@/lib/industries-ar');
+export function useCategories() {
+  const [cats,setCats]=useState<Categories|null>(null);
+  useEffect(()=>{let live=true;void import('@/lib/industries-ar').then(m=>{if(live)setCats(m);});return()=>{live=false;};},[]);
+  return cats;
+}
+
 export function NichePicker({value,onChange,onPendingChange,disabled=false}:{value:string;onChange:(value:string)=>void;onPendingChange:(pending:boolean)=>void;disabled?:boolean}) {
   const t=useT(),names=useNames(),{lang}=useLang(),id=useId(),input=useRef<HTMLInputElement>(null);
   const [open,setOpen]=useState(false),[query,setQuery]=useState(''),[group,setGroup]=useState(''),[active,setActive]=useState(0);
-  const matches=findNiches(query,group),picked=nicheOf(value);
+  const cats=useCategories();
+  const nameOf=(c:{en:string;ar:string})=>lang==='en'?c.en:c.ar;
+  const matches=[...findNiches(query,group).map(n=>({label:n.label,text:names.label(n.label),sub:names.label(n.field)})),
+    ...(group?[]:cats?.findCategories(query).slice(0,40).map(c=>({label:c.ar,text:nameOf(c),sub:t('تصنيف مزوّد البيانات','Data provider category')}))??[])];
+  const picked=nicheOf(value),shown=(v:string)=>{const en=cats?.providerCategory(v);return en?nameOf({en,ar:v}):names.label(v);};
   const groups=[...new Set(niches.map(n=>n.field))];
   useEffect(()=>{onPendingChange(open&&!!query.trim());},[open,query,onPendingChange]);
   useEffect(()=>()=>onPendingChange(false),[onPendingChange]);
@@ -17,7 +29,7 @@ export function NichePicker({value,onChange,onPendingChange,disabled=false}:{val
   return <div className="field niche-picker" onBlur={e=>{if(!e.currentTarget.contains(e.relatedTarget as Node)){setOpen(false);setQuery('');}}}>
     <label htmlFor={id+'-trigger'}>{t('النشاط الذي تريد الوصول إليه','Business activity to reach')}</label>
     <button id={id+'-trigger'} type="button" className="niche-trigger" disabled={disabled} aria-expanded={open} aria-controls={id+'-options'} onClick={()=>open?setOpen(false):show()}>
-      <span>{value?names.label(value):t('اختر نشاطًا أو ابحث باسمه','Choose an activity or search by name')}</span><CaretDown size={17}/>
+      <span>{value?shown(value):t('اختر نشاطًا أو ابحث باسمه','Choose an activity or search by name')}</span><CaretDown size={17}/>
     </button>
     {open&&<div className="niche-menu">
       <div className="niche-search"><MagnifyingGlass size={18}/><input ref={input} value={query} disabled={disabled} role="combobox" aria-expanded={open} aria-controls={id+'-options'} aria-autocomplete="list" aria-activedescendant={matches.length?id+'-option-'+Math.min(active,matches.length-1):undefined} aria-label={t('ابحث عن نشاط','Search business activities')} placeholder={t('مثلًا: أسنان، عقارات، طاقة شمسية','e.g. dental, real estate, solar')} maxLength={60} onChange={e=>{setQuery(e.target.value);setActive(0);}} onKeyDown={e=>{
@@ -27,12 +39,12 @@ export function NichePicker({value,onChange,onPendingChange,disabled=false}:{val
       }}/>{query&&<button type="button" className="icon-button" aria-label={t('مسح البحث','Clear search')} onClick={()=>{setQuery('');setActive(0);input.current?.focus();}}><X size={15}/></button>}</div>
       <select disabled={disabled} aria-label={t('تصفية الأنشطة حسب المجال','Filter activities by category')} value={group} onChange={e=>{setGroup(e.target.value);setActive(0);}}><option value="">{t('كل المجالات','All categories')}</option>{groups.map(g=><option key={g} value={g}>{names.label(g)}</option>)}</select>
       <div id={id+'-options'} role="listbox" aria-label={t('الأنشطة المقترحة','Suggested activities')} className="niche-options">
-        {matches.map((n,i)=><button type="button" key={n.label} id={id+'-option-'+i} role="option" aria-selected={value===n.label} className={'niche-option'+(i===active?' active':'')} disabled={disabled} onMouseDown={e=>e.preventDefault()} onClick={()=>choose(n.label)}><span><strong>{names.label(n.label)}</strong><small>{names.label(n.field)}</small></span>{value===n.label&&<Check size={18}/>}</button>)}
+        {matches.map((n,i)=><button type="button" key={n.label} id={id+'-option-'+i} role="option" aria-selected={value===n.label} className={'niche-option'+(i===active?' active':'')} disabled={disabled} onMouseDown={e=>e.preventDefault()} onClick={()=>choose(n.label)}><span><strong>{n.text}</strong><small>{n.sub}</small></span>{value===n.label&&<Check size={18}/>}</button>)}
         {!matches.length&&<p className="niche-empty">{t('لم نجد نشاطًا بهذه الكلمات. جرّب اسمًا آخر أو استخدم نشاطًا مخصصًا.','No activity matches. Try another name or use a custom activity.')}</p>}
       </div>
       {query.trim().length>=2&&<button type="button" className="niche-custom" disabled={disabled} onClick={()=>choose(query.trim())}>{t('استخدم «'+query.trim()+'» كنشاط مخصص','Use “'+query.trim()+'” as a custom activity')}</button>}
     </div>}
     {picked&&<div className="niche-opportunity"><strong>{t('خدمات يمكنك تقديمها لهذا النشاط','Services you could offer this business')}</strong><p>{lang==='en'?picked.servicesEn:picked.services}</p><small>{t('أمثلة لعروضك التجارية، وليست تكاملات ينفّذها البحث.','Examples for your sales offer; these are not search integrations.')}</small></div>}
-    <details className="niche-extra"><summary>{t('أنشطة وتصنيفات إضافية','Additional activities and categories')}</summary><select aria-label={t('اختر تصنيفًا إضافيًا','Choose an additional category')} value="" disabled={disabled} onChange={e=>choose(e.target.value)}><option value="" disabled>{t('اختر من التصنيفات الأخرى','Choose another category')}</option>{(Object.keys(fields) as FieldName[]).map(f=><optgroup key={f} label={names.label(f)}><option value={f}>{t('كل ','All ')+names.label(f)}</option>{fields[f].filter(s=>!nicheOf(s)).map(s=><option key={s} value={s}>{names.label(s)}</option>)}</optgroup>)}</select></details>
+    <details className="niche-extra"><summary>{t('أنشطة وتصنيفات إضافية','Additional activities and categories')}</summary><select aria-label={t('اختر تصنيفًا إضافيًا','Choose an additional category')} value="" disabled={disabled} onChange={e=>choose(e.target.value)}><option value="" disabled>{t('اختر من التصنيفات الأخرى','Choose another category')}</option>{(Object.keys(fields) as FieldName[]).map(f=><optgroup key={f} label={names.label(f)}><option value={f}>{t('كل ','All ')+names.label(f)}</option>{fields[f].filter(s=>!nicheOf(s)).map(s=><option key={s} value={s}>{names.label(s)}</option>)}</optgroup>)}{cats&&<optgroup label={t('كل تصنيفات مزوّد البيانات','All data provider categories')}>{[...cats.providerCategories].sort((a,b)=>nameOf(a).localeCompare(nameOf(b),lang)).map(c=><option key={c.en} value={c.ar}>{nameOf(c)}</option>)}</optgroup>}</select></details>
   </div>;
 }

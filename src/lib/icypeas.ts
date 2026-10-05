@@ -5,7 +5,7 @@ import { SUBMIT_MULTIPLE, type Candidate, type Resolved } from './contracts';
 import { cityNames, countryLabel, englishName, placeOf } from './places';
 import { bestEmail, companyEmails, emailsIn, freeMail, safeGet, type Get } from './site-email';
 import { directoryPath, webCompanies, webEnabled } from './web-companies';
-import { nicheKeywords } from './niches';
+import { anyIndustry, nicheKeywords, ANY_INDUSTRY_EXCLUDED } from './niches';
 import type {CoverageCounts} from './coverage';
 
 // status: HTTP status for the API response. uncertain: a paid request may have reached Icypeas.
@@ -35,7 +35,7 @@ export const publishedEnabled = () => process.env.PUBLISHED_EMAIL_ENABLED === 't
 export const STAGES = 2;
 export type Audience = Pick<Resolved, 'countries' | 'city' | 'size' | 'industries' | 'titles'> & Partial<Pick<Resolved, 'mode' | 'sector'>>;
 const dentalOnly = (input: Audience) => input.industries.length === 1 && input.industries[0] === 'Dentists';
-const dataStages = (input: Audience) => input.mode === 'companies' && dentalOnly(input) ? 4 : STAGES;
+const dataStages = (input: Audience) => (input.mode === 'companies' && dentalOnly(input)) || anyIndustry(input.sector) ? 4 : STAGES;
 export const webStage = (input: Audience, stage: number) => webEnabled(input) && stage === dataStages(input);
 export const stageCount = (input: Audience) => dataStages(input) + Number(webEnabled(input));
 const dentalExclusions = ['lab', 'labs', 'laboratory', 'laboratories', 'مختبر', 'معمل', 'supplies', 'supply', 'supplier', 'suppliers', 'equipment', 'study', 'academy', 'education', 'course', 'courses', 'factory', 'تجهيز', 'مستلزمات', 'مصنع', 'دورات'];
@@ -56,12 +56,19 @@ function where(input: Audience) {
     : codes.flatMap(cc => [englishName(cc), broadArabic[cc] ?? countryLabel(cc)]);
   return { strict, broad, min, max };
 }
+// The category and keyword filters of a stage: the niche's keywords in its categories, or for an anyIndustry niche the keywords
+// in every category but ANY_INDUSTRY_EXCLUDED (stages 0-1), then its categories without the keywords (stages 2-3, disjoint for free counts).
+function activity(input: Audience, stage: number): { industry: { include?: string[]; exclude?: string[] }; keyword?: { include?: string[]; exclude?: string[] } } {
+  const words = [...nicheKeywords(input.sector)];
+  if (anyIndustry(input.sector)) return stage < 2 ? { industry: { exclude: ANY_INDUSTRY_EXCLUDED }, keyword: { include: words } } : { industry: { include: input.industries }, keyword: { exclude: words } };
+  return { industry: { include: input.industries }, ...(words.length ? { keyword: { include: words } } : {}) };
+}
 export function peopleQuery(input: Audience, stage = 0) {
-  const { strict, broad, min, max } = where(input);
+  const { strict, broad, min, max } = where(input), { industry, keyword } = activity(input, stage);
   return {
-    profileLocation: stage === 0 ? { include: strict } : { include: broad, exclude: strict },
-    'currentCompany.industry': { include: input.industries },
-    ...(nicheKeywords(input.sector).length ? { 'currentCompany.keyword': { include: [...nicheKeywords(input.sector)] } } : {}),
+    profileLocation: stage % 2 === 0 ? { include: strict } : { include: broad, exclude: strict },
+    'currentCompany.industry': industry,
+    ...(keyword ? { 'currentCompany.keyword': keyword } : {}),
     ...(input.titles.length ? { currentJobTitle: { include: input.titles } } : {}),
     ...(input.size !== 'all' ? { 'currentCompany.headcount': { '>=': min, '<=': max } } : {}),
   };
@@ -69,7 +76,7 @@ export function peopleQuery(input: Audience, stage = 0) {
 
 // Companies by headquarters (`location`), the same two stages; job titles do not apply to a company.
 export function companiesQuery(input: Audience, stage = 0) {
-  const { strict, broad, min, max } = where(input);
+  const { strict, broad, min, max } = where(input), { industry, keyword } = activity(input, stage);
   return {
     location: stage % 2 === 0 ? { include: strict } : { include: broad, exclude: strict },
     // Many dental clinics are filed under general health care. Search those only with dental evidence and a clinic-like
@@ -78,8 +85,7 @@ export function companiesQuery(input: Audience, stage = 0) {
       industry: { include: ['Hospitals and Health Care', 'Medical Practices', 'Hospital & Health Care', 'Health, Wellness & Fitness', 'Wellness and Fitness Services', 'Outpatient Care Centers'], exclude: ['Dentists'] },
       keyword: { include: ['dental', 'dentist', 'dentistry', 'أسنان', 'اسنان'] },
       name: { include: ['dental', 'dentist', 'dentistry', 'أسنان', 'اسنان', 'clinic', 'عياد', 'مستوصف', 'مجمع', 'مركز', 'center', 'centre'], exclude: dentalExclusions },
-    } : { industry: { include: input.industries }, ...(dentalOnly(input) ? { name: { exclude: dentalExclusions } } : {}) }),
-    ...(nicheKeywords(input.sector).length ? { keyword: { include: [...nicheKeywords(input.sector)] } } : {}),
+    } : { industry, ...(keyword ? { keyword } : {}), ...(dentalOnly(input) ? { name: { exclude: dentalExclusions } } : {}) }),
     ...(input.size !== 'all' ? { headcount: { '>=': min, '<=': max } } : {}),
   };
 }

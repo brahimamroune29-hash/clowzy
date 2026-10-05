@@ -4,7 +4,7 @@ import { niches, type NicheName } from './niches';
 
 // What the member picks from: a main field, then one of its specialties or the whole field. The server maps each label to
 // exact provider names (src/lib/audience.ts); anything typed under «أخرى» is mapped by the AI there.
-const legacyFields = {
+export const legacyFields = {
   'الصحة والطب': ['الصحة والعيادات', 'عيادات الأسنان', 'المستشفيات', 'المختبرات الطبية', 'العيون والبصريات', 'الصحة النفسية', 'الصيدليات والأدوية',
     'الأجهزة الطبية', 'الطب البيطري', 'اللياقة والصحة العامة'],
   'التقنية والاتصالات': ['التقنية والبرمجيات', 'الاتصالات'],
