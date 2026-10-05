@@ -92,6 +92,7 @@ const sentences: Record<string, string> = {
   'إعداد عنوان المنصة (APP_URL) غير صالح.': 'The platform address (APP_URL) setting is invalid.',
   'هذا العنوان غير مسموح.': 'This address is not allowed.',
   'المعاينة المحلية فقط. إعداد الإنتاج غير مفعّل.': 'Local preview only. Production is not set up.',
+  'المنصة متوقفة مؤقتًا لعدم إكمال الدفعة. يرجى التواصل مع مالك المنصة لإعادة التفعيل.': 'The platform is temporarily suspended because the payment was not completed. Please contact the platform owner to restore access.',
   'مصدر الطلب غير مسموح.': 'Request origin not allowed.',
   'صيغة الطلب غير صحيحة.': 'Wrong request format.',
   'تعذّر فهم ما كتبته في «أخرى» الآن. اختر من القائمة أو حاول بعد قليل.': 'Could not understand what you typed under “Other” now. Pick from the list or try again shortly.',

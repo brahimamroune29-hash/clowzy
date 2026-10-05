@@ -30,6 +30,11 @@ jobs:
         run: |
           code() { curl -s -o /dev/null -w '%{http_code}' --max-time 30 --retry 2 "$1"; }
           test "$(code "$APP_URL/")" = 200
-          test "$(code "$APP_URL/api/invitation?token=000000000000000000000000000000000000000000000000")" = 410
+          # 410 is a healthy platform refusing an expired invitation. 503 is the owner's lock
+          # (PLATFORM_LOCKED): a platform stopped on purpose is not an outage, and while it is locked the
+          # search worker is stopped too, so the processing check below would fail by design.
+          probe=$(code "$APP_URL/api/invitation?token=000000000000000000000000000000000000000000000000")
+          test "$probe" = 410 || test "$probe" = 503
+          if [ "$probe" = 503 ]; then echo 'Platform locked by its owner; skipping the search-processing check.'; exit 0; fi
           test -n "$CRON_SECRET"
           curl -fsS --max-time 30 --retry 2 -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/api/cron/health"

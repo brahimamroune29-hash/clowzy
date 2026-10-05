@@ -7,6 +7,17 @@ const parse = (value?: string | null) => { try { return new URL(value || ''); } 
 const originOf = (value?: string | null) => parse(value)?.origin || '';
 export const isHttps = (appUrl?: string) => parse(appUrl)?.protocol === 'https:';
 
+// The owner's lock, held outside the platform: PLATFORM_LOCKED=1 in the host's environment makes this API
+// answer the message below and nothing else — browser requests and the search worker alike. The worker is
+// included on purpose: its ticks submit paid batches to the provider, so a platform locked for non-payment
+// would otherwise keep spending the owner's money on the client's searches. Clearing the variable restores
+// everything; no data is touched either way, and the nightly backup never notices — it reaches the database
+// directly (.github/workflows/backup.yml), not through this API.
+export const lockMessage = () =>
+  /^(1|true)$/i.test((process.env.PLATFORM_LOCKED ?? '').trim())
+    ? 'المنصة متوقفة مؤقتًا لعدم إكمال الدفعة. يرجى التواصل مع مالك المنصة لإعادة التفعيل.'
+    : null;
+
 export function accessError(req: Req, appUrl?: string): { status: number; message: string } | null {
   const host = req.host || '', app = appUrl ? parse(appUrl) : null;
   if (appUrl && !app) return { status: 503, message: 'إعداد عنوان المنصة (APP_URL) غير صالح.' };

@@ -8,7 +8,7 @@ import { LiveSearch } from '@/lib/live-search';
 import { searchTick, workerAuthorized } from '@/lib/search-worker';
 import { audienceOf, resolveAudience } from '@/lib/audience';
 import { contactsCsv, crmCsv, exportColumns } from '@/lib/csv';
-import { accessError, bodyLimit, clientIp, isHttps } from '@/lib/access';
+import { accessError, bodyLimit, clientIp, isHttps, lockMessage } from '@/lib/access';
 import { assist } from '@/lib/ai';
 import { englishBody } from '@/lib/en';
 import { crmEnabled } from '@/lib/catalog';
@@ -49,6 +49,12 @@ function authenticated(token: string, data: object = { ok: true }) {
 async function answer(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
   try {
     const path = (await params).path.join('/');
+    // The owner's lock (PLATFORM_LOCKED): nothing below answers until it is cleared — not the browser, and
+    // not the cron, whose tick submits paid batches to the provider. Above everything on purpose: a platform
+    // locked for non-payment must stop costing its owner money. The page renders this message on its own,
+    // and the nightly backup never notices (it reaches the database directly, not through here).
+    const locked = lockMessage();
+    if (locked) throw new AppError(locked, 503);
     // Vercel may invoke the deployment hostname. The cron authenticates with its server secret, not a browser origin/cookie.
     if (path === 'cron/search' || path === 'cron/health') {
       if (req.method !== 'GET' || !workerAuthorized(req.headers.get('authorization'))) return json({ error: 'Unauthorized' }, 401);
