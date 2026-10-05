@@ -65,6 +65,8 @@ alter table clowzy.provider_runs add column if not exists mode text;
 alter table clowzy.provider_runs add column if not exists people_checked integer not null default 0;
 -- رمز استرجاع المالك:
 alter table clowzy.users add column if not exists recovery_hash text;
+-- توسيع البحث الناقص إلى كل الدولة ثم دول المنطقة:
+alter table clowzy.provider_runs add column if not exists scope integer not null default 0;
 ```
 
 - فحص التزامن الحقيقي على القاعدة (لا تقدر عليه قاعدة الاختبار داخل العملية): DATABASE_URL=... npx tsx scripts/check-concurrency.ts. ينشئ بيانات مؤقتة ويحذفها بصلاحيات التطبيق وحدها.

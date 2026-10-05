@@ -55,7 +55,8 @@ create table clowzy.provider_runs (
   submitted_at bigint, message text not null default '', updated_at bigint not null, read_errors integer not null default 0,
   fetched integer not null default 0, -- people actually returned by the provider (the daily cap); scanned may be raised to stop paging
   mode text, -- 'companies' once a people search short of its count falls back to the companies' own emails
-  people_checked integer not null default 0 -- people sent for email discovery before that fallback
+  people_checked integer not null default 0, -- people sent for email discovery before that fallback
+  scope integer not null default 0 -- the place a widening search has reached (live-search.ts placesOf): 0 is the member's own
 );
 create table clowzy.provider_cursors (
   user_id text not null references clowzy.users(id), query_key text not null, stage integer not null default 0, token text,

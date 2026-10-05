@@ -3,13 +3,14 @@ import { useEffect, useState } from 'react';
 import { MagnifyingGlass } from '@phosphor-icons/react';
 import type { Search } from '@/lib/contracts';
 import { api } from '@/lib/client';
+import { countryLabel, englishName } from '@/lib/places';
 import { Button } from './ui';
 import { useT } from './lang';
 // Radar while the provider works; the steps and numbers follow the real progress (people sent for checking, emails saved).
 export function SearchProgress({search,reload}:{search:Search;reload:()=>Promise<void>}) {
   const t=useT();
   const [message,setMessage]=useState(search.message || t('جارٍ جلب الإيميلات والتحقق منها…','Finding and verifying emails…'));
-  const [progress,setProgress]=useState({checked:search.checked??0,firms:search.companiesChecked,delivered:search.delivered});
+  const [progress,setProgress]=useState({checked:search.checked??0,firms:search.companiesChecked,wide:search.widenedTo,delivered:search.delivered});
   const [retry,setRetry]=useState(0);
   useEffect(()=>{
     let active=true,timer:ReturnType<typeof setTimeout>;
@@ -19,7 +20,7 @@ export function SearchProgress({search,reload}:{search:Search;reload:()=>Promise
         const value=await api<Search>('search/poll',{searchId:search.id});
         if(!active)return;
         if(value.message)setMessage(value.message);
-        setProgress({checked:value.checked??0,firms:value.companiesChecked,delivered:value.delivered});
+        setProgress({checked:value.checked??0,firms:value.companiesChecked,wide:value.widenedTo,delivered:value.delivered});
         if(value.status!=='awaiting_provider'){await reload();return;}
         const mark=(value.checked??0)+':'+value.delivered;
         if(mark!==seen){seen=mark;began=Date.now();}
@@ -36,8 +37,11 @@ export function SearchProgress({search,reload}:{search:Search;reload:()=>Promise
     void poll();
     return()=>{active=false;clearTimeout(timer);};
   },[search.id,search.delivered,reload,retry,t]);
-  const {checked,firms,delivered}=progress;
-  const companies=(JSON.parse(search.filters) as {mode?:string}).mode==='companies', fallback=firms!==undefined;
+  const {checked,firms,wide,delivered}=progress;
+  const asked=JSON.parse(search.filters) as {mode?:string;countries?:string[];city?:string};
+  const companies=asked.mode==='companies', fallback=firms!==undefined;
+  // Where a search short of its count has looked: after a city, its whole country first, then the region's other countries.
+  const places=(names:(c:string)=>string,all:string)=>(wide??[]).map((c,i)=>(i===0&&asked.city?all:'')+names(c));
   // What was looked up, by name: the client read the old «N محاولة فحص» as failed checks (2026-10-05).
   const looked=companies?t('أجرينا '+checked+' عملية بحث عن بريد الشركات المطابقة','Ran '+checked+' searches for matching companies’ emails') // a company can be searched twice
     :fallback?t('بحثنا عن بريد '+(checked-firms)+' من الأشخاص، ثم أجرينا '+firms+' عملية بحث عن بريد الشركات','Looked up '+(checked-firms)+' people, then ran '+firms+' searches for the companies’ emails')
@@ -51,7 +55,8 @@ export function SearchProgress({search,reload}:{search:Search;reload:()=>Promise
         <li className={checked?'active':''}>{t('نتحقق من البريد','Verifying the emails')}</li>
         <li className={delivered?'done':''}>{t('نحفظ البريد في حسابك','Saving them to your account')}</li>
       </ol>
-      <div role="status">{fallback&&<p className="search-live">{t('لم نجد بريدًا كافيًا للأشخاص، فنبحث الآن عن بريد الشركات نفسها.','Not enough personal emails found, so we are now looking for the companies’ own emails.')}</p>}
+      <div role="status">{wide&&<p className="search-live">{t('ما اكتمل العدد، فوسّعنا البحث إلى: '+places(countryLabel,'كل ').join('، ')+'.','Not enough yet, so we widened the search to: '+places(englishName,'all of ').join(', ')+'.')}</p>}
+        {fallback&&<p className="search-live">{t('لم نجد بريدًا كافيًا للأشخاص، فنبحث الآن عن بريد الشركات نفسها.','Not enough personal emails found, so we are now looking for the companies’ own emails.')}</p>}
         {checked>0&&<p className="search-live">{looked+t(' · وصلك '+delivered+' من '+search.requested,' · received '+delivered+' of '+search.requested)}</p>}<p className="search-message">{message}</p></div>
       <div className="searching-foot"><Button variant="ghost" onClick={()=>setRetry(n=>n+1)}>{t('متابعة','Refresh')}</Button><small>{t('يُخصم الكريدت فقط عند حفظ بريد جديد.','Credits are charged only when a new email is saved.')}</small></div>
     </div>

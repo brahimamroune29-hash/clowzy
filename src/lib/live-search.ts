@@ -5,11 +5,21 @@ import { WEB_ROUNDS } from './web-companies';
 import {recordCoverage} from './coverage';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { AppError, DAILY_PEOPLE, dailyLimit, Store } from './store';
+import { countryLabel, nearby } from './places';
 import { BATCH, companyKeys, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadKeys, leadName, personKey, publishedEnabled, queryOf, siteOf, stageCount, submissionTask, submitCap, webStage } from './icypeas';
 
-type Run = { search_id: string; phase: string; people: string; file: string | null; scanned: number; fetched: number; submitted: number; submitted_at: number | null; message: string; updated_at: number; read_errors: number; mode: 'companies' | null; people_checked: number };
-// The audience a run continues with: the stored filters, switched to companies once a people search has fallen back.
-const inputOf = (filters: string, run?: Pick<Run, 'mode'>): Resolved => ({ ...audienceOf(filters), ...(run?.mode ? { mode: run.mode } : {}) });
+type Run = { search_id: string; phase: string; people: string; file: string | null; scanned: number; fetched: number; submitted: number; submitted_at: number | null; message: string; updated_at: number; read_errors: number; mode: 'companies' | null; people_checked: number; scope: number };
+// Where a search looks, in order: the member's place, then (widen) the whole country when a city was set, then the region's
+// other countries one by one (client 2026-10-05: «يوسّع… ولا مرة بدي يكون ناقص»; owner: the place only, the same region, on by default).
+const placesOf = (input: Resolved) => [{ countries: input.countries, city: input.city }, ...!input.widen ? []
+  : [...input.city ? [{ countries: input.countries, city: '' }] : [], ...nearby(input.countries).map(cc => ({ countries: [cc], city: '' }))]];
+// The audience a run continues with: the stored filters at the place it has reached, switched to companies once a people search fell back.
+const inputOf = (filters: string, run?: Pick<Run, 'mode' | 'scope'>): Resolved => {
+  const input = audienceOf(filters);
+  return { ...input, ...placesOf(input)[run?.scope ?? 0], ...(run?.mode ? { mode: run.mode } : {}) };
+};
+// The places a search has widened to: in the companies phase, every place (people come first everywhere).
+const widenedTo = (input: Resolved, run: Pick<Run, 'mode' | 'scope'>) => placesOf(input).slice(1, (run.mode ? placesOf(input).length - 1 : run.scope) + 1);
 type Slots = { read: number; bulk: number };
 const BATCH_DEADLINE = 15 * 60000; // a batch that never fully returns is closed with what came back
 const READ_ERRORS = 10; // a batch past its deadline is closed on read errors only after this many in a row
@@ -56,7 +66,8 @@ export class LiveSearch {
   private async view(userId: string, id: string): Promise<Search> {
     const search = await this.store.getSearch(userId, id), run = await this.run(id);
     // checked: people (and companies) sent for email discovery so far, the live progress the results page shows while searching.
-    return { ...search, checked: (run?.people_checked ?? 0) + (run?.submitted ?? 0), ...(run?.mode ? { companiesChecked: run.submitted } : {}), message: run?.message || (search.status === 'awaiting_provider' ? 'جارٍ البحث والتحقق من الإيميلات.' : '') };
+    return { ...search, checked: (run?.people_checked ?? 0) + (run?.submitted ?? 0), ...(run?.mode ? { companiesChecked: run.submitted } : {}),
+      ...(run && widenedTo(audienceOf(search.filters), run).length ? { widenedTo: widenedTo(audienceOf(search.filters), run).flatMap(p => p.countries) } : {}), message: run?.message || (search.status === 'awaiting_provider' ? 'جارٍ البحث والتحقق من الإيميلات.' : '') };
   }
   private stop(userId: string, id: string, message: string, uncertain = false) {
     return this.store.transaction(async () => {
@@ -71,27 +82,31 @@ export class LiveSearch {
   }
   // Why a search ended short and what to do next, so an empty result never reads as a silent failure.
   private async shortfall(userId: string, search: Search, run: Run) {
-    const input = audienceOf(search.filters), companies = input.mode === 'companies', checked = run.mode ? run.people_checked : run.submitted;
+    const input = audienceOf(search.filters), companies = input.mode === 'companies', checked = run.mode ? run.people_checked : run.people_checked + run.submitted;
+    const places = widenedTo(input, run), all = places.length && places.length === placesOf(input).length - 1; // every place tried: no city or country to add
+    const wide = places.length ? `وسّعنا البحث إلى: ${places.map((p, i) => (i === 0 && input.city ? 'كل ' : '') + p.countries.map(countryLabel).join('، ')).join('، ')}. ` : '';
     // The advice names only the filters this search set (a salons search with none was told to remove three, 2026-10-05).
-    const set = [input.size !== 'all' && 'حجم الشركة', input.city.trim() && 'المدينة', !companies && input.title.trim() && 'المسمى الوظيفي'].filter(Boolean);
-    const widen = set.length ? `لنتائج أكثر، وسّع المعايير: احذف ${set.join(' أو ')} أو أضف دولًا.` : 'لنتائج أكثر، أضف دولًا أو اختر نشاطًا أوسع.';
-    if (run.mode && run.submitted) return `بحثنا عن بريد ${run.people_checked} من الأشخاص المطابقين، ثم أجرينا ${run.submitted} عملية بحث عن بريد الشركات نفسها، فوصلك ${search.delivered} من ${search.requested}. `
+    const set = [input.size !== 'all' && 'حجم الشركة', !all && input.city.trim() && 'المدينة', !companies && input.title.trim() && 'المسمى الوظيفي'].filter(Boolean);
+    const widen = all ? (set.length ? `لنتائج أكثر، وسّع المعايير: احذف ${set.join(' أو ')}.` : 'لنتائج أكثر، اختر نشاطًا أوسع.')
+      : set.length ? `لنتائج أكثر، وسّع المعايير: احذف ${set.join(' أو ')} أو أضف دولًا.` : 'لنتائج أكثر، أضف دولًا أو اختر نشاطًا أوسع.';
+    if (run.mode && run.submitted) return wide + `بحثنا عن بريد ${run.people_checked} من الأشخاص المطابقين، ثم أجرينا ${run.submitted} عملية بحث عن بريد الشركات نفسها، فوصلك ${search.delivered} من ${search.requested}. `
       + widen; // a fallback that found no company email reads as the people search
-    if (!checked) return (companies ? 'لم نجد شركات جديدة مطابقة لها نطاق عمل صالح للبحث حاليًا. ' : 'لا يوجد أشخاص جدد مطابقون لهذه المعايير حاليًا. ') + widen;
-    const cursor = await this.store.cursor(userId, cursorKey(input));
+    if (!checked) return wide + (companies ? 'لم نجد شركات جديدة مطابقة لها نطاق عمل صالح للبحث حاليًا. ' : 'لا يوجد أشخاص جدد مطابقون لهذه المعايير حاليًا. ') + widen;
+    // The list the advice is about: the member's own kind (people, or companies) at the last place it was searched in.
+    const cursor = await this.store.cursor(userId, cursorKey(inputOf(search.filters, { mode: null, scope: run.mode ? placesOf(input).length - 1 : run.scope })));
     const found = search.delivered + search.duplicates, dup = search.duplicates ? `، منها ${search.duplicates} مكرر مستبعد` : '';
     // One company can have domain discovery followed by publication verification: attempts are not unique companies.
-    return (companies ? `نفّذنا ${checked} محاولة للعثور على بريد الشركات المطابقة والتحقق منه، فوصلك ${search.delivered} من ${search.requested}. `
+    return wide + (companies ? `نفّذنا ${checked} محاولة للعثور على بريد الشركات المطابقة والتحقق منه، فوصلك ${search.delivered} من ${search.requested}. `
       : `بحثنا عن بريد ${checked} من الأشخاص المطابقين، ${found ? `ووجدنا بريدًا موثّقًا لـ ${found} منهم${dup}` : 'ولم نجد بريدًا موثّقًا لأيّ منهم'}. `)
       + (!cursor.stage && !cursor.token && cursor.leftovers === '[]' ? (webStage(input, stageCount(input) - 1) ? 'انتهت جولات البحث المتاحة لهذا الطلب. ' : 'جرّبنا كل المطابقين المتاحين. ') + widen : `أعد البحث بالمعايير نفسها لتجربة ${companies ? 'شركات أخرى' : 'أشخاص آخرين'}، أو وسّعها لنتائج أكثر.`);
   }
   // Colleagues held back for a company this search delivered would open the next search with the same filters: they leave the
   // member's lists (the people one and the companies fallback's). Never claimed, so they come back once a list starts over.
   private async dropHeld(userId: string, search: Search) {
-    const taken = await this.store.takenCompanies(search.id);
+    const taken = await this.store.takenCompanies(search.id), input = audienceOf(search.filters);
     if (taken.size) await this.store.transaction(async () => {
-      for (const mode of ['people', 'companies'] as const) {
-        const key = cursorKey({ ...audienceOf(search.filters), mode }), c = await this.store.cursor(userId, key), left = JSON.parse(c.leftovers) as Lead[];
+      for (const mode of ['people', 'companies'] as const) for (const place of placesOf(input)) {
+        const key = cursorKey({ ...input, ...place, mode }), c = await this.store.cursor(userId, key), left = JSON.parse(c.leftovers) as Lead[];
         const kept = left.filter(l => !leadKeys(l).some(k => taken.has(k)));
         if (kept.length < left.length) await this.store.saveCursor(userId, key, c.stage, c.token, JSON.stringify(kept));
       }
@@ -107,14 +122,22 @@ export class LiveSearch {
     await this.patch(id, { phase: 'finished', message });
     return this.view(userId, id);
   }
-  // The natural end of a search (no more people, or the attempts cap). A people search short of its count falls back, once, to
-  // the companies' own verified emails for the same filters (owner's rule, 2026-10-01), labelled «إيميل الشركة» for the member.
+  // The natural end of a search's place (no more people, or the attempts cap). Short of its count, it moves to the next place
+  // (placesOf), with a page budget of its own; people everywhere come before any company's own email (owner, 2026-10-05). Then a
+  // people search falls back, once, to the companies' own verified emails (owner's rule, 2026-10-01), from the member's place again.
   private async end(userId: string, id: string, input: Resolved, closeOnly = false) {
-    if (!closeOnly && input.mode === 'people') {
-      const search = await this.store.getSearch(userId, id);
-      if (search.delivered < search.requested && await this.store.db.run(
-        "UPDATE provider_runs SET mode='companies',people_checked=submitted,scanned=0,submitted=0,people='[]',updated_at=? WHERE search_id=? AND mode IS NULL", Date.now(), id))
-        return this.advance(userId, id, { ...input, mode: 'companies' });
+    if (!closeOnly) {
+      const search = await this.store.getSearch(userId, id), run = (await this.run(id))!, short = search.delivered < search.requested;
+      // A place of people gets its own attempts too (a capped first place must not skip the rest); their total is people_checked.
+      if (short && run.scope + 1 < placesOf(audienceOf(search.filters)).length) {
+        if (await this.store.db.run(`UPDATE provider_runs SET scope=scope+1,scanned=0,people='[]',updated_at=?${run.mode ? '' : ',people_checked=people_checked+submitted,submitted=0'}
+          WHERE search_id=? AND scope=? AND COALESCE(mode,'')=?`, Date.now(), id, run.scope, run.mode ?? ''))
+          return this.advance(userId, id, inputOf(search.filters, { mode: run.mode, scope: run.scope + 1 }));
+        return this.view(userId, id); // another request moved it on
+      }
+      if (short && input.mode === 'people' && await this.store.db.run(
+        "UPDATE provider_runs SET mode='companies',scope=0,people_checked=people_checked+submitted,scanned=0,submitted=0,people='[]',updated_at=? WHERE search_id=? AND mode IS NULL AND scope=?", Date.now(), id, run.scope))
+        return this.advance(userId, id, inputOf(search.filters, { mode: 'companies', scope: 0 }));
     }
     return this.finish(userId, id);
   }
@@ -158,7 +181,8 @@ export class LiveSearch {
       // never emails the saved catalog delivered before any batch (2 catalog emails in 7 people read as a 29% rate).
       const contacts = await this.store.db.all<Candidate & { catalog: boolean }>("SELECT kind,website,email,company,EXISTS(SELECT 1 FROM crm_deliveries d WHERE d.contact_id=c.id AND d.origin='catalog') catalog FROM contacts c WHERE search_id=?", id);
       const found = contacts.filter(c => !c.catalog && (!run.mode || c.kind === 'company')).length + (run.mode ? 0 : search.duplicates); // a duplicate was found too
-      const rate = run.submitted ? Math.max(MIN_FIND_RATE, found / run.submitted) : PRIOR_FIND_RATE;
+      const tried = run.mode ? run.submitted : run.people_checked + run.submitted; // people: every place so far
+      const rate = tried ? Math.max(MIN_FIND_RATE, found / tried) : PRIOR_FIND_RATE;
       const want = Math.min(BATCH, submitCap(search.requested) - run.submitted, Math.ceil((search.requested - search.delivered) / rate));
       // One email per company in a search: a colleague of someone delivered or already in this batch waits in the member's list
       // (held), and is tried in a later batch only if that company still has no email. People whose company has no website rarely

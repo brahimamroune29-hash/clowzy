@@ -12,6 +12,7 @@ export const searchSchema = z.object({
   title: text(60).default(''), // a listed title, English as typed, or Arabic words for the AI
   size: z.enum(['all', '1-10', '11-50', '51-200']).default('all'),
   count: z.number().int().min(1).max(50),
+  widen: z.boolean().default(true), // short of the count: the whole country, then the region's other countries (live-search.ts placesOf)
   confirmed: z.literal(true),
   requestId: z.string().uuid(),
 });

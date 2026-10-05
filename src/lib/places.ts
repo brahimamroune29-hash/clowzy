@@ -9,7 +9,7 @@ export const cityNames: Record<string, string> = {
 export const norm = (s: string) => s.normalize('NFKD').replace(/[ً-ٰٟـ̀-ͯ]/g, '')
   .replace(/[أإآ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').replace(/\s+/g, ' ').toLowerCase().trim();
 
-const pseudo = /^(Q[M-Z]|X[A-Z]|ZZ|AA|EU|EZ|UN)$/; // private-use and grouping codes, not countries
+const pseudo = /^(Q[M-Z]|X[A-Z]|ZZ|AA|EU|EZ|UN|YD)$/; // private-use and grouping codes, not countries; YD, old South Yemen, would take «Yemen» from YE
 export const isCountry = (code: string) => /^[A-Z]{2}$/.test(code) && !pseudo.test(code) && !!new Intl.DisplayNames(['en'], { type: 'region', fallback: 'none' }).of(code);
 // Country names in the languages profile addresses come in, plus the short forms people write.
 let names: Map<string, string> | undefined;
@@ -47,7 +47,10 @@ export function placeOf(address: string | null | undefined): { code: string; cit
   return { code: '', city: '' };
 }
 
-const shortNames: Record<string, string> = { SA: 'السعودية', AE: 'الإمارات', OM: 'عُمان' };
+// Where a search short of its count widens, in this order: the other countries of the member's region (owner's choice, 2026-10-05).
+const REGIONS = [['SA', 'AE', 'KW', 'QA', 'BH', 'OM', 'YE'], ['LB', 'SY', 'JO', 'PS', 'IQ'], ['EG', 'SD'], ['MA', 'DZ', 'TN', 'LY', 'MR']];
+export const nearby = (codes: string[]) => REGIONS.filter(r => r.some(c => codes.includes(c))).flat().filter(c => !codes.includes(c));
+const shortNames: Record<string, string> = { SA: 'السعودية', AE: 'الإمارات', OM: 'عُمان', PS: 'فلسطين' };
 // The name members read: the short form for the Gulf, the standard Arabic name otherwise.
 export const countryLabel = (code: string) => shortNames[code] ?? new Intl.DisplayNames(['ar'], { type: 'region' }).of(code) ?? code;
 // A country the member typed under «أخرى»: exact name after folding spelling variants, never a partial match

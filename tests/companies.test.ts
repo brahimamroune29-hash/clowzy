@@ -7,7 +7,7 @@ import { contactsCsv } from '../src/lib/csv';
 import {coverageReport} from '../src/lib/coverage';
 import { item, live, testStore } from './pg';
 
-const companies = (count = 2, extra = {}) => audienceOf(JSON.stringify({ mode: 'companies', sector: 'العقارات', countries: ['SA', 'AE'], city: '', title: '', size: '11-50', count, confirmed: true, requestId: randomUUID(), ...extra }));
+const companies = (count = 2, extra = {}) => audienceOf(JSON.stringify({ mode: 'companies', sector: 'العقارات', countries: ['SA', 'AE'], city: '', title: '', size: '11-50', count, widen: false, confirmed: true, requestId: randomUUID(), ...extra })); // widening: tests/widen.test.ts
 const company = (id: string, o: Record<string, unknown> = {}) => ({ name: 'Company ' + id, url: 'https://www.linkedin.com/company/' + id, address: 'Riyadh, Riyadh, Saudi Arabia', website: 'https://www.' + id + '.example/about', industry: 'Real Estate', numberOfEmployees: 20, ...o });
 
 test('a rejected published address falls back to another address on that site, with one customer and one debit',async()=>{

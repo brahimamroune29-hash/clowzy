@@ -1,3 +1,4 @@
+import { countryFromText, englishName } from './places';
 // English for the server's Arabic messages, applied on the way out (route.ts) when the page asks for English. Messages are
 // built from these sentences, so whole sentences are replaced wherever they appear; numbered ones go through the patterns.
 const sentences: Record<string, string> = {
@@ -43,7 +44,7 @@ const sentences: Record<string, string> = {
   'تعذّر قراءة رصيد مزوّد البيانات. راجع بريد حساب المزوّد على الخادم.': 'Could not read the data provider’s credits. Check the provider account email on the server.',
   'قاعدة البيانات غير مهيأة على الخادم. تواصل مع مالك المنصة.': 'The database is not set up on the server. Contact the platform owner.',
   'جارٍ البحث والتحقق من الإيميلات.': 'Searching and verifying emails.',
-  'لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المدينة أو المسمى الوظيفي.': 'For more results, widen the search: remove the company size, the city or the job title.',
+  'لنتائج أكثر، اختر نشاطًا أوسع.': 'For more results, pick a broader activity.',
   'لنتائج أكثر، أضف دولًا أو اختر نشاطًا أوسع.': 'For more results, add countries or pick a broader activity.',
   'لم نجد شركات جديدة مطابقة تعرض بريدها على موقعها حاليًا.': 'No new matching companies show an email on their website right now.',
   'لم نجد شركات جديدة مطابقة لها نطاق عمل صالح للبحث حاليًا.': 'No new matching companies have a usable business domain right now.',
@@ -99,10 +100,13 @@ const sentences: Record<string, string> = {
   'وصلت حد المساعد اليومي. حاول غدًا.': 'You have reached today’s assistant limit. Try again tomorrow.',
 };
 const filterNames: Record<string, string> = { 'حجم الشركة': 'the company size', 'المدينة': 'the city', 'المسمى الوظيفي': 'the job title' };
+const country = (label: string) => englishName(countryFromText(label)) || label;
 const either = (items: string[]) => items.length > 1 ? items.slice(0, -1).join(', ') + ' or ' + items.at(-1) : items[0];
 const patterns: [RegExp, (...m: string[]) => string][] = [
+  [/وسّعنا البحث إلى: (.+?)\. /g, (_, list) => `We widened the search to: ${list.split('، ').map(p => p.startsWith('كل ') ? 'all of ' + country(p.slice(3)) : country(p)).join(', ')}. `],
   [/لنتائج أكثر، وسّع المعايير: احذف (.+?) أو أضف دولًا\./g, // the filters the search set (live-search.ts shortfall)
     (_, names) => `For more results, widen the search: remove ${either(names.split(' أو ').map(n => filterNames[n] ?? n))}, or add countries.`],
+  [/لنتائج أكثر، وسّع المعايير: احذف (.+?)\./g, (_, names) => `For more results, widen the search: remove ${either(names.split(' أو ').map(n => filterNames[n] ?? n))}.`], // after widening everywhere
   [/بحثنا عن بريد (\d+) من الأشخاص المطابقين، ثم أجرينا (\d+) عملية بحث عن بريد الشركات نفسها، فوصلك (\d+) من (\d+)\./g,
     (_, p, a, d, r) => `We looked for the emails of ${p} matching people, then ran ${a} searches for the companies' own emails: you received ${d} of ${r}.`],
   [/نفّذنا (\d+) محاولة للعثور على بريد الشركات المطابقة والتحقق منه، فوصلك (\d+) من (\d+)\./g,
