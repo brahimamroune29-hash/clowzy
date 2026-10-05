@@ -94,6 +94,10 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
         const data = z.object({token:tokenField,password}).parse(b);
         return authenticated(await store.resetPassword(data.token, data.password));
       }
+      if (path === 'auth/owner') {
+        const data = z.object({token:tokenField,email:z.email(),password}).parse(b);
+        return authenticated(await store.claimOwner(data.token, data.email, data.password));
+      }
       if (path === 'auth/recover') {
         const data = z.object({email:z.email(),code:z.string().min(1).max(64),password}).parse(b);
         const { token, code } = await store.recover(data.email, data.code, data.password);

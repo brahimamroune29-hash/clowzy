@@ -449,6 +449,29 @@ export class Store {
       return { token: await this.createSession(row.id), code: next };
     });
   }
+  // Handing the platform to its owner (scripts/owner-handover.ts): a one-time 24h link through which the new owner picks the
+  // sign-in email and password. admin/reset never mints links for the owner, so only this script and create-owner do.
+  async ownerHandover() {
+    const owner = await this.db.get<{ id: string }>("SELECT id FROM users WHERE role='admin' AND active=1 ORDER BY created_at LIMIT 1");
+    if (!owner) throw new AppError('المشترك غير موجود.', 404);
+    await this.revokeResets(owner.id);
+    return this.resetToken(owner.id, 86400000);
+  }
+  claimOwner(token: string, email: string, password: string) {
+    return this.transaction(async () => {
+      // Marking the link used is the claim; a refusal below rolls it back, so the link stays usable.
+      const row = await this.db.get<{ user_id: string }>(`UPDATE reset_tokens t SET used_at=? FROM users u WHERE t.token_hash=? AND t.used_at IS NULL AND t.expires_at>?
+        AND u.id=t.user_id AND u.role='admin' AND u.active=1 RETURNING t.user_id`, now(), hash(token), now());
+      if (!row) throw new AppError('رابط الاستعادة غير صالح أو انتهت مدته.', 410);
+      const address = normalizeEmail(email);
+      if (await this.db.get('SELECT 1 FROM users WHERE email=? AND id<>?', address, row.user_id)) throw new AppError('يوجد حساب بهذا البريد بالفعل.');
+      await this.db.run('UPDATE users SET email=?,password_hash=?,recovery_hash=NULL WHERE id=?', address, passwordHash(password), row.user_id);
+      await this.db.run('DELETE FROM sessions WHERE user_id=?', row.user_id);
+      await this.revokeResets(row.user_id);
+      await this.audit(row.user_id, 'تسليم حساب المالك', address);
+      return this.createSession(row.user_id);
+    });
+  }
   resetPassword(token: string, password: string) {
     return this.transaction(async () => {
       // Lock the account before reset tokens, like password changes and reset creation, to avoid lock-order deadlocks.

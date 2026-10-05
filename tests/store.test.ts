@@ -308,3 +308,22 @@ test('reset links are for members only, and per-search coverage rows stay out of
     assert.ok(!(await store.overview(admin.id)).admin!.audit.some(a=>a.action==='search-coverage'));
   } finally {await store.close();}
 });
+
+test('owner handover: a one-time link lets the new owner set the sign-in email and password; everything of the old owner ends',async()=>{
+  const {store,admin,alice}=await setup();
+  try {
+    const before=await store.login('owner@example.com','secure-password-123');
+    await store.createRecoveryCode(admin.id,'secure-password-123');
+    const memberLink=await store.createReset(admin.id,alice.id);
+    await assert.rejects(store.claimOwner(memberLink,'taken@client.com','client-password-1'),'a member reset link cannot claim the owner account');
+    const link=await store.ownerHandover();
+    await assert.rejects(store.claimOwner(link,'alice@example.com','client-password-1'),'an email in use is refused');
+    const session=await store.claimOwner(link,' Boss@Client.com ','client-password-1'); // the refusal left the link usable
+    const owner=await store.session(session);
+    assert.deepEqual([owner.id,owner.email,owner.role],[admin.id,'boss@client.com','admin']);
+    await assert.rejects(store.session(before),'the old owner is signed out');
+    await assert.rejects(store.login('owner@example.com','secure-password-123'));
+    assert.equal((await store.overview(admin.id)).admin!.recovery,false,'the old recovery code is gone');
+    await assert.rejects(store.claimOwner(link,'other@client.com','client-password-2'),'one use only');
+  } finally {await store.close();}
+});

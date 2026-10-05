@@ -49,7 +49,7 @@ export default function Platform(){
   // A page whose data did not load (network, paused database, redeploy): say so and retry; never show another page's data.
   if(!loading&&failure&&loadedPath!==requestPath)return <div className="boot"><Brand/><p>{failure}</p><Button variant="secondary" onClick={()=>{setLoading(true);void refresh();}}>{t('إعادة المحاولة','Try again')}</Button></div>;
   if(loading||loadedPath!==requestPath)return <div className="boot"><Brand/><p>{t('نجهّز مساحة عملك…','Preparing your workspace…')}</p><span className="loading-line"/></div>;
-  if((pathname==='/invite'||pathname==='/reset')&&token)return <Auth onLogin={onLogin} token={token} reset={pathname==='/reset'}/>;
+  if((pathname==='/invite'||pathname==='/reset'||pathname==='/owner')&&token)return <Auth onLogin={onLogin} token={token} reset={pathname==='/reset'} owner={pathname==='/owner'}/>;
   if(!data)return <Auth onLogin={onLogin}/>;
   if(data.user.role==='member'&&!termsCurrent(data.user))return <TermsGate again={!!data.user.terms_accepted_at} onAccepted={refresh} onLogout={logout}/>;
   const admin=data.user.role==='admin',viewProps={data,reload:refresh,notify};

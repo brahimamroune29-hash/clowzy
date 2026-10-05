@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "test": "tsx --test tests/*.test.ts",
     "create-owner": "tsx scripts/create-owner.ts",
-    "worker": "tsx scripts/search-worker.ts"
+    "worker": "tsx scripts/search-worker.ts",
+    "owner-handover": "tsx scripts/owner-handover.ts"
   },
   "dependencies": {
     "@fontsource/ibm-plex-sans-arabic": "5.3.0",
