@@ -56,6 +56,11 @@ export const emailTrust = (status: string, en = false) => status === 'PROBABLE' 
 // fewer of them than 20 per email asked for, and the search will likely end short. Said before it starts.
 export const MIN_FIND_RATE = 0.05; // also the batch-size floor in live-search.ts; the warning's «one in twenty» follows it
 export const fewReachable = (reachable: number | undefined, count: number) => reachable !== undefined && reachable * MIN_FIND_RATE < count;
+// A niche+country whose past searches delivered far less than asked for (store.marketRate). This is measured from
+// real results, so it warns harder than the estimated fewReachable: salons in Lebanon read 0; a healthy market stays
+// well above. Only set once there is enough history to judge, so a new market is never branded dead.
+export const DEAD_MARKET_RATE = 0.15;
+export const deadMarket = (rate: number | undefined) => rate !== undefined && rate < DEAD_MARKET_RATE;
 // Webmail and internet-provider domains (Gmail, Hotmail, IDM in Lebanon...): an address there belongs to a person, never to a
 // company's own domain, and two salons with an IDM address are not one company (review 2026-10-05).
 export const freeMail = /^((gmail|googlemail|hotmail|outlook|live|msn|yahoo|ymail|icloud|aol|protonmail|proton|yandex|gmx)(\.[a-z]{2,3}){1,2}|(me|mac|mail|rocketmail)\.com|emirates\.net\.ae|eim\.ae|batelco\.com\.bh|omantel\.net\.om|qatar\.net\.qa|qualitynet\.net|(idm|cyberia|terra|sodetel)\.net\.lb|(awalnet|nesma)\.net\.sa|tedata\.net\.eg|link\.net|zoho\.com|mail\.ru|(orange|wanadoo|free|sfr)\.fr|laposte\.net|web\.de|libero\.it)$/i;

@@ -3,7 +3,7 @@ import { useEffect,useRef,useState } from 'react';
 import Link from 'next/link';
 import { useRouter,useSearchParams } from 'next/navigation';
 import { ArrowDown, Check, CheckCircle, Coins, Copy, DownloadSimple, MagnifyingGlass, MapPin, Plus, SlidersHorizontal, Sparkle, UsersThree, ClockCounterClockwise, ArrowSquareOut, X } from '@phosphor-icons/react';
-import { searchMethod, assistForm, completionDraft, type AssistMessage, type AssistReply, type Contact, emailTrust, fewReachable, fieldOf, freeMail, gulf, OTHER, type Search, type SearchInput, titles, withCountries } from '@/lib/contracts';
+import { searchMethod, assistForm, completionDraft, type AssistMessage, type AssistReply, type Contact, deadMarket, emailTrust, fewReachable, fieldOf, freeMail, gulf, OTHER, type Search, type SearchInput, titles, withCountries } from '@/lib/contracts';
 import { cityNames, countryFromText, countrySuggestions } from '@/lib/places';
 import { api,date,downloadContacts,number } from '@/lib/client';
 import type { ViewProps } from './platform';
@@ -89,7 +89,7 @@ export function SearchView({data,reload,notify}:ViewProps){
   const [conversation,setConversation]=useState<AssistMessage[]>([]);
   const [aiState,setAiState]=useState<'idle'|'prepare'|'clarify'|'answer'|'error'>('idle'),[choices,setChoices]=useState<string[]>([]);
   const formVersion=useRef(0);
-  const [match,setMatch]=useState<{total?:number;strict?:number;reachable?:number;supplementary?:boolean;industryLabels?:string[];industries?:string[];error?:string;audience:string}|null>(null); // null: counting
+  const [match,setMatch]=useState<{total?:number;strict?:number;reachable?:number;marketRate?:number;supplementary?:boolean;industryLabels?:string[];industries?:string[];error?:string;audience:string}|null>(null); // null: counting
   function change(patch:Partial<Form>){
     formVersion.current++;
     setAiState('idle');setChoices([]);setAiNote('');
@@ -123,7 +123,7 @@ export function SearchView({data,reload,notify}:ViewProps){
   useEffect(()=>{
     if(!method||!data.provider?.configured||JSON.parse(audience).sector.length<2)return;
     let active=true;
-    const timer=setTimeout(()=>api<{total:number;strict:number;reachable?:number;supplementary:boolean;industryLabels:string[];industries:string[]}>('search/count',JSON.parse(audience))
+    const timer=setTimeout(()=>api<{total:number;strict:number;reachable?:number;marketRate?:number;supplementary:boolean;industryLabels:string[];industries:string[]}>('search/count',JSON.parse(audience))
       .then(r=>{if(active)setMatch({...r,audience});}).catch(e=>{if(active)setMatch({error:(e as Error).message,audience});}),700);
     return()=>{active=false;clearTimeout(timer);};
   },[data.provider?.configured,audience,method]);
@@ -154,6 +154,7 @@ export function SearchView({data,reload,notify}:ViewProps){
     :(typed&&currentMatch.industryLabels?.length?t('سنبحث في: ','We will search in: ')+(lang==='en'?currentMatch.industries??[]:currentMatch.industryLabels).join(lang==='en'?', ':'، ')+'. ':'')
       +(currentMatch.total===0&&!currentMatch.supplementary?t('لا يوجد ما يطابق هذه المعايير. وسّع البحث: احذف المدينة أو حجم الشركة.','Nothing matches. Widen the search: remove the city or company size.')
       :t('عدد '+who,companies?'Matching company records':'Matching people records')+': '+number(currentMatch.total!)+'. '+t('هذه سجلات مرشحة، وليست إيميلات متحققة. العدد المطلوب هدف للبحث، والمتاح فعليًا يتحدد بعد التحقق.','These are candidate records, not verified emails. Your requested count is a search target; availability is established after verification.')+(currentMatch.supplementary?' '+t('عند نقص النتائج، نبحث أيضًا في مواقع الشركات المطابقة ضمن حد البحث المتاح.','If results fall short, we also search matching company websites within the search allowance.'):few?' '+t('المصدر الحالي يحتوي سجلات أقل من العدد المطلوب.','The current source has fewer records than your target.')
+        :deadMarket(currentMatch.marketRate)?' '+t('تجاربك السابقة في هذا السوق سلّمت نحو '+Math.round(currentMatch.marketRate!*100)+'٪ فقط من العدد المطلوب، فتوقّع نتائج قليلة جدًا وربما لا شيء. جرّب سوقًا له مواقع (مطاعم، عيادات، شركات).','Your past searches in this market delivered only about '+Math.round(currentMatch.marketRate!*100)+'% of what was asked, so expect very few, possibly none. Try a market with websites (restaurants, clinics, companies).')
         :fewReachable(currentMatch.reachable,filters.count)?' '+t('يعمل '+number(currentMatch.reachable!)+' منهم فقط في شركات معروفة لدى مزوّد البيانات، ونجد عادةً بريد واحد من كل عشرين منهم'+(filters.widen?'، فسنوسّع البحث للأماكن القريبة إذا ما اكتمل العدد.':'، فقد يصلك أقل من العدد المطلوب.'),'Only '+number(currentMatch.reachable!)+' of them work at companies the data provider knows, and we usually find the email of about 1 in 20 of those'+(filters.widen?', so we will widen to nearby places if the count is not reached.':', so you may receive fewer than you asked for.')):''));
   function chooseMethod(next:'manual'|'ai'|null){
     if(busy||thinking)return;

@@ -38,6 +38,8 @@ let dummyHash: string | undefined;
 // market needs more depth per day — a higher cap spends more provider credit, so it stays the owner's call.
 // Unset, zero, negative or non-numeric keeps the 2500 default: a bad value never disables the cap by accident.
 export const dailyPeople = () => { const n = Math.floor(Number(process.env.DAILY_PEOPLE)); return n > 0 ? n : 2500; };
+// Least past requests in a niche+country before marketRate judges it: a verdict on one or two searches is noise.
+const MARKET_MIN_HISTORY = 40;
 export const dailyLimit = 'بلغت حد البحث اليومي لحسابك. يمكنك البحث مجددًا بعد 24 ساعة من أول بحث اليوم، أو تواصل مع مالك المنصة.';
 const userFields = 'id,name,email,role,active,balance,created_at,terms_accepted_at';
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
@@ -196,6 +198,21 @@ export class Store {
   async dailyFetched(userId: string) {
     return count(await this.db.get<{ n: number }>('SELECT COALESCE(sum(r.fetched),0)::int n FROM provider_runs r JOIN searches s ON s.id=r.search_id WHERE s.user_id=? AND s.created_at>?',
       userId, new Date(Date.now() - 86400000).toISOString()));
+  }
+  // How much of what was asked for actually arrived in this niche+country, across every member's finished
+  // searches ('completed'/'partial' only — a technical failure is not the market's fault). The pre-search
+  // warning uses it to tell a dead market (salons in Lebanon) from a merely thin one. Null when there is too
+  // little past work to judge, so a new market is never branded dead on one unlucky search.
+  async marketRate(sector: string, countries: string[]) {
+    if (!sector || !countries.length) return null;
+    const row = await this.db.get<{ delivered: number; requested: number }>(
+      `SELECT COALESCE(sum(delivered),0)::int delivered, COALESCE(sum(requested),0)::int requested FROM searches
+       WHERE status IN ('completed','partial') AND filters::jsonb->>'sector' = ?
+         AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(filters::jsonb->'countries') fc
+                     WHERE fc IN (SELECT jsonb_array_elements_text(?::jsonb)))`,
+      sector, JSON.stringify(countries));
+    if (!row || row.requested < MARKET_MIN_HISTORY) return null;
+    return { rate: row.delivered / row.requested, requested: row.requested };
   }
   // A search that failed, or may have been paid at the provider, shows in the owner's activity log: member, search, reason.
   async alert(userId: string, searchId: string, detail: string) {

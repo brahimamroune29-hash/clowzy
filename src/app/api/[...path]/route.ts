@@ -167,7 +167,8 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
       if (!providerInfo().configured) throw new AppError('مزوّد البيانات غير مهيأ على الخادم. تواصل مع مالك المنصة.',503);
       await store.checkSearchCapacity(user.id, 1);
       const audience = await resolveAudience(store,input,undefined,user.id); // «أخرى» is mapped here, so the member sees what will be searched
-      return json({...await new IcypeasClient().count(audience),industryLabels:audience.industryLabels,industries:audience.industries});
+      const market = await store.marketRate(input.sector, input.countries); // how this niche+country performed before, if known
+      return json({...await new IcypeasClient().count(audience),industryLabels:audience.industryLabels,industries:audience.industries,...(market?{marketRate:market.rate}:{})});
     }
     if (path === 'assist') {
       const {messages,context}=assistRequestSchema.parse(b);
