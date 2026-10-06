@@ -33,8 +33,11 @@ let dummyHash: string | undefined;
 // Provider work (people fetched) per member per 24 h: members pay per delivered email, the provider per person fetched.
 // ponytail: counted by each search's start time, and a running search may pass it by one page (two can run at once).
 // People and companies fetched per member per day (0.02 provider credit each, so at most 50 credits): owner's 1,000 of 2026-09-30,
-// raised 2026-10-01 so one search for 50 can try its 25x people and then 25x companies (the full-count rule).
-export const DAILY_PEOPLE = 2500;
+// The member's daily provider-work cap: people fetched across a day. 2500 (raised 2026-10-01) lets one search for
+// 50 try its 25x people and then 25x companies. The owner raises it from the host env (DAILY_PEOPLE) when a thin
+// market needs more depth per day — a higher cap spends more provider credit, so it stays the owner's call.
+// Unset, zero, negative or non-numeric keeps the 2500 default: a bad value never disables the cap by accident.
+export const dailyPeople = () => { const n = Math.floor(Number(process.env.DAILY_PEOPLE)); return n > 0 ? n : 2500; };
 export const dailyLimit = 'بلغت حد البحث اليومي لحسابك. يمكنك البحث مجددًا بعد 24 ساعة من أول بحث اليوم، أو تواصل مع مالك المنصة.';
 const userFields = 'id,name,email,role,active,balance,created_at,terms_accepted_at';
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
@@ -213,7 +216,7 @@ export class Store {
     const user = await this.user(id);
     if (user.balance < 1) throw new AppError('رصيدك صفر. تواصل مع مالك المنصة لإضافة رصيد قبل البحث.');
     if (user.balance - await this.reserved(id) < requested) throw new AppError('الرصيد المتاح بعد حجز عمليات البحث لا يكفي.');
-    if (await this.dailyFetched(id) >= DAILY_PEOPLE) throw new AppError(dailyLimit, 429);
+    if (await this.dailyFetched(id) >= dailyPeople()) throw new AppError(dailyLimit, 429);
     // ponytail: one active search per member prevents competing cursor writes; per-audience leases if parallel searches are needed.
     if (count(await this.db.get<{ n: number }>("SELECT count(*) n FROM searches WHERE user_id=? AND status IN ('queued','awaiting_provider')", id)) >= 1) throw new AppError('لديك بحث قيد التنفيذ. انتظر اكتماله.', 429);
     if (count(await this.db.get<{ n: number }>('SELECT count(*) n FROM reservations')) >= 1000) throw new AppError('قائمة البحث ممتلئة مؤقتًا. حاول لاحقًا.', 503);

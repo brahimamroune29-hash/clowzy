@@ -4,7 +4,7 @@ import { audienceOf } from './audience';
 import { WEB_ROUNDS } from './web-companies';
 import {recordCoverage} from './coverage';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { AppError, DAILY_PEOPLE, dailyLimit, Store } from './store';
+import { AppError, dailyPeople, dailyLimit, Store } from './store';
 import { countryLabel, nearby } from './places';
 import { BATCH, companyKeys, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadKeys, leadName, personKey, publishedEnabled, queryOf, siteOf, stageCount, submissionTask, submitCap, webStage } from './icypeas';
 
@@ -197,7 +197,7 @@ export class LiveSearch {
         if (!pool.length) {
           if (exhausted()) break;
           if (pages >= PAGES_PER_CALL || this.elapsed() > COLLECT_MS) return this.pause(userId, id, batch, input);
-          if (await this.store.dailyFetched(userId) >= DAILY_PEOPLE) { // the member's daily provider work: send who was picked, then stop
+          if (await this.store.dailyFetched(userId) >= dailyPeople()) { // the member's daily provider work: send who was picked, then stop
             if (later.length) { daily = true; continue; } // no page is left today: the people without a website go now
             if (batch.length) break;
             return this.finish(userId, id, 'حُسب فقط ما وصل. ' + dailyLimit);
