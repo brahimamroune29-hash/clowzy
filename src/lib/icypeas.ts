@@ -43,6 +43,8 @@ const onNiche = (input: Audience, stage: number, company?: string | null) => sta
 export const stageCount = (input: Audience) => dataStages(input) + Number(webEnabled(input));
 const dentalExclusions = ['lab', 'labs', 'laboratory', 'laboratories', 'مختبر', 'معمل', 'supplies', 'supply', 'supplier', 'suppliers', 'equipment', 'study', 'academy', 'education', 'course', 'courses', 'factory', 'تجهيز', 'مستلزمات', 'مصنع', 'دورات'];
 const nonClinic = /\b(labs?|laborator(?:y|ies)|suppl(?:y|ies|iers?)|equipment|study|academy|education|courses?|factory)\b|مختبر|معمل|تجهيز|مستلزمات|مصنع|دورات/i;
+// A dental search keeps clinics only: suppliers, labs and courses are filed under Dentists too (Matest Dental Supplies, 2026-10-07).
+export const clinicLike = (input: Audience, name?: string | null) => !dentalOnly(input) || !nonClinic.test(name || '');
 const supplierDescription = /\b(?:exclusive|authorized|sole)\s+(?:agent|distributor)|\b(?:distributor|supplier|manufacturer)\s+(?:of|for)\b|توريد|موزع|موزّع|وكيل حصري|تصنيع أجهزة/i;
 // The two stages' places (strict codes, then names) and the headcount range, shared by the people and companies queries.
 function where(input: Audience) {
@@ -118,7 +120,7 @@ const itemSchema = z.object({
 const pending = ['NONE', 'SCHEDULED', 'IN_PROGRESS'];
 // Link pages, social networks, store builders, forms, short links and booking platforms (salons book through Fresha, Booksy...)
 // host many companies: their domain is not the company's (a salon delivered hello@fresha.com on 2026-10-05).
-const sharedHost = /(^|\.)(linktr\.ee|lnk\.bio|linkin\.bio|bio\.link|beacons\.ai|taplink\.cc|instagram\.com|instagr\.am|facebook\.com|fb\.com|fb\.me|x\.com|twitter\.com|t\.co|tiktok\.com|snapchat\.com|linkedin\.com|youtube\.com|youtu\.be|wa\.me|wa\.link|whatsapp\.com|t\.me|goo\.gl|google\.com|business\.site|blogspot\.com|wordpress\.com|wixsite\.com|myshopify\.com|salla\.sa|zid\.store|youcan\.shop|expandcart\.com|wuilt\.com|zyda\.com|odoo\.com|forms\.gle|bit\.ly|tinyurl\.com|calendly\.com|about\.me|carrd\.co|github\.io|notion\.site|fresha\.com|booksy\.com|vagaro\.com|setmore\.com|square\.site|squareup\.com|treatwell\.[a-z.]+|planity\.com|mindbodyonline\.com|simplybook\.me|glossgenius\.com|styleseat\.com|schedulicity\.com|gettimely\.com|zenoti\.com|phorest\.com|acuityscheduling\.com|godaddysites\.com|site123\.me|webflow\.io)$/i;
+const sharedHost = /(^|\.)(linktr\.ee|lnk\.bio|linkin\.bio|bio\.link|beacons\.ai|taplink\.cc|instagram\.com|instagr\.am|facebook\.com|fb\.com|fb\.me|x\.com|twitter\.com|t\.co|tiktok\.com|snapchat\.com|linkedin\.com|youtube\.com|youtu\.be|wa\.me|wa\.link|whatsapp\.com|t\.me|goo\.gl|g\.co|g\.page|google\.com|business\.site|blogspot\.com|wordpress\.com|wixsite\.com|myshopify\.com|salla\.sa|zid\.store|youcan\.shop|expandcart\.com|wuilt\.com|zyda\.com|odoo\.com|forms\.gle|bit\.ly|tinyurl\.com|calendly\.com|about\.me|carrd\.co|github\.io|notion\.site|fresha\.com|booksy\.com|vagaro\.com|setmore\.com|square\.site|squareup\.com|treatwell\.[a-z.]+|planity\.com|mindbodyonline\.com|simplybook\.me|glossgenius\.com|styleseat\.com|schedulicity\.com|gettimely\.com|zenoti\.com|phorest\.com|acuityscheduling\.com|godaddysites\.com|site123\.me|webflow\.io)$/i;
 const sure = ['ultra_sure', 'very_sure'];
 // Placeholder employers: without a website there is nothing to find an email at.
 const genericCompany = /^(confidential\b|private (company|office|sector)$|self[- ]?employed|freelancer?$|stealth\b|n\/?a$|none$|-+$)/i;
@@ -245,7 +247,7 @@ export class IcypeasClient {
     const parsed = z.array(leadSchema).max(200).safeParse(raw.leads ?? []);
     if (!parsed.success) throw new IcypeasError('تغيّرت صيغة نتائج مزوّد البيانات. يلزم مراجعة الربط.');
     const next = z.object({ token: z.string().min(1) }).safeParse(raw.pagination);
-    const leads = parsed.data.filter(lead => leadName(lead) && domainOf(lead) && inCountries(lead, input.countries) && onNiche(input, stage, lead.lastCompanyName));
+    const leads = parsed.data.filter(lead => leadName(lead) && domainOf(lead) && inCountries(lead, input.countries) && onNiche(input, stage, lead.lastCompanyName) && clinicLike(input, lead.lastCompanyName));
     // ponytail: ranks within one page of 25, not a company's whole staff; query decision makers first if owners stay out of reach.
     leads.sort((a, b) => titleTier(a.lastJobTitle || '') - titleTier(b.lastJobTitle || ''));
     return { leads, returned: parsed.data.length, token: next.success ? next.data.token : null };
@@ -257,7 +259,7 @@ export class IcypeasClient {
       try {
         const page = await webCompanies(input, token, this.transport);
         return { ...page, leads: page.companies.map(c => ({ kind: 'company' as const, lastCompanyName: c.name, lastCompanyWebsite: c.website, address: c.address, lastCompanyIndustry: c.industry, email: '' }))
-          .filter(l => siteOf(l) && inCountries(l, input.countries) && (!dentalOnly(input) || !nonClinic.test(l.lastCompanyName))) };
+          .filter(l => siteOf(l) && inCountries(l, input.countries) && clinicLike(input, l.lastCompanyName)) };
       } catch { throw new IcypeasError('تعذّر إكمال البحث المكمّل في المواقع. حُفظت النتائج التي وصلتك؛ حاول لاحقًا.', 503); }
     }
     const raw = await this.request('find-companies', { query: companiesQuery(input, stage), pagination: { size: PAGE, ...(token ? { token } : {}) } });
@@ -266,7 +268,7 @@ export class IcypeasClient {
     const next = z.object({ token: z.string().min(1) }).safeParse(raw.pagination);
     const leads: Lead[] = parsed.data.filter(c => !dentalOnly(input) || !supplierDescription.test(c.description || '')).map(c => ({ kind: 'company' as const, firstname: '', lastname: '', profileUrl: c.url, lastJobTitle: '', address: c.address, lastCompanyName: c.name,
       lastCompanyWebsite: c.website, lastCompanyIndustry: c.industry, lastCompanySize: c.numberOfEmployees, email: '' }))
-      .filter(l => l.lastCompanyName?.trim() && siteOf(l) && inCountries(l, input.countries) && onNiche(input, stage, l.lastCompanyName) && (!dentalOnly(input) || !nonClinic.test(l.lastCompanyName)));
+      .filter(l => l.lastCompanyName?.trim() && siteOf(l) && inCountries(l, input.countries) && onNiche(input, stage, l.lastCompanyName) && clinicLike(input, l.lastCompanyName));
     return { leads, returned: parsed.data.length, token: next.success ? next.data.token : null };
   }
   // Six website reads at a time (in parallel, 8 s each) fit one server request; the caller persists the remaining queue before

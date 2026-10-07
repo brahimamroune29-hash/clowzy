@@ -5,21 +5,28 @@ import { WEB_ROUNDS } from './web-companies';
 import {recordCoverage} from './coverage';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { AppError, dailyPeople, dailyLimit, Store } from './store';
-import { countryLabel, nearby } from './places';
+import { countryLabel, farther, nearby } from './places';
 import { BATCH, companyKeys, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadKeys, leadName, personKey, publishedEnabled, queryOf, siteOf, stageCount, submissionTask, submitCap, webStage } from './icypeas';
 
 type Run = { search_id: string; phase: string; people: string; file: string | null; scanned: number; fetched: number; submitted: number; submitted_at: number | null; message: string; updated_at: number; read_errors: number; mode: 'companies' | null; people_checked: number; scope: number };
 // Where a search looks, in order: the member's place, then (widen) the whole country when a city was set, then the region's
-// other countries one by one (client 2026-10-05: «يوسّع… ولا مرة بدي يكون ناقص»; owner: the place only, the same region, on by default).
-const placesOf = (input: Resolved) => [{ countries: input.countries, city: input.city }, ...!input.widen ? []
-  : [...input.city ? [{ countries: input.countries, city: '' }] : [], ...nearby(input.countries).map(cc => ({ countries: [cc], city: '' }))]];
+// other countries one by one (client 2026-10-05: «يوسّع… ولا مرة بدي يكون ناقص»; owner: the place only, the same region, on by default),
+// then the other regions, nearest first (tier 1, 2, 3; owner 2026-10-07: every niche falls short somewhere).
+const placesOf = (input: Resolved) => [{ countries: input.countries, city: input.city, tier: 0 }, ...!input.widen ? []
+  : [...input.city ? [{ countries: input.countries, city: '', tier: 0 }] : [], ...nearby(input.countries).map(cc => ({ countries: [cc], city: '', tier: 0 })),
+    ...farther(input.countries).map((countries, i) => ({ countries, city: '', tier: i + 1 }))]];
+// The first and last place of a place's region: a region's people, then its businesses' own emails, come before the next region.
+const regionOf = (input: Resolved, scope: number) => {
+  const tiers = placesOf(input).map(p => p.tier);
+  return { first: tiers.indexOf(tiers[scope]), last: tiers.lastIndexOf(tiers[scope]), total: tiers.length };
+};
 // The audience a run continues with: the stored filters at the place it has reached, switched to companies once a people search fell back.
 const inputOf = (filters: string, run?: Pick<Run, 'mode' | 'scope'>): Resolved => {
-  const input = audienceOf(filters);
-  return { ...input, ...placesOf(input)[run?.scope ?? 0], ...(run?.mode ? { mode: run.mode } : {}) };
+  const input = audienceOf(filters), { countries, city } = placesOf(input)[run?.scope ?? 0];
+  return { ...input, countries, city, ...(run?.mode ? { mode: run.mode } : {}) };
 };
-// The places a search has widened to: in the companies phase, every place (people come first everywhere).
-const widenedTo = (input: Resolved, run: Pick<Run, 'mode' | 'scope'>) => placesOf(input).slice(1, (run.mode ? placesOf(input).length - 1 : run.scope) + 1);
+// The places a search has widened to: in a companies phase, every place of its region (that region's people came first).
+const widenedTo = (input: Resolved, run: Pick<Run, 'mode' | 'scope'>) => placesOf(input).slice(1, (run.mode ? regionOf(input, run.scope).last : run.scope) + 1);
 type Slots = { read: number; bulk: number };
 const BATCH_DEADLINE = 15 * 60000; // a batch that never fully returns is closed with what came back
 const READ_ERRORS = 10; // a batch past its deadline is closed on read errors only after this many in a row
@@ -46,7 +53,8 @@ const LATER_KEPT = 100;
 // Durable markers prevent refreshes, timeouts or restarts from replaying paid requests. Batches advance through browser polls or the optional search worker.
 export class LiveSearch {
   private begun = Date.now(); // one LiveSearch per HTTP request
-  constructor(private store: Store, private client = new IcypeasClient(), private gaps = { read: 2100, bulk: 1100 }, private slots?: Slots) {}
+  // catalog: how long emails another search already found wait before they show, so the page reads as a search (owner, 2026-10-07).
+  constructor(private store: Store, private client = new IcypeasClient(), private gaps: { read: number; bulk: number; catalog?: number } = { read: 2100, bulk: 1100, catalog: 15000 }, private slots?: Slots) {}
   private async takeSlot(kind: keyof Slots) {
     const gap = this.gaps[kind], now = Date.now();
     if (!gap) return true;
@@ -93,7 +101,7 @@ export class LiveSearch {
       + widen; // a fallback that found no company email reads as the people search
     if (!checked) return wide + (companies ? 'لم نجد شركات جديدة مطابقة لها نطاق عمل صالح للبحث حاليًا. ' : 'لا يوجد أشخاص جدد مطابقون لهذه المعايير حاليًا. ') + widen;
     // The list the advice is about: the member's own kind (people, or companies) at the last place it was searched in.
-    const cursor = await this.store.cursor(userId, cursorKey(inputOf(search.filters, { mode: null, scope: run.mode ? placesOf(input).length - 1 : run.scope })));
+    const cursor = await this.store.cursor(userId, cursorKey(inputOf(search.filters, { mode: null, scope: run.mode ? regionOf(input, run.scope).last : run.scope })));
     const found = search.delivered + search.duplicates, dup = search.duplicates ? `، منها ${search.duplicates} مكرر مستبعد` : '';
     // One company can have domain discovery followed by publication verification: attempts are not unique companies.
     return wide + (companies ? `نفّذنا ${checked} محاولة للعثور على بريد الشركات المطابقة والتحقق منه، فوصلك ${search.delivered} من ${search.requested}. `
@@ -105,8 +113,8 @@ export class LiveSearch {
   private async dropHeld(userId: string, search: Search) {
     const taken = await this.store.takenCompanies(search.id), input = audienceOf(search.filters);
     if (taken.size) await this.store.transaction(async () => {
-      for (const mode of ['people', 'companies'] as const) for (const place of placesOf(input)) {
-        const key = cursorKey({ ...input, ...place, mode }), c = await this.store.cursor(userId, key), left = JSON.parse(c.leftovers) as Lead[];
+      for (const mode of ['people', 'companies'] as const) for (const { countries, city } of placesOf(input)) {
+        const key = cursorKey({ ...input, countries, city, mode }), c = await this.store.cursor(userId, key), left = JSON.parse(c.leftovers) as Lead[];
         const kept = left.filter(l => !leadKeys(l).some(k => taken.has(k)));
         if (kept.length < left.length) await this.store.saveCursor(userId, key, c.stage, c.token, JSON.stringify(kept));
       }
@@ -122,22 +130,32 @@ export class LiveSearch {
     await this.patch(id, { phase: 'finished', message });
     return this.view(userId, id);
   }
-  // The natural end of a search's place (no more people, or the attempts cap). Short of its count, it moves to the next place
-  // (placesOf), with a page budget of its own; people everywhere come before any company's own email (owner, 2026-10-05). Then a
-  // people search falls back, once, to the companies' own verified emails (owner's rule, 2026-10-01), from the member's place again.
+  // The natural end of a search's place (no more people, or the attempts cap). Short of its count, it moves to the next place of
+  // its region (placesOf), with a page budget of its own; the region's people come before any company's own email (owner, 2026-10-05).
+  // Then a people search falls back to the companies' own verified emails (owner's rule, 2026-10-01), from the region's first place
+  // again; then the next region starts over with its people.
   private async end(userId: string, id: string, input: Resolved, closeOnly = false) {
     if (!closeOnly) {
       const search = await this.store.getSearch(userId, id), run = (await this.run(id))!, short = search.delivered < search.requested;
+      const region = regionOf(audienceOf(search.filters), run.scope);
       // A place of people gets its own attempts too (a capped first place must not skip the rest); their total is people_checked.
-      if (short && run.scope + 1 < placesOf(audienceOf(search.filters)).length) {
+      if (short && run.scope < region.last) {
         if (await this.store.db.run(`UPDATE provider_runs SET scope=scope+1,scanned=0,people='[]',updated_at=?${run.mode ? '' : ',people_checked=people_checked+submitted,submitted=0'}
           WHERE search_id=? AND scope=? AND COALESCE(mode,'')=?`, Date.now(), id, run.scope, run.mode ?? ''))
           return this.advance(userId, id, inputOf(search.filters, { mode: run.mode, scope: run.scope + 1 }));
         return this.view(userId, id); // another request moved it on
       }
       if (short && input.mode === 'people' && await this.store.db.run(
-        "UPDATE provider_runs SET mode='companies',scope=0,people_checked=people_checked+submitted,scanned=0,submitted=0,people='[]',updated_at=? WHERE search_id=? AND mode IS NULL AND scope=?", Date.now(), id, run.scope))
-        return this.advance(userId, id, inputOf(search.filters, { mode: 'companies', scope: 0 }));
+        "UPDATE provider_runs SET mode='companies',scope=?,people_checked=people_checked+submitted,scanned=0,submitted=0,people='[]',updated_at=? WHERE search_id=? AND mode IS NULL AND scope=?", region.first, Date.now(), id, run.scope))
+        return this.advance(userId, id, inputOf(search.filters, { mode: 'companies', scope: region.first }));
+      // ponytail: an earlier region's company attempts leave the counters here (they are not people); the end message then counts
+      // only the last region's. Add a column of their own if the owner wants the total.
+      if (short && region.last + 1 < region.total) {
+        if (await this.store.db.run(`UPDATE provider_runs SET mode=NULL,scope=?,people_checked=people_checked+CASE WHEN mode IS NULL THEN submitted ELSE 0 END,scanned=0,submitted=0,people='[]',updated_at=?
+          WHERE search_id=? AND scope=? AND COALESCE(mode,'')=?`, region.last + 1, Date.now(), id, run.scope, run.mode ?? ''))
+          return this.advance(userId, id, inputOf(search.filters, { mode: null, scope: region.last + 1 }));
+        return this.view(userId, id); // another request moved it on
+      }
     }
     return this.finish(userId, id);
   }
@@ -180,7 +198,10 @@ export class LiveSearch {
       // The rate counts what the provider found: the fallback its own attempts (submitted restarts at 0) and emails (company rows),
       // never emails the saved catalog delivered before any batch (2 catalog emails in 7 people read as a 29% rate).
       const contacts = await this.store.db.all<Candidate & { catalog: boolean }>("SELECT kind,website,email,company,EXISTS(SELECT 1 FROM crm_deliveries d WHERE d.contact_id=c.id AND d.origin='catalog') catalog FROM contacts c WHERE search_id=?", id);
-      const found = contacts.filter(c => !c.catalog && (!run.mode || c.kind === 'company')).length + (run.mode ? 0 : search.duplicates); // a duplicate was found too
+      // People count people: a later region's people come after an earlier region's company emails.
+      // ponytail: the fallback counts the company emails of earlier regions too, so a later region's fallback starts with smaller
+      // batches (slower, never wrong); keep a per-region baseline if that wait shows.
+      const found = contacts.filter(c => !c.catalog && (run.mode ? c.kind === 'company' : input.mode === 'companies' || c.kind !== 'company')).length + (run.mode ? 0 : search.duplicates); // a duplicate was found too
       const tried = run.mode ? run.submitted : run.people_checked + run.submitted; // people: every place so far
       const rate = tried ? Math.max(MIN_FIND_RATE, found / tried) : PRIOR_FIND_RATE;
       const want = Math.min(BATCH, submitCap(search.requested) - run.submitted, Math.ceil((search.requested - search.delivered) / rate));
@@ -207,8 +228,12 @@ export class LiveSearch {
             // Web discovery and classification together have a 42 s ceiling. Start them in a fresh request,
             // persist the result, then pause before any paid email submission if the submit window has passed.
             if (this.elapsed() > 5000) return this.pause(userId, id, batch, input);
-            await this.store.hit('web-search:' + id, WEB_ROUNDS, 86400000, 'بلغ البحث حد اكتشاف المواقع. حُفظت النتائج المتاحة.');
-            await this.store.hit('web-day:' + userId, 12, 86400000, 'بلغت حد اكتشاف المواقع اليومي. حُفظت النتائج المتاحة.');
+            // A web cap ends this place's pages, not the search: the next place or region still has its provider pages (dental
+            // Lebanon ended at 8 of 10 on the per-search cap, 2026-10-07).
+            try {
+              await this.store.hit('web-search:' + id, WEB_ROUNDS, 86400000);
+              await this.store.hit('web-day:' + userId, 12, 86400000);
+            } catch (e) { if (!(e instanceof AppError)) throw e; wrapped = true; continue; }
           }
           pages++;
           const page = await this.page(input, token, stage);
@@ -295,15 +320,12 @@ export class LiveSearch {
       const search = await this.store.enqueueSearch(userId, input);
       if (search.status !== 'queued' || !await this.store.db.run("UPDATE searches SET status='awaiting_provider' WHERE id=? AND status='queued'", search.id)) return { search, claimed: false };
       await this.store.db.run("INSERT INTO provider_runs(search_id,phase,updated_at) VALUES(?,'searching',?)", search.id, Date.now());
+      // Emails another search already found are held with the run until submitted_at, then delivered by a poll and charged as usual.
+      // ponytail: the 'catalog' phase keeps Candidates in people and its reveal time in submitted_at (no migration, owner 2026-10-07);
+      // both are reset when it ends. Give it columns of its own if another phase ever needs them at the same time.
       const cached = await catalogMatches(this.store, userId, input, input.count);
-      if (cached.length) await this.store.deliverBatch(userId, search.id, cached.map(c => ({ ...c, sector: input.sector })), 'catalog');
-      const fresh = await this.store.getSearch(userId, search.id);
-      if (fresh.delivered >= fresh.requested) {
-        await this.store.finishSearch(search.id);
-        await this.patch(search.id, { phase: 'finished' });
-        return { search: await this.view(userId, search.id), claimed: false };
-      }
-      return { search: fresh, claimed: true };
+      if (cached.length) await this.patch(search.id, { phase: 'catalog', people: JSON.stringify(cached), submitted_at: Date.now() + (this.gaps.catalog ?? 0) });
+      return { search: await this.store.getSearch(userId, search.id), claimed: !cached.length };
     });
     return claimed ? this.advance(userId, search.id, input) : this.poll(userId, search.id);
   }
@@ -312,6 +334,15 @@ export class LiveSearch {
     const search = await this.store.getSearch(userId, id), run = await this.run(id);
     if (!run || search.status !== 'awaiting_provider') return this.view(userId, id);
     const stale = Date.now() - run.updated_at > STALE, input = inputOf(search.filters, run);
+    if (run.phase === 'catalog') {
+      if (Date.now() < (run.submitted_at ?? 0)) return this.view(userId, id);
+      const delivered = await this.store.transaction(async () => {
+        if (!await this.store.db.run("UPDATE provider_runs SET phase='searching',people='[]',submitted_at=NULL,updated_at=? WHERE search_id=? AND phase='catalog'", Date.now(), id)) return null;
+        return this.store.deliverBatch(userId, id, (JSON.parse(run.people) as Candidate[]).map(c => ({ ...c, sector: input.sector })), 'catalog');
+      });
+      if (delivered === null) return this.view(userId, id); // another poll delivered them, or the search closed
+      return delivered >= search.requested || closeOnly ? this.finish(userId, id) : this.advance(userId, id, input);
+    }
     // Paused, or interrupted while picking people: nothing was sent, and the picked people are saved with the run.
     if (run.phase === 'paused' || (run.phase === 'searching' && stale)) {
       if (!await this.store.db.run("UPDATE provider_runs SET phase='searching',updated_at=? WHERE search_id=? AND phase=? AND updated_at=?", Date.now(), id, run.phase, run.updated_at)) return this.view(userId, id);
@@ -348,7 +379,7 @@ export class LiveSearch {
       const delivered = await this.store.transaction(async () => {
         if (await this.store.db.run(`UPDATE provider_runs SET phase='searching',file=NULL,people='[]',updated_at=? WHERE search_id=? AND phase='waiting' AND file=?
           AND EXISTS (SELECT 1 FROM searches WHERE id=? AND status='awaiting_provider')`, Date.now(), id, run.file, id) !== 1) return null;
-        await rememberCandidates(this.store, result.candidates);
+        await rememberCandidates(this.store, result.candidates, input.sector);
         const delivered = await this.store.deliverBatch(userId, id, result.candidates.map(c => ({ ...c, sector: input.sector })));
         if(delivered!==null&&result.coverage)await recordCoverage(this.store,userId,id,'verification',{...result.coverage,waitMs:age}); // how long the provider took
         if (delivered !== null) await this.release(userId, cursorKey(input), result.unpaid); // rows the provider could not pay for were never searched

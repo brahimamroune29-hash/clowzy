@@ -45,8 +45,8 @@ test('an exhausted provider continues through web citations, then the same verif
     const capped = await store.addUser('Capped', 'capped@example.com', 'secure-password', 'member', 5);
     for (let i = 0; i < 12; i++) await store.hit('web-day:' + capped.id, 12, 86400000);
     let stopped = await live(store, client).start(capped.id, { ...input, requestId: randomUUID() });
-    for (let n = 0; n < 8 && stopped.status === 'awaiting_provider'; n++) { await store.db.run('UPDATE provider_runs SET updated_at=0'); stopped = await live(store, client).poll(capped.id, stopped.id); }
-    assert.equal(stopped.status, 'failed'); assert.match(stopped.message ?? '', /حد اكتشاف المواقع اليومي/);
+    for (let n = 0; n < 80 && stopped.status === 'awaiting_provider'; n++) { await store.db.run('UPDATE provider_runs SET updated_at=0'); stopped = await live(store, client).poll(capped.id, stopped.id); }
+    assert.notEqual(stopped.status, 'awaiting_provider'); assert.doesNotMatch(stopped.message ?? '', /حد اكتشاف المواقع/, 'the cap closes the web pages of a place, never the search (2026-10-07)');
     assert.equal(searches, 2, 'daily budget exhausted before another paid web request'); assert.equal(submits, 1); assert.equal(await store.reserved(capped.id), 0);
   } finally {
     await store.close();

@@ -144,7 +144,8 @@ alter table clowzy.provider_runs add column if not exists scope integer not null
 
 التنفيذ وخطوات الترقية والتراجع موثقة في [docs/crm-delivery-2026-10-02.md](docs/crm-delivery-2026-10-02.md).
 الجداول في مخطط clowzy الخاص داخل Supabase. طبّق الترقية قبل CRM_ENABLED=true؛ في القاعدة الجديدة شغّل db/crm-access.sql بعد إنشاء دور التطبيق.
-CATALOG_REUSE_ENABLED=false يبقى معطلًا إلى حين تأكيد حق إعادة تقديم بيانات المزوّد بين الحسابات.
+CATALOG_REUSE_ENABLED=true فعّله المالك في 7 أكتوبر 2026: إيميل وجده بحث يُقدَّم لبحث مماثل لعضو آخر (النشاط الضيق كالصالونات يطابق النشاط نفسه فقط)، يظهر بعد نحو 15 ثانية كأنه بحث، ويُخصم رصيدًا كأي إيميل جديد. حق إعادة تقديم بيانات المزوّد بين الحسابات قرار المالك وعلى مسؤوليته؛ اضبطه على false لإيقافه.
+البحث الناقص يتوسّع: المدينة، ثم كل الدولة، ثم دول المنطقة واحدة واحدة (أشخاص ثم بريد الشركات نفسها)، ثم المناطق الأخرى الأقرب فالأبعد، كل منطقة كمكان واحد (places.ts: farther). خانة التوسيع في النموذج توقفه.
 لتكملة البحث بعد إغلاق الصفحة: الترحيلان `20261002215234_search_schedule.sql` و`20261002215831_private_search_schedule.sql` يجهزان مهمة Supabase Cron كل دقيقة، ويستدعي `/api/cron/search` فقط عند وجود بحث جارٍ. احفظ `CRON_SECRET` نفسه في Supabase Vault باسم `clowzy_cron_secret`؛ لا تضع السر داخل SQL المهمة. الاستدعاء مباشر عبر امتداد `http` ولا يكتب السر في طابور `pg_net`. الترحيل ينشئها معطلة؛ بعد النشر وفحص المصادقة فعّلها بـ `select cron.alter_job(jobid,active:=true) from cron.job where jobname='clowzy-search-worker';`. المهمة تعالج خطوة واحدة كل دقيقة؛ العامل المستقل `npm run worker` أنسب عند زيادة الطابور. لا تتطلب هذه الجدولة خدمة مدفوعة جديدة؛ صلاحية خطة الاستضافة للاستخدام التجاري قرار منفصل.
 فحص الواجهة ببيانات محلية فقط: npm run dev، ثم PLAYWRIGHT_MODULE=/absolute/path/to/playwright node scripts/check-crm-browser.cjs.
 

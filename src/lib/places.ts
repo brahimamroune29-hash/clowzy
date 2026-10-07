@@ -50,6 +50,13 @@ export function placeOf(address: string | null | undefined): { code: string; cit
 // Where a search short of its count widens, in this order: the other countries of the member's region (owner's choice, 2026-10-05).
 const REGIONS = [['SA', 'AE', 'KW', 'QA', 'BH', 'OM', 'YE'], ['LB', 'SY', 'JO', 'PS', 'IQ'], ['EG', 'SD'], ['MA', 'DZ', 'TN', 'LY', 'MR']];
 export const nearby = (codes: string[]) => REGIONS.filter(r => r.some(c => codes.includes(c))).flat().filter(c => !codes.includes(c));
+// Past its own region, a search still short goes on to the other regions, nearest first, each region as one place (owner,
+// 2026-10-07: «حاول نحلها بطريقة ذكية», for every niche). Indexes into REGIONS; a region the member picked is never repeated.
+const NEXT = [[1, 2, 3], [0, 2, 3], [1, 0, 3], [2, 1, 0]];
+export const farther = (codes: string[]) => {
+  const own = REGIONS.findIndex(r => r.some(c => codes.includes(c)));
+  return own < 0 ? [] : NEXT[own].filter(i => !REGIONS[i].some(c => codes.includes(c))).map(i => REGIONS[i]);
+};
 const shortNames: Record<string, string> = { SA: 'السعودية', AE: 'الإمارات', OM: 'عُمان', PS: 'فلسطين' };
 // The name members read: the short form for the Gulf, the standard Arabic name otherwise.
 export const countryLabel = (code: string) => shortNames[code] ?? new Intl.DisplayNames(['ar'], { type: 'region' }).of(code) ?? code;

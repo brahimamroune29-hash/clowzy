@@ -136,7 +136,7 @@ test('an address in a US town named like the country is dropped; other addresses
   assert.equal((await gulf('SA', ['السعودية - جدة', 'Riyadh, Saudi Arabia.', 'Riyadh, Riyadh Province, Saudi Arabia 12345', 'Saudi Arabia, Riyadh'])).leads.length, 4, 'the name stage keeps Gulf profiles placeOf cannot parse');
   assert.equal((await gulf('KW', ['Kuwait City', 'الكويت العاصمة'])).leads.length, 2);
   assert.equal((await gulf('TN', ['Tunis, TN'])).leads.length, 1, 'a state code that is the searched country\'s own code stays');
-  for (const url of ['https://www.fresha.com/book-now/lea-hd-beauty-center-em48qfnv/all-offer', 'https://booksy.com/en-us/1_salon', 'https://www.treatwell.co.uk/place/x/', 'https://salon.square.site'])
+  for (const url of ['https://www.fresha.com/book-now/lea-hd-beauty-center-em48qfnv/all-offer', 'https://booksy.com/en-us/1_salon', 'https://www.treatwell.co.uk/place/x/', 'https://salon.square.site', 'https://g.co/kgs/TBahTMb', 'https://g.page/r/abc'])
     assert.equal(siteOf({ lastCompanyWebsite: url } as never), '', url);
 });
 
@@ -222,4 +222,11 @@ test('the end-of-search advice names only the filters the member set', async () 
     await s2.eligible(); const done = await live(s2.store, p2.client).poll(s2.user.id, first.id);
     assert.match(done.message ?? '', /احذف حجم الشركة أو المدينة أو أضف دولًا\./);
   } finally { await s2.store.close(); }
+});
+
+test('a dental people search skips suppliers: Matest Dental Supplies in Jordan, 2026-10-07', async () => {
+  const jordan = audienceOf(JSON.stringify({ sector: 'عيادات الأسنان', countries: ['JO'], city: '', title: '', size: 'all', count: 2, confirmed: true, requestId: randomUUID() }));
+  const leads = [{ ...lead('clinic'), address: 'Amman, Jordan', lastCompanyName: 'Smile Dental Clinic' }, { ...lead('supplies'), address: 'Amman, Jordan', lastCompanyName: 'Matest Dental Supplies' }];
+  const client = new IcypeasClient('unit-test-secret', async () => Response.json({ success: true, leads }));
+  assert.deepEqual((await client.people(jordan, null, 0)).leads.map(l => l.lastCompanyName), ['Smile Dental Clinic']);
 });

@@ -40,7 +40,7 @@ export function SearchProgress({search,reload}:{search:Search;reload:()=>Promise
   const {checked,firms,wide,delivered}=progress;
   const asked=JSON.parse(search.filters) as {mode?:string;countries?:string[];city?:string};
   const companies=asked.mode==='companies', fallback=firms!==undefined;
-  // Where a search short of its count has looked: after a city, its whole country first, then the region's other countries.
+  // Where a search short of its count has looked: after a city, its whole country first, then the region's other countries, then other regions.
   const places=(names:(c:string)=>string,all:string)=>(wide??[]).map((c,i)=>(i===0&&asked.city?all:'')+names(c));
   // What was looked up, by name: the client read the old «N محاولة فحص» as failed checks (2026-10-05).
   const looked=companies?t('أجرينا '+checked+' عملية بحث عن بريد الشركات المطابقة','Ran '+checked+' searches for matching companies’ emails') // a company can be searched twice
