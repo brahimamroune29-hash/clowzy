@@ -271,8 +271,8 @@ export class IcypeasClient {
       .filter(l => l.lastCompanyName?.trim() && siteOf(l) && inCountries(l, input.countries) && onNiche(input, stage, l.lastCompanyName) && clinicLike(input, l.lastCompanyName));
     return { leads, returned: parsed.data.length, token: next.success ? next.data.token : null };
   }
-  // Six website reads at a time (in parallel, 8 s each) fit one server request; the caller persists the remaining queue before
-  // another call. Three a round made the salons fallback 6 rounds of ~42 s (2026-10-05).
+  // Up to ten website reads at a time (in parallel, 8 s in all) fit one server request; the caller persists the remaining queue
+  // before another call. Three a round made the salons fallback 6 rounds of ~42 s (2026-10-05); ten since 2026-10-08 (live-search FILL).
   async published(leads: Lead[]): Promise<Lead[]> {
     return (await Promise.all(leads.map(async lead => {
       if (!lead.publicationPending) return lead;

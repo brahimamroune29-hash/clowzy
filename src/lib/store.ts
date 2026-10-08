@@ -322,6 +322,7 @@ export class Store {
       OR (?<>'' AND kind='company' AND split_part(regexp_replace(lower(website),'^(https{0,1}://){0,1}(www[0-9]*\\.){0,1}|[/#].*$','','g'),chr(63),1)=?))`, userId, name.trim(), company.trim(), companyDomain, companyDomain)) return false;
     return await this.db.run('INSERT INTO provider_seen(user_id,person_key) VALUES(?,?) ON CONFLICT DO NOTHING', userId, key) === 1;
   }
+  async seen(userId: string, key: string) { return !!await this.db.get('SELECT 1 FROM provider_seen WHERE user_id=? AND person_key=?', userId, key); }
   unmarkSeen(userId: string, keys: string[]) {
     return this.transaction(async () => { for (const key of keys) await this.db.run('DELETE FROM provider_seen WHERE user_id=? AND person_key=?', userId, key); });
   }

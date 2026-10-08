@@ -230,7 +230,7 @@ test('fifty missing company emails can fill from bounded published-contact batch
     }
     assert.equal(result.status,'completed');assert.equal(result.delivered,50);assert.equal((await store.user(user.id)).balance,0);assert.equal(await store.reserved(user.id),0);
     assert.equal(new Set((await store.snapshot(user.id)).contacts.map(c=>c.website)).size,50);
-    assert(submissions.filter(s=>s.task==='email-verification').every(s=>s.data.length<=6)); // six websites read per round
+    assert(submissions.filter(s=>s.task==='email-verification').every(s=>s.data.length<=10)); // ten websites read per round (owner 2026-10-08)
     const paid=submissions.length;await live(store,client).start(user.id,request);assert.equal(submissions.length,paid);
   }finally{await store.close();if(before===undefined)delete process.env.PUBLISHED_EMAIL_ENABLED;else process.env.PUBLISHED_EMAIL_ENABLED=before;}
 });

@@ -54,6 +54,8 @@ export const termsCurrent = (user: Pick<User, 'terms_accepted_at'>) => !!user.te
 export const emailTrust = (status: string, en = false) => status === 'PROBABLE' ? (en ? 'Likely · provider confidence 95%' : 'محتمل · ثقة المزوّد ٩٥٪') : status === 'VERIFIED' ? (en ? 'Provider confidence 99%' : 'ثقة المزوّد ٩٩٪') : status;
 // The provider finds the email of about 1 in 20 people at a company with a page (restaurants in Saudi Arabia: 10 in 185, 2026-10-05):
 // fewer of them than 20 per email asked for, and the search will likely end short. Said before it starts.
+// How often a running search is moved on: by the results page, and by the background worker (owner 2026-10-08: was 6 s).
+export const POLL_MS = 3000;
 export const MIN_FIND_RATE = 0.05; // also the batch-size floor in live-search.ts; the warning's «one in twenty» follows it
 export const fewReachable = (reachable: number | undefined, count: number) => reachable !== undefined && reachable * MIN_FIND_RATE < count;
 // A niche+country whose past searches delivered far less than asked for (store.marketRate). This is measured from

@@ -1,4 +1,4 @@
-import { MIN_FIND_RATE, type Candidate, type Resolved, type Search } from './contracts';
+import { MIN_FIND_RATE, POLL_MS, type Candidate, type Resolved, type Search } from './contracts';
 import { catalogMatches, crmEnabled, rememberCandidates } from './catalog';
 import { audienceOf } from './audience';
 import { WEB_ROUNDS } from './web-companies';
@@ -44,6 +44,11 @@ const PRIOR_FIND_RATE = 0.3;
 // ponytail: people without a website wait in the member's list (at most this many per filter set) until no page is left; the rest
 // come back when the list starts over.
 const LATER_KEPT = 100;
+// A website batch reads up to ten sites a round (in parallel, 8 s), and is verified once ten addresses are ready, or nothing more is
+// coming (no page left, the daily cap, a paid web round next, or ten companies of the other kind waiting). Owner 2026-10-08: dental
+// Lebanon sent 35 company attempts one or two at a time (2026-10-07).
+// ponytail: an address found in the first round waits for the later rounds (about 10 s each); add a time limit if that shows.
+const SITE_BATCH = 10;
 
 // Search = batches: take people from this member's cursor for these filters (leftovers, then next pages) -> submit
 // for email discovery -> read results -> deliver, repeated until the requested count, the submit cap, or no new people.
@@ -204,27 +209,38 @@ export class LiveSearch {
       const found = contacts.filter(c => !c.catalog && (run.mode ? c.kind === 'company' : input.mode === 'companies' || c.kind !== 'company')).length + (run.mode ? 0 : search.duplicates); // a duplicate was found too
       const tried = run.mode ? run.submitted : run.people_checked + run.submitted; // people: every place so far
       const rate = tried ? Math.max(MIN_FIND_RATE, found / tried) : PRIOR_FIND_RATE;
-      const want = Math.min(BATCH, submitCap(search.requested) - run.submitted, Math.ceil((search.requested - search.delivered) / rate));
+      const most = Math.min(BATCH, submitCap(search.requested) - run.submitted), want = Math.min(most, Math.ceil((search.requested - search.delivered) / rate));
       // One email per company in a search: a colleague of someone delivered or already in this batch waits in the member's list
       // (held), and is tried in a later batch only if that company still has no email. People whose company has no website rarely
       // have a findable email (0 of 200 salon people, 0 of 227 dental people): they wait (later) until no other page is left.
       const taken = new Set([...contacts.flatMap(companyKeys), ...batch.flatMap(leadKeys)]);
-      const held: Lead[] = [], later: Lead[] = [];
+      // aside: a different kind of check than this batch's (a company this member already tried comes back for its website):
+      // it opens the next batch instead of cutting this one short.
+      const held: Lead[] = [], later: Lead[] = [], aside: Lead[] = [];
       const cursor = await this.store.cursor(userId, queryKey);
-      let pool = (JSON.parse(cursor.leftovers) as Lead[]).filter(l => !l.suppressed), token = cursor.token, stage = cursor.stage, wrapped = false, daily = false, scanned = run.scanned, fetched = run.fetched, pages = 0;
+      let pool = (JSON.parse(cursor.leftovers) as Lead[]).filter(l => !l.suppressed), token = cursor.token, stage = cursor.stage, wrapped = false, daily = false, scanned = run.scanned, fetched = run.fetched, pages = 0, noMore = false;
       const exhausted = () => scanned >= fetchCap(search.requested) || wrapped || daily;
-      while (want > 0 && batch.length < want) {
+      // A batch is full at `want` paid checks. A website batch counts its addresses only (reading a site is free) and also stops at
+      // ten sites to read, or when its sites could fill the search's cap of paid checks (`most`): its verification can then exceed
+      // `want` by up to nine addresses (over-finding the owner accepted, D4), never the cap.
+      const full = () => {
+        const toRead = batch[0]?.published ? batch.filter(l => l.publicationPending).length : 0;
+        return batch.length - toRead >= want || toRead >= SITE_BATCH || batch.length >= most;
+      };
+      while (want > 0 && !full()) {
         if (!pool.length && exhausted() && later.length) pool = later.splice(0);
         if (!pool.length) {
-          if (exhausted()) break;
+          if (exhausted()) { noMore = true; break; }
+          // Ten of the other kind wait: this batch goes now rather than buying pages that rarely bring its kind.
+          if (batch.length && aside.length >= SITE_BATCH) { noMore = true; break; }
           if (pages >= PAGES_PER_CALL || this.elapsed() > COLLECT_MS) return this.pause(userId, id, batch, input);
           if (await this.store.dailyFetched(userId) >= dailyPeople()) { // the member's daily provider work: send who was picked, then stop
             if (later.length) { daily = true; continue; } // no page is left today: the people without a website go now
-            if (batch.length) break;
+            if (batch.length) { noMore = true; break; }
             return this.finish(userId, id, 'حُسب فقط ما وصل. ' + dailyLimit);
           }
           if (webStage(input, stage)) {
-            if (batch.length) break; // verify what we have before paying for another web page
+            if (batch.length) { noMore = true; break; } // verify what we have before paying for another web page
             // Web discovery and classification together have a 42 s ceiling. Start them in a fresh request,
             // persist the result, then pause before any paid email submission if the submit window has passed.
             if (this.elapsed() > 5000) return this.pause(userId, id, batch, input);
@@ -246,8 +262,15 @@ export class LiveSearch {
         // Claimed at once (an overlapping search by the same member cannot pick the same person), and recorded with the run
         // and the cursor in the same transaction, so an interruption never leaves a person claimed but unrecorded.
         await this.store.transaction(async () => {
-          while (pool.length && batch.length < want) {
-            if (batch.length && (submissionTask(pool[0]) !== submissionTask(batch[0]) || (batch[0].published && batch.length >= 6))) break;
+          while (pool.length && !full()) {
+            if (batch.length && submissionTask(pool[0]) !== submissionTask(batch[0])) {
+              // A company this member already tried joins a website batch as a website check (never claimed again for a domain
+              // search: another search may release that claim meanwhile). Any other kind opens the next batch.
+              // ponytail: one lookup per set-aside company per request, inside the claim transaction; batch the lookup if pools grow.
+              if (batch[0].published && pool[0].kind === 'company' && publishedEnabled() && await this.store.seen(userId, personKey(pool[0])))
+                pool[0] = { ...pool[0], email: '', published: true, publicationPending: true };
+              else { aside.push(pool.shift()!); continue; }
+            }
             let lead = pool.shift()!;
             const keys = leadKeys(lead);
             if (keys.some(k => taken.has(k))) { held.push(lead); continue; }
@@ -255,15 +278,14 @@ export class LiveSearch {
             let claimed = await this.store.claimPerson(userId, personKey(lead), leadName(lead), lead.lastCompanyName || '', lead.kind === 'company' ? siteOf(lead) : '');
             if (!claimed && lead.kind === 'company' && !lead.published && publishedEnabled()) {
               lead = { ...lead, email: '', published: true, publicationPending: true };
-              if (batch.length && submissionTask(lead) !== submissionTask(batch[0])) { pool.unshift(lead); break; }
+              if (batch.length && submissionTask(lead) !== submissionTask(batch[0])) { aside.push(lead); continue; }
               claimed = await this.store.claimPerson(userId, personKey(lead), leadName(lead), lead.lastCompanyName || '', siteOf(lead));
             }
             if (claimed) { batch.push(lead); keys.forEach(k => taken.add(k)); }
           }
-          await this.store.saveCursor(userId, queryKey, stage, token, JSON.stringify([...pool, ...held, ...later.slice(0, LATER_KEPT)]));
+          await this.store.saveCursor(userId, queryKey, stage, token, JSON.stringify([...aside, ...pool, ...held, ...later.slice(0, LATER_KEPT)]));
           await this.patch(id, { scanned, fetched, people: JSON.stringify(batch) });
         });
-        if (batch.length && (batch[0].published || (pool.length && submissionTask(pool[0]) !== submissionTask(batch[0])))) break;
       }
       if (!batch.length) return this.end(userId, id, input);
       if (batch[0].published) {
@@ -279,7 +301,8 @@ export class LiveSearch {
             await recordCoverage(this.store,userId,id,'site',{companies:pending.size,withEmail:sites.length,queued:batch.filter(l=>pending.has(siteOf(l))).length,addresses:sites.reduce((n,l)=>n+1+(l.alternateEmails?.length||0),0)});
           }
         });
-        if (!batch.length) return this.pause(userId, id, [], input);
+        // Too few addresses while pages remain: they wait, saved with the run, and the next request reads more websites.
+        if (!batch.length || (batch.length < Math.min(want, SITE_BATCH) && !noMore)) return this.pause(userId, id, batch, input);
       }
       while (!await this.takeSlot('bulk')) {
         if (this.elapsed() + this.gaps.bulk > SUBMIT_MS) return this.pause(userId, id, batch, input);
@@ -361,7 +384,8 @@ export class LiveSearch {
       }
       return this.view(userId, id);
     }
-    if (!run.file || Date.now() - run.updated_at < 5000) return this.view(userId, id);
+    // Reads of a waiting batch are spaced just under one poll apart (owner 2026-10-08: 5 s, with polls every 6 s, before).
+    if (!run.file || Date.now() - run.updated_at < POLL_MS - 500) return this.view(userId, id);
     if (this.elapsed() > COLLECT_MS) return this.view(userId, id); // a read can take 31 s: none starts late in a worker tick (60 s limit)
     while (!await this.takeSlot('read')) {
       if (this.elapsed() + this.gaps.read > 10000) return this.view(userId, id);

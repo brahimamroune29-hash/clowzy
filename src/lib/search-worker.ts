@@ -1,6 +1,6 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
-import type { Search } from './contracts';
+import { POLL_MS, type Search } from './contracts';
 import type { Store } from './store';
 import { LiveSearch } from './live-search';
 import { crmEnabled } from './catalog';
@@ -14,9 +14,9 @@ export function workerAuthorized(header: string | null, secret = process.env.CRO
 // ponytail: three concurrent searches per tick; a dedicated worker when measured queue latency exceeds this capacity.
 // Browser polls and the worker share LiveSearch's durable claims, provider rate slots and delivery transaction.
 // A tick keeps each search moving for most of its minute, a step every few seconds while it waits on the provider, instead of
-// one step a minute (the 2026-10-05 salons fallback spent 541 s on ticks). One LiveSearch per search per tick: its time budget
+// one step a minute (the 2026-10-05 salons fallback spent 541 s on ticks), as often as the page polls. One LiveSearch per search per tick: its time budget
 // (no page after 20 s, no paid submit after 25 s, no results read after 20 s) then covers the whole tick, inside the 60 s a request may run.
-export async function searchTick(store:Store,poll?:(userId:string,searchId:string)=>Promise<Search>,limit=3,timing={every:6000,until:20000}) {
+export async function searchTick(store:Store,poll?:(userId:string,searchId:string)=>Promise<Search>,limit=3,timing={every:POLL_MS,until:20000}) {
   if(!crmEnabled()) return 0;
   const begun=Date.now();
   const rows=await store.db.all<{id:string;user_id:string}>(`SELECT s.id,s.user_id FROM searches s JOIN users u ON u.id=s.user_id LEFT JOIN provider_runs r ON r.search_id=s.id

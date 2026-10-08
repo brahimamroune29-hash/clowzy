@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { MagnifyingGlass } from '@phosphor-icons/react';
-import type { Search } from '@/lib/contracts';
+import { POLL_MS, type Search } from '@/lib/contracts';
 import { api } from '@/lib/client';
 import { countryLabel, englishName } from '@/lib/places';
 import { Button } from './ui';
@@ -31,7 +31,7 @@ export function SearchProgress({search,reload}:{search:Search;reload:()=>Promise
         // No answer at all (a dropped connection, a sleeping tab): the search goes on on the server, and the next poll retries.
         if(active)setMessage(offline?t('انقطع الاتصال بالإنترنت. نعيد المحاولة تلقائيًا، وبحثك مستمر على الخادم.','Connection lost. Retrying automatically; your search continues on the server.'):(e as Error).message);
       }
-      if(active && Date.now()-began<20*60*1000)timer=setTimeout(poll,6000);
+      if(active && Date.now()-began<20*60*1000)timer=setTimeout(poll,POLL_MS);
       else if(active)setMessage(t('ما زال الطلب محفوظًا. اضغط «متابعة» لتحديثه، أو عد إليه من سجل البحث.','The request is still saved. Press “Refresh”, or come back from the history.'));
     }
     void poll();

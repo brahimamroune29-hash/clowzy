@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { audienceOf } from '../src/lib/audience';
 import { fewReachable } from '../src/lib/contracts';
-import { IcypeasClient, peopleQuery } from '../src/lib/icypeas';
+import { cursorKey, IcypeasClient, peopleQuery, personKey, submitCap } from '../src/lib/icypeas';
+import type { Store } from '../src/lib/store';
 import { companyEmails } from '../src/lib/site-email';
 import { searchTick } from '../src/lib/search-worker';
 import { input, item, live, testStore } from './pg';
@@ -83,25 +84,125 @@ test('each delivered batch records how long it waited on the provider, beside it
   } finally { await store.close(); }
 });
 
-test('company websites are read six at a time, not three', async t => {
+// Dental Lebanon, the same member's second search (2026-10-07): 35 company attempts went out one or two at a time, because a
+// company this member had already tried (its website comes next) cut a batch short, and a website batch left with its first company.
+// Owner 2026-10-08: a company batch waits for ten, or for what the place has left.
+const clinics = (...ids: string[]) => ids.map(id => ({ name: 'Clinic ' + id, url: 'https://www.linkedin.com/company/' + id, address: 'Riyadh, Saudi Arabia', website: 'https://www.clinic' + id + '.example/', industry: 'Medical Practices', numberOfEmployees: 20 }));
+const letters = (s: string) => s.split('');
+// Pages of 25 companies; tried: companies an earlier search of this member already sent; mailto: those whose website shows an address.
+async function companyRun(t: { after: (fn: () => void) => void }, firms: ReturnType<typeof clinics>, { tried = [] as string[], mailto = [] as string[], count = 3, setup = undefined as ((store: Store) => void) | undefined } = {}) {
   const before = process.env.PUBLISHED_EMAIL_ENABLED; process.env.PUBLISHED_EMAIL_ENABLED = 'true';
   t.after(() => { if (before === undefined) delete process.env.PUBLISHED_EMAIL_ENABLED; else process.env.PUBLISHED_EMAIL_ENABLED = before; });
-  const firms = 'abcdefg'.split('').map(id => ({ name: 'Clinic ' + id, url: 'https://www.linkedin.com/company/' + id, address: 'Riyadh, Saudi Arabia', website: 'https://www.clinic' + id + '.example/', industry: 'Medical Practices', numberOfEmployees: 20 }));
-  const bulks: string[][][] = [], read = new Set<string>();
+  const bulks: { task: string; data: string[][] }[] = [], read = new Set<string>(), calls = { pages: 0 };
+  const idOf = (name: string) => name.slice('Clinic '.length);
   const transport: typeof fetch = async (url, init) => {
     const path = String(url).replace('https://app.icypeas.com/api/', ''), body = JSON.parse(String(init?.body));
-    if (path === 'find-companies') return Response.json({ success: true, leads: body.query?.location?.exclude ? [] : firms });
-    if (path === 'bulk-search') { bulks.push(body.data); return Response.json({ success: true, file: 'f' + bulks.length }); }
-    if (path === 'bulk-single-searchs/read') return Response.json({ success: true, items: bulks[Number(String(body.file).slice(1)) - 1].map((_, i) => item(i, null)) });
+    if (path === 'find-companies') {
+      if (body.query?.location?.exclude) return Response.json({ success: true, leads: [] });
+      const from = Number(body.pagination?.token ?? 0); calls.pages++;
+      return Response.json({ success: true, leads: firms.slice(from, from + 25), ...(from + 25 < firms.length ? { pagination: { token: String(from + 25) } } : {}) });
+    }
+    if (path === 'bulk-search') { bulks.push(body); return Response.json({ success: true, file: 'f' + bulks.length }); }
+    if (path === 'bulk-single-searchs/read') return Response.json({ success: true, items: bulks[Number(String(body.file).slice(1)) - 1].data.map((_, i) => item(i, null)) });
     throw new Error('Unexpected ' + path);
   };
-  const client = new IcypeasClient('unit-test-secret', transport, async url => { read.add(new URL(url).hostname); return ''; });
+  const client = new IcypeasClient('unit-test-secret', transport, async url => {
+    const host = new URL(url).hostname; read.add(host);
+    return mailto.includes(/^www\.clinic(\w+)\./.exec(host)?.[1] ?? '') ? `<a href="mailto:info@${host.replace(/^www\./, '')}">info</a>` : '';
+  });
+  const store = await testStore(), user = await store.addUser('Alice', 'alice@example.com', 'secure-password', 'member', 5);
+  t.after(() => store.close());
+  for (const f of firms.filter(f => tried.includes(idOf(f.name))))
+    await store.claimPerson(user.id, personKey({ kind: 'company', lastCompanyWebsite: f.website }), '', '');
+  setup?.(store);
+  const request = audienceOf(JSON.stringify({ sector: 'العيادات الخاصة', countries: ['SA'], city: '', title: '', size: 'all', count, widen: false, confirmed: true, requestId: randomUUID(), mode: 'companies' }));
+  const s = live(store, client), first = await s.start(user.id, request);
+  const poll = async () => { await store.db.run('UPDATE provider_runs SET updated_at=0'); return s.poll(user.id, first.id); };
+  return { bulks, read, calls, first, poll, store, user, request, sent: () => bulks.map(b => [b.task, b.data.length] as [string, number]) };
+}
+
+test('company websites are read ten at a time, not three', async t => {
+  const { sent, read, poll } = await companyRun(t, clinics(...letters('abcdefg')), { count: 2 });
+  assert.deepEqual(sent(), [['domain-search', 7]], 'domain search first (2 at 30%)');
+  await poll();
+  assert.equal(read.size, 7, 'then the websites of all seven companies with no domain result, up to ten per round');
+});
+
+test('companies this member already tried wait for the next batch instead of cutting the current one short', async t => {
+  const { sent } = await companyRun(t, clinics(...letters('abcdefghijkl')), { tried: letters('bdfhjl') });
+  assert.deepEqual(sent(), [['domain-search', 6]], 'the six new companies in one batch, not one at a time');
+});
+
+test('a website batch reads ten sites, and waits for ten addresses (or the end of the pages) before it is verified', async t => {
+  const { sent, read, poll } = await companyRun(t, clinics(...letters('abcdefghijkl')), { tried: letters('abcdefghijkl'), mailto: ['a', 'k'] });
+  assert.equal(read.size, 10, 'ten websites in the first round');
+  assert.deepEqual(sent(), [], 'one address found among ten sites: not verified alone while pages remain');
+  await poll();
+  assert.equal(read.size, 12, 'the last two websites');
+  assert.deepEqual(sent(), [['email-verification', 2]], 'the pages are done: both addresses verified together');
+});
+
+test('every website round reads ten new sites, however many addresses the earlier rounds found', async t => {
+  const ids = letters('abcdefghijklmnopqrst'), { sent, read, poll } = await companyRun(t, clinics(...ids), { tried: ids, mailto: ['a', 'b'] });
+  assert.equal(read.size, 10);
+  await poll();
+  assert.equal(read.size, 20, 'ten more, not eight beside the two addresses already found');
+  await poll(); // the next stage's page comes back empty: the pages are done
+  assert.deepEqual(sent(), [['email-verification', 2]]);
+});
+
+test('websites with no address at the end of the pages close the place quietly, nothing sent', async t => {
+  const ids = letters('abc'), { sent, read, poll } = await companyRun(t, clinics(...ids), { tried: ids });
+  assert.equal(read.size, 3);
+  const after = await poll();
+  assert.notEqual(after.status, 'failed', after.message);
+  assert.deepEqual(sent(), [], 'an empty batch is never submitted');
+});
+
+test('a website batch does not buy more pages once ten companies of the other kind are waiting', async t => {
+  const fresh = Array.from({ length: 73 }, (_, i) => 'n' + i), { sent, read, calls, poll } = await companyRun(t, clinics('t0', 't1', ...fresh), { tried: ['t0', 't1'] });
+  assert.equal(calls.pages, 1, 'one page: its 23 new companies are already more than a batch');
+  assert.equal(read.size, 2, 'the two websites are read at once');
+  await poll();
+  assert.deepEqual(sent(), [['domain-search', 10]], 'then the waiting new companies, ten (3 at 30%)');
+  assert.equal(calls.pages, 1);
+});
+
+test('website batches never take a search past its cap of paid checks (20 per requested email)', async t => {
+  const tried = Array.from({ length: 30 }, (_, i) => 't' + i), { sent, poll } = await companyRun(t, clinics('n0', 'n1', 'n2', 'n3', ...tried), { tried, mailto: tried, count: 1 });
+  for (let i = 0; i < 12 && (await poll()).status === 'awaiting_provider'; i++);
+  assert.ok(sent().reduce((n, [, k]) => n + k, 0) <= submitCap(1), JSON.stringify(sent()));
+});
+
+test('a company already tried joins a website batch as a website check, even if its old claim is released meanwhile', async t => {
+  const ids = ['t0', 't1', 't2'];
+  const { store, user, request, bulks, first } = await companyRun(t, clinics(...ids), { tried: ids, mailto: ['t0'], setup: store => {
+    const seen = store.seen.bind(store); let raced = false;
+    store.seen = async (u, k) => { // another search of this member releases the company between the check and the claim
+      const yes = await seen(u, k);
+      if (yes && !raced) { raced = true; await store.unmarkSeen(u, [k]); }
+      return yes;
+    };
+  } });
+  const domainKey = personKey({ kind: 'company', lastCompanyWebsite: 'https://www.clinict1.example/' });
+  const kept = (await store.db.get<{ people: string }>('SELECT people FROM provider_runs WHERE search_id=?', first.id))!.people + (await store.cursor(user.id, cursorKey(request))).leftovers + JSON.stringify(bulks);
+  assert.ok(!await store.seen(user.id, domainKey) || kept.includes('clinict1'), 'claimed for a domain search, then dropped by the website batch');
+});
+
+test('a sent batch is read about three seconds later, not five', async () => {
+  let reads = 0;
+  const transport: typeof fetch = async (url, init) => {
+    const path = String(url).replace('https://app.icypeas.com/api/', ''), body = JSON.parse(String(init?.body));
+    if (path === 'find-people') return Response.json({ success: true, leads: body.query?.profileLocation?.exclude ? [] : [{ ...at('Kudu', 'kudu.example'), address: 'Riyadh, Saudi Arabia' }] });
+    if (path === 'bulk-search') return Response.json({ success: true, file: 'f1' });
+    if (path === 'bulk-single-searchs/read') { reads++; return Response.json({ success: true, items: [item(0, 'owner@kudu.example')] }); }
+    throw new Error('Unexpected ' + path);
+  };
   const store = await testStore(), user = await store.addUser('Alice', 'alice@example.com', 'secure-password', 'member', 5);
   try {
-    const request = audienceOf(JSON.stringify({ sector: 'العيادات الخاصة', countries: ['SA'], city: '', title: '', size: 'all', count: 2, confirmed: true, requestId: randomUUID(), mode: 'companies' }));
-    const s = live(store, client), first = await s.start(user.id, request);
-    assert.equal(bulks[0].length, 7, 'domain search first (2 at 30%)');
-    await store.db.run('UPDATE provider_runs SET updated_at=0'); await s.poll(user.id, first.id);
-    assert.equal(read.size, 6, 'then the websites of the companies with no domain result, six per round');
+    const s = live(store, new IcypeasClient('unit-test-secret', transport)), first = await s.start(user.id, input(1));
+    await store.db.run('UPDATE provider_runs SET updated_at=?', Date.now() - 3000);
+    assert.equal((await s.poll(user.id, first.id)).delivered, 1);
+    assert.equal(reads, 1);
   } finally { await store.close(); }
 });
