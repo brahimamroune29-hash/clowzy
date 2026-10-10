@@ -7,7 +7,7 @@ test('completion is an explicit wider draft for only the missing count, retainin
   const search = { status: 'partial', requested: 50, delivered: 12, filters: JSON.stringify(filters) } as Search;
   assert.equal(completionDraft(search, null), undefined);
   const country = completionDraft(search, 'country')!;
-  assert.deepEqual(country, { ...filters, count: 38, city: '' });
+  assert.deepEqual(country, { ...filters, title: [], count: 38, city: '' }, 'a stored single title reads as a list');
   assert.deepEqual(completionDraft(search, 'gulf'), { ...country, countries: [...gulf] });
   assert.equal('confirmed' in country, false);
   assert.equal(completionDraft({ ...search, status: 'completed' }, 'gulf'), undefined);

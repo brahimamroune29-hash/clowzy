@@ -99,7 +99,7 @@ export class LiveSearch {
     const places = widenedTo(input, run), all = places.length && places.length === placesOf(input).length - 1; // every place tried: no city or country to add
     const wide = places.length ? `وسّعنا البحث إلى: ${places.map((p, i) => (i === 0 && input.city ? 'كل ' : '') + p.countries.map(countryLabel).join('، ')).join('، ')}. ` : '';
     // The advice names only the filters this search set (a salons search with none was told to remove three, 2026-10-05).
-    const set = [input.size !== 'all' && 'حجم الشركة', !all && input.city.trim() && 'المدينة', !companies && input.title.trim() && 'المسمى الوظيفي'].filter(Boolean);
+    const set = [input.size !== 'all' && 'حجم الشركة', !all && input.city.trim() && 'المدينة', !companies && input.title.length > 0 && 'المسمى الوظيفي'].filter(Boolean);
     const widen = all ? (set.length ? `لنتائج أكثر، وسّع المعايير: احذف ${set.join(' أو ')}.` : 'لنتائج أكثر، اختر نشاطًا أوسع.')
       : set.length ? `لنتائج أكثر، وسّع المعايير: احذف ${set.join(' أو ')} أو أضف دولًا.` : 'لنتائج أكثر، أضف دولًا أو اختر نشاطًا أوسع.';
     if (run.mode && run.submitted) return wide + `بحثنا عن بريد ${run.people_checked} من الأشخاص المطابقين، ثم أجرينا ${run.submitted} عملية بحث عن بريد الشركات نفسها، فوصلك ${search.delivered} من ${search.requested}. `

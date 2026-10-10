@@ -12,7 +12,7 @@ import { catalogMatches, rememberCandidates } from '../src/lib/catalog';
 import { INDUSTRIES } from '../src/lib/industries';
 import { findCategories, INDUSTRY_AR, providerCategories } from '../src/lib/industries-ar';
 
-const context:AssistContext={mode:'companies',sector:'عيادات الأسنان',countries:['SA'],city:'Riyadh',title:'',size:'all',count:50};
+const context:AssistContext={mode:'companies',sector:'عيادات الأسنان',countries:['SA'],city:'Riyadh',title:[],size:'all',count:50};
 const noAi={sector:async()=>{throw new Error('A listed activity must not use the model');},title:async()=>{throw new Error('No title translation needed');}};
 const form=(sector:string)=>({...context,sector,confirmed:true as const,requestId:randomUUID()});
 

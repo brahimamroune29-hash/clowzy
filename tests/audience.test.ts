@@ -1,15 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { audienceOf, fieldIndustries, resolveAudience, SECTOR_INDUSTRIES, TITLE_VARIANTS, type AiMapper } from '../src/lib/audience';
+import { audienceOf, fieldIndustries, resolveAudience, SECTOR_INDUSTRIES, type AiMapper } from '../src/lib/audience';
 import { INDUSTRIES } from '../src/lib/industries';
-import { type FieldName, fieldOf, fields, gulf, sectors, titles, type SearchInput } from '../src/lib/contracts';
+import { type FieldName, fieldOf, fields, gulf, sectors, TITLE_VARIANTS, type SearchInput } from '../src/lib/contracts';
 import { peopleQuery, IcypeasError } from '../src/lib/icypeas';
 import { countryFromText, isCountry } from '../src/lib/places';
 import { AppError } from '../src/lib/store';
 import { testStore } from './pg';
 
-const form = (o: Partial<SearchInput> = {}): SearchInput => ({ mode: 'people', sector: 'التقنية والبرمجيات', countries: ['SA'], city: '', title: '', size: 'all', count: 5, widen: true, confirmed: true, requestId: randomUUID(), ...o });
+const form = (o: Partial<SearchInput> = {}): SearchInput => ({ mode: 'people', sector: 'التقنية والبرمجيات', countries: ['SA'], city: '', title: [], size: 'all', count: 5, widen: true, confirmed: true, requestId: randomUUID(), ...o });
 const noAi: AiMapper = { sector: async () => { throw new Error('AI must not be called for a listed option'); }, title: async () => { throw new Error('AI must not be called'); } };
 
 test('every listed sector and title maps to exact Icypeas names; the lists the member sees match the server tables', () => {
@@ -23,7 +23,6 @@ test('every listed sector and title maps to exact Icypeas names; the lists the m
   }
   assert.equal(fieldOf('محلات الساعات'), '', 'the member\'s own words belong to no field');
   for (const [sector, names] of Object.entries(SECTOR_INDUSTRIES)) for (const n of names) assert.ok(INDUSTRIES.includes(n), sector + ': ' + n);
-  assert.deepEqual(Object.keys(TITLE_VARIANTS), [...titles]);
   for (const variants of Object.values(TITLE_VARIANTS)) assert.ok(variants.some(v => /^[A-Za-z]/.test(v)) && variants.some(v => /[؀-ۿ]/.test(v)), 'Arabic and English titles together');
 });
 
@@ -48,16 +47,16 @@ test('a listed title searches its Arabic and English forms; a typed English titl
   let calls = 0;
   const ai: AiMapper = { ...noAi, title: async text => { calls++; assert.equal(text, 'مدير مستودع'); return ['Warehouse Manager', 'Warehouse Supervisor']; } };
   try {
-    const listed = await resolveAudience(store, form({ title: 'مدير التسويق' }), noAi);
+    const listed = await resolveAudience(store, form({ title: ['مدير التسويق'] }), noAi);
     assert.ok(peopleQuery(listed).currentJobTitle!.include.includes('Marketing Manager'));
     assert.ok(peopleQuery(listed).currentJobTitle!.include.includes('مدير التسويق'));
-    assert.deepEqual(peopleQuery(await resolveAudience(store, form({ title: 'Marketing Director' }), noAi)).currentJobTitle, { include: ['Marketing Director'] });
-    const typed = await resolveAudience(store, form({ title: 'مدير مستودع' }), ai);
+    assert.deepEqual(peopleQuery(await resolveAudience(store, form({ title: ['Marketing Director'] }), noAi)).currentJobTitle, { include: ['Marketing Director'] });
+    const typed = await resolveAudience(store, form({ title: ['مدير مستودع'] }), ai);
     assert.deepEqual(typed.titles, ['مدير مستودع', 'Warehouse Manager', 'Warehouse Supervisor']);
-    await resolveAudience(store, form({ title: '  مُدير   مستودع ' }), ai);
+    await resolveAudience(store, form({ title: ['  مُدير   مستودع '] }), ai);
     assert.equal(calls, 1, 'cached by the normalized text: the same words never pay twice or change the cursor');
     const down: AiMapper = { ...noAi, title: async () => { throw new Error('down'); } };
-    assert.deepEqual((await resolveAudience(store, form({ title: 'مدير مخازن' }), down)).titles, ['مدير مخازن'], 'the AI being down never blocks a search: the Arabic words still search');
+    assert.deepEqual((await resolveAudience(store, form({ title: ['مدير مخازن'] }), down)).titles, ['مدير مخازن'], 'the AI being down never blocks a search: the Arabic words still search');
   } finally { await store.close(); }
 });
 

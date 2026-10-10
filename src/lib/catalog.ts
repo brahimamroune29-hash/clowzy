@@ -46,10 +46,11 @@ export async function catalogMatches(store: Store, userId: string, input: Resolv
   const [min, max] = input.size === 'all' ? [0, 2147483647] : input.size.split('-').map(Number);
   // SQL does the filtering and ownership exclusion; missing attributes never satisfy a narrower filter. An earlier identical
   // request (same filters, any count) gives everything it delivered first, its widened places and company emails too (owner,
-  // 2026-10-07: «اذا شخص طلب نفس الطلب نجيبلو المعلومات نفسها»).
+  // 2026-10-07: «اذا شخص طلب نفس الطلب نجيبلو المعلومات نفسها»). The chosen titles are compared through their provider forms (titles):
+  // a search stored before 2026-10-09 holds its one title as a string, today's as a list.
   const same = JSON.stringify(resolvedSchema.parse(input));
   return (await store.db.all<{ payload: Candidate }>(`WITH same AS (SELECT DISTINCT c.email FROM contacts c JOIN searches s ON s.id=c.search_id
-      WHERE s.filters::jsonb-'requestId'-'count'-'confirmed' = ?::jsonb-'requestId'-'count'-'confirmed')
+      WHERE s.filters::jsonb-'requestId'-'count'-'confirmed'-'title' = ?::jsonb-'requestId'-'count'-'confirmed'-'title')
     SELECT l.payload FROM lead_catalog l LEFT JOIN same ON same.email=l.email
     WHERE l.verified_at>=? AND (same.email IS NOT NULL OR l.kind=? AND l.country_code IN (SELECT jsonb_array_elements_text(?::jsonb))
       AND (?<>'' AND l.payload->>'niche'=? OR ?='' AND l.industry IN (SELECT jsonb_array_elements_text(?::jsonb)))

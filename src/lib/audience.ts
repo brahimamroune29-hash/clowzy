@@ -1,4 +1,4 @@
-import { type FieldName, fields, legacyFields, type LegacySpecialty, type Resolved, type SearchInput, sectors, type Specialty, titles, withCountries } from './contracts';
+import { type FieldName, fields, legacyFields, type LegacySpecialty, type Resolved, type SearchInput, sectors, type Specialty, TITLE_VARIANTS, titleForms, titlesOf, withCountries } from './contracts';
 import { nicheOf } from './niches';
 import { resolvedSchema } from './schemas';
 import { INDUSTRIES } from './industries';
@@ -80,26 +80,6 @@ const listed = (sector: string) => {
   const category = providerCategory(sector);
   return category ? [category] : undefined;
 };
-// Listed titles -> what profiles say, Arabic and English together (Arabic alone finds a fraction: 896 vs 3,311 in Saudi Arabia).
-export const TITLE_VARIANTS: Record<(typeof titles)[number], string[]> = {
-  'المالك أو المؤسس': ['Owner', 'Founder', 'Co-Founder', 'مالك', 'مؤسس'],
-  'الرئيس التنفيذي أو المدير العام': ['CEO', 'Chief Executive Officer', 'General Manager', 'Managing Director', 'الرئيس التنفيذي', 'المدير العام'],
-  'مدير التسويق': ['Marketing Manager', 'Marketing Director', 'Head of Marketing', 'CMO', 'مدير التسويق', 'مدير تسويق'],
-  'مسؤول التسويق الرقمي': ['Digital Marketing Manager', 'Digital Marketing Specialist', 'Social Media Manager', 'التسويق الرقمي'],
-  'مدير المبيعات': ['Sales Manager', 'Sales Director', 'Head of Sales', 'مدير المبيعات', 'مدير مبيعات'],
-  'مدير تطوير الأعمال': ['Business Development Manager', 'Business Development Director', 'Head of Business Development', 'مدير تطوير الأعمال'],
-  'مدير العمليات': ['Operations Manager', 'Head of Operations', 'COO', 'Chief Operating Officer', 'مدير العمليات'],
-  'المدير المالي': ['CFO', 'Chief Financial Officer', 'Finance Manager', 'Finance Director', 'المدير المالي'],
-  'مدير الموارد البشرية': ['HR Manager', 'Human Resources Manager', 'HR Director', 'Head of HR', 'مدير الموارد البشرية'],
-  'مدير تقنية المعلومات': ['IT Manager', 'IT Director', 'Head of IT', 'CTO', 'Chief Technology Officer', 'مدير تقنية المعلومات'],
-  'مدير المشتريات': ['Procurement Manager', 'Purchasing Manager', 'Head of Procurement', 'مدير المشتريات'],
-  'مدير المشاريع': ['Project Manager', 'Projects Director', 'مدير المشاريع', 'مدير مشاريع'],
-  'مدير المنتج': ['Product Manager', 'Head of Product', 'مدير المنتج'],
-  'مدير خدمة العملاء': ['Customer Service Manager', 'Customer Experience Manager', 'Head of Customer Service', 'مدير خدمة العملاء'],
-  'مدير الفرع أو المتجر': ['Branch Manager', 'Store Manager', 'مدير الفرع', 'مدير فرع'],
-  'مدير العيادة أو المدير الطبي': ['Clinic Manager', 'Medical Director', 'مدير العيادة', 'المدير الطبي'],
-};
-
 export type { AiMapper };
 const known = new Set(INDUSTRIES);
 const arabic = /[؀-ۿ]/;
@@ -133,25 +113,29 @@ export async function resolveAudience<T extends AudienceForm>(store: Store, inpu
     if (!picked.length) throw new AppError(`لم نجد مجالًا مهنيًا يطابق «${input.sector}». جرّب كلمات أوضح أو اختر من القائمة.`, 400);
     industries = picked.map(x => x.name); industryLabels = picked.map(x => INDUSTRY_AR[x.name]); // the picker's fixed Arabic names, whatever the model wrote
   }
-  const title = input.mode === 'companies' ? '' : input.title.trim(); // a company has no job title: never sent to the AI
-  let titles: string[] = [];
-  if (Object.hasOwn(TITLE_VARIANTS, title)) titles = TITLE_VARIANTS[title as keyof typeof TITLE_VARIANTS];
-  else if (arabic.test(title)) { // the Arabic words always search; the AI adds the English forms when it answers
-    const english = await cached(store, 'title', title, () => ai.title(title), userId).catch(e => { if (e instanceof AppError && e.status === 429) throw e; aiDown('title', e); return []; });
-    titles = [title, ...english.filter(t => /^[\x20-\x7E]{2,60}$/.test(t)).slice(0, 4)];
-  } else if (title) titles = [title];
-  return { ...input, industries, industryLabels, titles };
+  // Every form of every chosen title, sent together (a person matching any of them). A company has no job title: never sent to the AI.
+  // ponytail: typed Arabic titles go to the AI one after another (each takes from the member's daily AI allowance, and the
+  // allowance running out on the third fails the count); at most three, and each answer is cached for good.
+  const forms: string[] = [];
+  for (const title of input.mode === 'companies' ? [] : input.title) {
+    if (Object.hasOwn(TITLE_VARIANTS, title) || !arabic.test(title)) forms.push(...titleForms(title));
+    else { // the Arabic words always search; the AI adds the English forms when it answers
+      const english = await cached(store, 'title', title, () => ai.title(title), userId).catch(e => { if (e instanceof AppError && e.status === 429) throw e; aiDown('title', e); return []; });
+      forms.push(title, ...english.filter(t => /^[\x20-\x7E]{2,60}$/.test(t)).slice(0, 4));
+    }
+  }
+  return { ...input, industries, industryLabels, titles: [...new Set(forms)] };
 }
 
 // Filters stored with a search -> the audience to continue it with. Searches saved before multi-country
 // (country: Arabic name, no resolved lists) are upgraded from the tables, so they still run and repeat.
 export function audienceOf(filters: string): Resolved {
   const raw = withCountries(JSON.parse(filters)) as Partial<Resolved>;
-  const sector = raw.sector || '', title = (raw.title || '').trim();
+  const sector = raw.sector || '';
   return resolvedSchema.parse({
     ...raw,
     industries: raw.industries ?? listed(sector) ?? [],
     industryLabels: raw.industryLabels ?? [sector],
-    titles: raw.titles ?? (Object.hasOwn(TITLE_VARIANTS, title) ? TITLE_VARIANTS[title as keyof typeof TITLE_VARIANTS] : title ? [title] : []),
+    titles: raw.titles ?? [...new Set(titlesOf(raw.title).flatMap(titleForms))],
   });
 }

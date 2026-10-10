@@ -244,7 +244,8 @@ export class Store {
       await this.user(id, true);
       const old = await this.db.get<Search>('SELECT * FROM searches WHERE user_id=? AND request_id=?', id, input.requestId);
       if (old) {
-        if (old.filters !== JSON.stringify(input)) throw new AppError('معرّف الطلب مستخدم لبحث مختلف.', 409);
+        // Read as today's form: a search stored before 2026-10-09 holds its one title as a string.
+        if (JSON.stringify(resolvedSchema.parse(JSON.parse(old.filters))) !== JSON.stringify(input)) throw new AppError('معرّف الطلب مستخدم لبحث مختلف.', 409);
         return old;
       }
       await this.checkSearchCapacity(id, input.count);

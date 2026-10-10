@@ -4,13 +4,13 @@ import { assist } from '../src/lib/ai';
 import { assistRequestSchema } from '../src/lib/schemas';
 import type { AssistContext } from '../src/lib/contracts';
 
-const context:AssistContext={mode:'companies',sector:'عيادات الأسنان',countries:['AE'],city:'Dubai',title:'',size:'11-50',count:7};
+const context:AssistContext={mode:'companies',sector:'عيادات الأسنان',countries:['AE'],city:'Dubai',title:[],size:'11-50',count:7};
 test('clear listed niches and ambiguous transcription work without the model',async t=>{
   t.mock.method(globalThis,'fetch',async()=>{throw new Error('A listed niche should not call a model');});
   for(const content of ['عيادة الاسنان','عيادات الأسنان','عيادات اسنان','Dental clinics']){
     const draft=await assist([{role:'user',content}],'ar',context);
     assert.equal(draft.action,'prepare');
-    assert.deepEqual(draft.search,{mode:'companies',field:'الصحة والطب',specialty:'عيادات الأسنان',other:'',countries:['AE'],city:'Dubai',title:'',size:'11-50',count:7});
+    assert.deepEqual(draft.search,{mode:'companies',field:'الصحة والطب',specialty:'عيادات الأسنان',other:'',countries:['AE'],city:'Dubai',title:[],size:'11-50',count:7});
     assert.doesNotMatch(draft.reply,/companies|people/);
   }
   const question=await assist([{role:'user',content:'إعادة الأسنان'}],'ar',context);
@@ -43,7 +43,7 @@ test('model patches preserve context, explanations do not mutate, and limits are
   const country=(await assist([{role:'user',content:'في السعودية'}],'ar',context)).search!;
   assert.deepEqual([country.specialty,country.countries,country.city],['عيادات الأسنان',['SA'],'']);
   const owners=(await assist([{role:'user',content:'أريد المالكين'}],'ar',context)).search!;
-  assert.equal(owners.mode,'people');assert.equal(owners.specialty,'عيادات الأسنان');assert.equal(owners.title,'المالك أو المؤسس');
+  assert.equal(owners.mode,'people');assert.equal(owners.specialty,'عيادات الأسنان');assert.deepEqual(owners.title,['المالك أو المؤسس']);
   const niche=(await assist([{role:'user',content:'محلات الساعات'}],'ar',context)).search!;
   assert.deepEqual([niche.field,niche.specialty,niche.other],['','','محلات الساعات']);
   assert.equal((await assist([{role:'user',content:'كيف تحسبون رصيد عيادات الأسنان؟'}],'ar',context)).search,undefined);

@@ -1,6 +1,6 @@
 import type { SearchInput } from './schemas';
 import { countryFromText } from './places';
-import { niches, type NicheName } from './niches';
+import { niches, type NicheName, searchWords } from './niches';
 
 // What the member picks from: a main field, then one of its specialties or the whole field. The server maps each label to
 // exact provider names (src/lib/audience.ts); anything typed under «أخرى» is mapped by the AI there.
@@ -26,10 +26,78 @@ export const fields = Object.fromEntries(Object.entries(legacyFields).map(([fiel
 export const sectors = Object.values(fields).flat() as Specialty[];
 // The field a stored sector belongs to (itself when the whole field was chosen), or '' for the member's own words.
 export const fieldOf = (sector: string) => (Object.keys(fields) as FieldName[]).find(f => f === sector || (fields[f] as readonly string[]).includes(sector)) ?? '';
-export const titles = ['المالك أو المؤسس', 'الرئيس التنفيذي أو المدير العام', 'مدير التسويق', 'مسؤول التسويق الرقمي', 'مدير المبيعات', 'مدير تطوير الأعمال',
-  'مدير العمليات', 'المدير المالي', 'مدير الموارد البشرية', 'مدير تقنية المعلومات', 'مدير المشتريات', 'مدير المشاريع', 'مدير المنتج',
-  'مدير خدمة العملاء', 'مدير الفرع أو المتجر', 'مدير العيادة أو المدير الطبي'] as const;
-export const OTHER = 'أخرى';
+// Listed job titles -> what profiles say, Arabic and English together (Arabic alone finds a fraction: 896 vs 3,311 in Saudi Arabia).
+// The thirty added 2026-10-09 (client: several titles, typed like the activity) each have people in Saudi Arabia, the Emirates and
+// Lebanon (free provider counts; the thinnest, e-commerce managers: 56, 140 and 4).
+export const TITLE_VARIANTS: Record<string, string[]> = {
+  'المالك أو المؤسس': ['Owner', 'Founder', 'Co-Founder', 'مالك', 'مؤسس'],
+  'الشريك': ['Partner', 'Managing Partner', 'شريك'],
+  'رئيس مجلس الإدارة': ['Chairman', 'Chairman of the Board', 'رئيس مجلس الإدارة'],
+  'الرئيس التنفيذي أو المدير العام': ['CEO', 'Chief Executive Officer', 'General Manager', 'Managing Director', 'الرئيس التنفيذي', 'المدير العام'],
+  'نائب الرئيس': ['Vice President', 'VP', 'نائب الرئيس'],
+  'المدير الإقليمي': ['Regional Manager', 'Area Manager', 'Country Manager', 'المدير الإقليمي'],
+  'المدير الإداري': ['Administrative Manager', 'Admin Manager', 'Office Manager', 'المدير الإداري', 'مدير مكتب'],
+  'مدير التسويق': ['Marketing Manager', 'Marketing Director', 'Head of Marketing', 'CMO', 'مدير التسويق', 'مدير تسويق'],
+  'مسؤول التسويق الرقمي': ['Digital Marketing Manager', 'Digital Marketing Specialist', 'Social Media Manager', 'التسويق الرقمي'],
+  'مدير العلامة التجارية': ['Brand Manager', 'Head of Brand', 'مدير العلامة التجارية'],
+  'مدير العلاقات العامة': ['PR Manager', 'Public Relations Manager', 'Communications Manager', 'مدير العلاقات العامة', 'مدير الاتصال'],
+  'المدير الإبداعي': ['Creative Director', 'Art Director', 'المدير الإبداعي'],
+  'مدير المبيعات': ['Sales Manager', 'Sales Director', 'Head of Sales', 'مدير المبيعات', 'مدير مبيعات'],
+  'مندوب المبيعات': ['Sales Executive', 'Sales Representative', 'Account Executive', 'مندوب مبيعات'],
+  'مدير حسابات العملاء': ['Account Manager', 'Key Account Manager', 'مدير حسابات العملاء'],
+  'مدير تطوير الأعمال': ['Business Development Manager', 'Business Development Director', 'Head of Business Development', 'مدير تطوير الأعمال'],
+  'مدير التجارة الإلكترونية': ['E-commerce Manager', 'Ecommerce Manager', 'Head of E-commerce', 'مدير التجارة الإلكترونية'],
+  'مدير العمليات': ['Operations Manager', 'Head of Operations', 'COO', 'Chief Operating Officer', 'مدير العمليات'],
+  'المدير المالي': ['CFO', 'Chief Financial Officer', 'Finance Manager', 'Finance Director', 'المدير المالي'],
+  'المحاسب': ['Accountant', 'Chief Accountant', 'Accounting Manager', 'محاسب', 'رئيس الحسابات'],
+  'مدير الموارد البشرية': ['HR Manager', 'Human Resources Manager', 'HR Director', 'Head of HR', 'مدير الموارد البشرية'],
+  'مسؤول التوظيف': ['Talent Acquisition Manager', 'Recruitment Manager', 'Recruiter', 'مسؤول التوظيف'],
+  'مدير تقنية المعلومات': ['IT Manager', 'IT Director', 'Head of IT', 'CTO', 'Chief Technology Officer', 'مدير تقنية المعلومات'],
+  'المدير الفني': ['Technical Manager', 'Technical Director', 'المدير الفني'],
+  'مدير المشتريات': ['Procurement Manager', 'Purchasing Manager', 'Head of Procurement', 'مدير المشتريات'],
+  'مدير المشاريع': ['Project Manager', 'Projects Director', 'مدير المشاريع', 'مدير مشاريع'],
+  'مدير المنتج': ['Product Manager', 'Head of Product', 'مدير المنتج'],
+  'مدير الجودة': ['Quality Manager', 'QA Manager', 'Quality Assurance Manager', 'مدير الجودة'],
+  'مدير خدمة العملاء': ['Customer Service Manager', 'Customer Experience Manager', 'Head of Customer Service', 'مدير خدمة العملاء'],
+  'المستشار القانوني': ['Legal Counsel', 'General Counsel', 'Legal Advisor', 'Legal Manager', 'المستشار القانوني'],
+  'المحامي': ['Lawyer', 'Attorney', 'Advocate', 'محامي'],
+  'مدير المصنع أو الإنتاج': ['Plant Manager', 'Factory Manager', 'Production Manager', 'مدير المصنع', 'مدير الإنتاج'],
+  'مدير المستودع': ['Warehouse Manager', 'Warehouse Supervisor', 'مدير المستودع', 'مدير مستودع'],
+  'مدير الخدمات اللوجستية': ['Logistics Manager', 'Supply Chain Manager', 'مدير الخدمات اللوجستية', 'مدير سلسلة الإمداد'],
+  'مدير المرافق والصيانة': ['Facility Manager', 'Facilities Manager', 'Maintenance Manager', 'مدير المرافق', 'مدير الصيانة'],
+  'المهندس': ['Engineer', 'Civil Engineer', 'Mechanical Engineer', 'Electrical Engineer', 'مهندس'],
+  'مدير الفرع أو المتجر': ['Branch Manager', 'Store Manager', 'مدير الفرع', 'مدير فرع'],
+  'مدير المطعم': ['Restaurant Manager', 'مدير المطعم', 'مدير مطعم'],
+  'مدير الفندق': ['Hotel Manager', 'مدير الفندق', 'مدير فندق'],
+  'مدير الصالون أو السبا': ['Salon Manager', 'Spa Manager', 'مدير الصالون', 'مديرة صالون'],
+  'مدير العيادة أو المدير الطبي': ['Clinic Manager', 'Medical Director', 'مدير العيادة', 'المدير الطبي'],
+  'الطبيب': ['Doctor', 'Physician', 'Consultant Physician', 'طبيب'],
+  'طبيب الأسنان': ['Dentist', 'Dental Surgeon', 'Orthodontist', 'طبيب أسنان'],
+  'الصيدلي': ['Pharmacist', 'Pharmacy Manager', 'صيدلي'],
+  'مدير المدرسة': ['School Principal', 'Head Teacher', 'Headmaster', 'Head of School', 'مدير المدرسة'], // not «Principal» alone: Principal Engineer, Consultant…
+  'الوسيط العقاري': ['Real Estate Agent', 'Real Estate Broker', 'Property Consultant', 'وسيط عقاري'],
+};
+export const titles = Object.keys(TITLE_VARIANTS);
+export const MAX_TITLES = 3; // owner 2026-10-09: the client asked for «شغلتين أو ثلاثة»
+// A listed title's provider forms; a typed one searches as written.
+export const titleForms = (title: string) => Object.hasOwn(TITLE_VARIANTS, title) ? TITLE_VARIANTS[title] : [title];
+// Words members type for a title that neither its names nor its provider forms hold (final review 2026-10-09). Search only:
+// never sent to the provider, so no search's query or cursor changes.
+const TITLE_WORDS: Record<string, string> = {
+  'المالك أو المؤسس': 'صاحب', 'الرئيس التنفيذي أو المدير العام': 'gm md', 'مسؤول التسويق الرقمي': 'مدير', 'مندوب المبيعات': 'مسؤول',
+  'المحاسب': 'محاسبة', 'مدير المشاريع': 'مشروع', 'مدير المستودع': 'المستودعات', 'الطبيب': 'دكتور', 'الصيدلي': 'صيدلية',
+};
+// Typed words -> the listed titles where every word starts a word of the title's names, search words or provider forms ('product',
+// 'منتج', 'CEO'); whole words in its names first, then in its forms: «CTO» is the IT manager, not «director», and «account» the
+// account manager before the «Account Executive» form (reviews 2026-10-09). Punctuation alone finds nothing.
+export function findTitles(query: string) {
+  const words = searchWords(query), split = (text: string) => searchWords(text).flatMap(w => [w, w.replace(/^ال/, '')]); // «المنتج» holds «منتج»
+  if (!words.length) return query.trim() ? [] : [...titles];
+  return titles.map(t => {
+    const names = split([t, labelsEn[t] ?? '', TITLE_WORDS[t] ?? ''].join(' ')), forms = split(TITLE_VARIANTS[t].join(' '));
+    return { t, all: words.every(w => [...names, ...forms].some(o => o.startsWith(w))), rank: words.reduce((n, w) => n + (names.includes(w) ? 2 : forms.includes(w) ? 1 : 0), 0) };
+  }).filter(r => r.all).sort((a, b) => b.rank - a.rank).map(r => r.t);
+}
 export const gulf = ['SA', 'AE', 'QA', 'KW', 'BH', 'OM'] as const;
 export const listedCountries = [...gulf, 'DZ', 'EG'] as const;
 export type { Resolved, SearchInput } from './schemas'; // types only: the browser never loads the validation library
@@ -105,11 +173,18 @@ export const labelsEn: Record<string, string> = {
   'المدارس': 'Schools', 'الجامعات والكليات': 'Universities & colleges', 'مراكز التدريب': 'Training centers', 'معاهد اللغات': 'Language institutes', 'التعليم الإلكتروني': 'E-learning',
   'الصناعة': 'Manufacturing', 'النفط والغاز والطاقة': 'Oil, gas & energy', 'الزراعة': 'Agriculture', 'النقل والخدمات اللوجستية': 'Transport & logistics', 'الأمن والحماية': 'Security',
   'الجهات الحكومية': 'Government', 'الجمعيات والمنظمات غير الربحية': 'Non-profits',
-  'المالك أو المؤسس': 'Owner or founder', 'الرئيس التنفيذي أو المدير العام': 'CEO or general manager', 'مدير التسويق': 'Marketing manager',
-  'مسؤول التسويق الرقمي': 'Digital marketing lead', 'مدير المبيعات': 'Sales manager', 'مدير تطوير الأعمال': 'Business development manager', 'مدير العمليات': 'Operations manager',
-  'المدير المالي': 'Finance manager', 'مدير الموارد البشرية': 'HR manager', 'مدير تقنية المعلومات': 'IT manager', 'مدير المشتريات': 'Procurement manager',
-  'مدير المشاريع': 'Project manager', 'مدير المنتج': 'Product manager', 'مدير خدمة العملاء': 'Customer service manager', 'مدير الفرع أو المتجر': 'Branch or store manager',
-  'مدير العيادة أو المدير الطبي': 'Clinic manager or medical director',
+  'المالك أو المؤسس': 'Owner or founder', 'الشريك': 'Partner', 'رئيس مجلس الإدارة': 'Chairman', 'الرئيس التنفيذي أو المدير العام': 'CEO or general manager',
+  'نائب الرئيس': 'Vice president', 'المدير الإقليمي': 'Regional manager', 'المدير الإداري': 'Office or admin manager', 'مدير التسويق': 'Marketing manager',
+  'مسؤول التسويق الرقمي': 'Digital marketing lead', 'مدير العلامة التجارية': 'Brand manager', 'مدير العلاقات العامة': 'PR or communications manager',
+  'المدير الإبداعي': 'Creative director', 'مدير المبيعات': 'Sales manager', 'مندوب المبيعات': 'Sales executive', 'مدير حسابات العملاء': 'Account manager',
+  'مدير تطوير الأعمال': 'Business development manager', 'مدير التجارة الإلكترونية': 'E-commerce manager', 'مدير العمليات': 'Operations manager',
+  'المدير المالي': 'Finance manager', 'المحاسب': 'Accountant', 'مدير الموارد البشرية': 'HR manager', 'مسؤول التوظيف': 'Recruiter', 'مدير تقنية المعلومات': 'IT manager',
+  'المدير الفني': 'Technical manager', 'مدير المشتريات': 'Procurement manager', 'مدير المشاريع': 'Project manager', 'مدير المنتج': 'Product manager',
+  'مدير الجودة': 'Quality manager', 'مدير خدمة العملاء': 'Customer service manager', 'المستشار القانوني': 'Legal counsel', 'المحامي': 'Lawyer',
+  'مدير المصنع أو الإنتاج': 'Plant or production manager', 'مدير المستودع': 'Warehouse manager', 'مدير الخدمات اللوجستية': 'Logistics or supply chain manager',
+  'مدير المرافق والصيانة': 'Facilities or maintenance manager', 'المهندس': 'Engineer', 'مدير الفرع أو المتجر': 'Branch or store manager', 'مدير المطعم': 'Restaurant manager',
+  'مدير الفندق': 'Hotel manager', 'مدير الصالون أو السبا': 'Salon or spa manager', 'مدير العيادة أو المدير الطبي': 'Clinic manager or medical director',
+  'الطبيب': 'Doctor', 'طبيب الأسنان': 'Dentist', 'الصيدلي': 'Pharmacist', 'مدير المدرسة': 'School principal', 'الوسيط العقاري': 'Real estate agent',
 };
 
 // The assistant (src/lib/ai.ts): a short answer, and a search form when the member described who they want to reach.
@@ -122,7 +197,7 @@ export function searchMethod(query: Pick<URLSearchParams,'get'>): 'manual'|'ai'|
   return query.get('ai')?'ai':query.get('from')||query.get('saved')?'manual':null;
 }
 export type AssistReply = { reply: string; action?: 'prepare' | 'clarify' | 'answer'; choices?: string[]; search?: { mode: 'people' | 'companies'; field: string; specialty: string; other: string; countries: string[];
-  city: string; title: string; size: 'all' | '1-10' | '11-50' | '51-200'; count: number } };
+  city: string; title: string[]; size: 'all' | '1-10' | '11-50' | '51-200'; count: number } };
 // The assistant's suggestion -> search form values (a specialty, a whole field, or the member's own words). Checked in the
 // browser too: it may arrive in a link (?ai=), so nothing is trusted; the server checks the search itself.
 const sizes = ['all', '1-10', '11-50', '51-200'] as const;
@@ -132,11 +207,13 @@ export function assistForm(raw: unknown, max: number) {
   const count = typeof s.count === 'number' && Number.isFinite(s.count) ? Math.round(s.count) : 0;
   return {
     mode: s.mode === 'companies' ? 'companies' as const : 'people' as const, sector: text(s.specialty) || text(s.field) || text(s.other) || undefined,
-    countries: countries.length ? countries : undefined, city: countries.length === 1 ? text(s.city) : '', title: s.mode === 'companies' ? '' : text(s.title),
+    countries: countries.length ? countries : undefined, city: countries.length === 1 ? text(s.city) : '', title: s.mode === 'companies' ? [] : titlesOf(s.title),
     size: sizes.find(x => x === s.size) ?? 'all', count: count > 0 ? Math.max(1, Math.min(count, max)) : undefined,
   };
 }
 
+// Up to three chosen titles from a list, or the one title of an older page, link or stored search.
+export const titlesOf = (v: unknown) => [...new Set((Array.isArray(v) ? v : [v]).map(t => typeof t === 'string' ? t.trim().slice(0, 60) : '').filter(Boolean))].slice(0, MAX_TITLES);
 // A member explicitly chooses a broader draft. It requests only the deficit and never starts or confirms a paid search.
 export function completionDraft(search: Search | undefined, scope: string | null) {
   if (!search || search.status !== 'partial' || search.delivered >= search.requested || !['country', 'gulf'].includes(scope || '')) return;

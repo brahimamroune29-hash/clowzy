@@ -189,6 +189,8 @@ svg{flex-shrink:0}
 .suggest li button{width:100%;text-align:start;border:0;background:transparent;padding:9px 12px;border-radius:8px;font-size:14px}
 .suggest li button:hover,.suggest li button:focus-visible{background:var(--accent-soft);color:var(--accent);outline:none}
 .niche-picker{position:relative;gap:10px}
+.title-search{position:relative}
+.title-search .niche-menu{top:calc(100% - 4px)}
 .niche-picker>label{font-size:14px;font-weight:500}
 .niche-trigger{display:flex;justify-content:space-between;align-items:center;gap:16px;min-height:48px;width:100%;padding:12px 15px;text-align:start;background:var(--field);color:var(--ink);border:1px solid var(--control);border-radius:10px}
 .niche-trigger:hover{border-color:var(--accent)}

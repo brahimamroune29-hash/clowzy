@@ -3,7 +3,7 @@ import { useEffect,useRef,useState } from 'react';
 import Link from 'next/link';
 import { useRouter,useSearchParams } from 'next/navigation';
 import { ArrowDown, Check, CheckCircle, Coins, Copy, DownloadSimple, MagnifyingGlass, MapPin, Plus, SlidersHorizontal, Sparkle, UsersThree, ClockCounterClockwise, ArrowSquareOut, X } from '@phosphor-icons/react';
-import { searchMethod, assistForm, completionDraft, type AssistMessage, type AssistReply, type Contact, deadMarket, emailTrust, fewReachable, fieldOf, freeMail, gulf, OTHER, type Search, type SearchInput, titles, withCountries } from '@/lib/contracts';
+import { searchMethod, assistForm, completionDraft, type AssistMessage, type AssistReply, type Contact, deadMarket, emailTrust, fewReachable, fieldOf, freeMail, gulf, MAX_TITLES, type Search, type SearchInput, withCountries } from '@/lib/contracts';
 import { cityNames, countryFromText, countrySuggestions } from '@/lib/places';
 import { api,date,downloadContacts,number } from '@/lib/client';
 import type { ViewProps } from './platform';
@@ -11,6 +11,7 @@ import { SearchProgress } from './search-progress';
 import { Badge,Button,Empty,Field,Forward,Modal,Notice,Open,PageHeading } from './ui';
 import { useLang,useNames,useT } from './lang';
 import { NichePicker, useCategories } from './niche-picker';
+import { TitlePicker } from './title-picker';
 
 // A search's state in words, the same on the dashboard and in the history.
 function SearchBadge({s}:{s:Search}){
@@ -37,10 +38,10 @@ export function Dashboard({data}:ViewProps) {
   </>;
 }
 
-type Form={mode:'people'|'companies';sector:string;countries:string[];city:string;title:string;size:'all'|'1-10'|'11-50'|'51-200';count:number;widen:boolean};
+type Form={mode:'people'|'companies';sector:string;countries:string[];city:string;title:string[];size:'all'|'1-10'|'11-50'|'51-200';count:number;widen:boolean};
 // The form as the member edits it, from a saved search ("repeat"), the assistant, or the defaults.
 function formOf(raw?:Partial<SearchInput>):Form{
-  return {mode:raw?.mode==='companies'?'companies':'people',sector:raw?.sector||'',countries:raw?.countries?.length?raw.countries:['SA'],city:raw?.city||'',title:raw?.title||'',size:raw?.size||'all',count:raw?.count||10,widen:raw?.widen!==false};
+  return {mode:raw?.mode==='companies'?'companies':'people',sector:raw?.sector||'',countries:raw?.countries?.length?raw.countries:['SA'],city:raw?.city||'',title:raw?.title??[],size:raw?.size||'all',count:raw?.count||10,widen:raw?.widen!==false};
 }
 const fromFilters=(filters?:string)=>{
   try { const raw=filters?withCountries(JSON.parse(filters)):undefined;
@@ -83,8 +84,7 @@ export function SearchView({data,reload,notify}:ViewProps){
   const [editing,setEditing]=useState(false);
   const [nichePending,setNichePending]=useState(false);
   const cats=useCategories(),typed=other&&!cats?.providerCategory(filters.sector); // a picked provider category is listed, not typed
-  const listedTitle=(title:string)=>!title||(titles as readonly string[]).includes(title);
-  const [titleOther,setTitleOther]=useState(()=>!listedTitle(filters.title)),[titleDraft,setTitleDraft]=useState(()=>listedTitle(filters.title)?'':filters.title);
+  const [titleQuery,setTitleQuery]=useState(''); // words typed in the title field and not added yet
   const [describe,setDescribe]=useState(''),[thinking,setThinking]=useState(false),[aiNote,setAiNote]=useState('');
   const [conversation,setConversation]=useState<AssistMessage[]>([]);
   const [aiState,setAiState]=useState<'idle'|'prepare'|'clarify'|'answer'|'error'>('idle'),[choices,setChoices]=useState<string[]>([]);
@@ -99,7 +99,6 @@ export function SearchView({data,reload,notify}:ViewProps){
   function apply(patch:Partial<Form>){
     change(patch);
     if(patch.sector!==undefined){const own=!fieldOf(patch.sector);setOther(own);setOtherDraft(own?patch.sector:'');}
-    if(patch.title!==undefined){const own=!listedTitle(patch.title);setTitleOther(own);setTitleDraft(own?patch.title:'');}
   }
   async function prepare(content=describe){
     if(content.trim().length<2||thinking||busy)return;
@@ -118,7 +117,7 @@ export function SearchView({data,reload,notify}:ViewProps){
   }
   const displayCity=lang==='ar'?(Object.entries(cityNames).find(([,en])=>en===filters.city)?.[0]||filters.city):filters.city;
   const companies=filters.mode==='companies';
-  const audience=JSON.stringify({mode:filters.mode,sector:filters.sector,countries:filters.countries,city:filters.city,title:companies?'':filters.title,size:filters.size});
+  const audience=JSON.stringify({mode:filters.mode,sector:filters.sector,countries:filters.countries,city:filters.city,title:companies?[]:filters.title,size:filters.size});
   // Free count of matching people or companies, so a too-narrow search is visible before any credit is spent.
   useEffect(()=>{
     if(!method||!data.provider?.configured||JSON.parse(audience).sector.length<2)return;
@@ -129,16 +128,19 @@ export function SearchView({data,reload,notify}:ViewProps){
   },[data.provider?.configured,audience,method]);
   const currentMatch=match?.audience===audience?match:null;
   const few=currentMatch?.total!==undefined&&currentMatch.total<filters.count;
-  const pending=nichePending||other&&filters.sector!==otherDraft.trim()||!companies&&titleOther&&filters.title!==titleDraft.trim();
+  // Typed title words hold the search until added or cleared; one letter is no title, and with three chosen there is no room left.
+  const titlePending=!companies&&titleQuery.trim().length>=2&&filters.title.length<MAX_TITLES;
+  const sectorWait=nichePending||other&&filters.sector!==otherDraft.trim(),pending=sectorWait||titlePending;
   const who=companies?t('الشركات المطابقة','matching companies'):t('الأشخاص المطابقين','matching people');
   const ready=filters.sector.length>=2&&!pending;
+  const titleWait=!sectorWait&&filters.sector.length>=2&&titlePending; // only typed title words hold it: say so, keep the summary
   const validCount=Number.isInteger(filters.count)&&filters.count>=1&&filters.count<=maxCount;
   const unfinishedDescription=method==='ai'&&(!!describe.trim()||aiState==='clarify');
   const canStart=!!method&&ready&&validCount&&confirmed&&!thinking&&!unfinishedDescription&&!!currentMatch&&!currentMatch.error&&(currentMatch.total!==0||currentMatch.supplementary)&&!!data.provider?.configured;
   async function submit(e:React.FormEvent){
     e.preventDefault();if(busy||!canStart)return;setBusy(true);setError('');
     try{
-      const result=await api<Search>('search',{...filters,title:companies?'':filters.title,confirmed,requestId});
+      const result=await api<Search>('search',{...filters,title:companies?[]:filters.title,confirmed,requestId});
       await reload();
       if(['failed','unknown'].includes(result.status)){
         setRequestId(crypto.randomUUID()); // pressing the button again is a new attempt, not the same failed search
@@ -149,7 +151,7 @@ export function SearchView({data,reload,notify}:ViewProps){
       router.push('/leads?search='+result.id);
     }catch(e){setError((e as Error).message);}finally{setBusy(false);}
   }
-  const status=nichePending?t('اختر النشاط من الاقتراحات أو اعتمد نشاطًا مخصصًا.','Choose an activity from the suggestions or apply a custom activity.'):pending||filters.sector.length<2?t('اختر النشاط، أو اكتب نشاطك ثم اضغط «اعتماد».','Choose an activity, or type your own and press “Apply”.')
+  const status=nichePending?t('اختر النشاط من الاقتراحات أو اعتمد نشاطًا مخصصًا.','Choose an activity from the suggestions or apply a custom activity.'):!companies&&titlePending?t('اختر المسمى من الاقتراحات، أو اضغط «استخدم» ليُعتمد كما كتبته.','Choose a title from the suggestions, or press “Use” to keep it as typed.'):pending||filters.sector.length<2?t('اختر النشاط، أو اكتب نشاطك ثم اضغط «اعتماد».','Choose an activity, or type your own and press “Apply”.')
     :!currentMatch?t('نحسب عدد ','Counting ')+who+'…':currentMatch.error?currentMatch.error
     :(typed&&currentMatch.industryLabels?.length?t('سنبحث في: ','We will search in: ')+(lang==='en'?currentMatch.industries??[]:currentMatch.industryLabels).join(lang==='en'?', ':'، ')+'. ':'')
       +(currentMatch.total===0&&!currentMatch.supplementary?t('لا يوجد ما يطابق هذه المعايير. وسّع البحث: احذف المدينة أو حجم الشركة.','Nothing matches. Widen the search: remove the city or company size.')
@@ -183,9 +185,7 @@ export function SearchView({data,reload,notify}:ViewProps){
       <CountryPicker value={filters.countries} onChange={countries=>change({countries})}/>
       <div className="form-grid">
         <Field label={t('المدينة','City')} hint={filters.countries.length===1?t('اتركها فارغة للبلد كله.','Leave empty for the whole country.'):t('متاحة عند اختيار دولة واحدة.','Available with one country.')}><input value={filters.city} onChange={e=>change({city:e.target.value})} placeholder={filters.countries.length===1?t('مثلًا: الرياض','e.g. Riyadh'):'—'} disabled={filters.countries.length!==1} maxLength={60}/></Field>
-        {!companies&&<div className="field"><span>{t('المسمى الوظيفي','Job title')}</span><select aria-label={t('المسمى الوظيفي','Job title')} value={titleOther?OTHER:filters.title} onChange={e=>{if(e.target.value===OTHER){setTitleOther(true);change({title:titleDraft.trim()});}else{setTitleOther(false);change({title:e.target.value});}}}><option value="">{t('جميع المسميات','All titles')}</option>{titles.map(x=><option key={x} value={x}>{names.label(x)}</option>)}<option value={OTHER}>{t('أخرى (اكتب المسمى)','Other (type it)')}</option></select>
-          {titleOther&&<div className="other-row"><input aria-label={t('اكتب المسمى الوظيفي','Type the job title')} value={titleDraft} onChange={e=>setTitleDraft(e.target.value)} maxLength={60} placeholder={t('مثلًا: مدير مستودع','e.g. warehouse manager')} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();if(titleDraft.trim().length>=2)change({title:titleDraft.trim()});}}}/>
-            <Button type="button" variant="secondary" disabled={titleDraft.trim().length<2||filters.title===titleDraft.trim()} onClick={()=>change({title:titleDraft.trim()})}>{filters.title===titleDraft.trim()?t('معتمد','Applied'):t('اعتماد','Apply')}</Button></div>}</div>}
+        {!companies&&<TitlePicker value={filters.title} onChange={title=>change({title})} query={titleQuery} onQuery={setTitleQuery} disabled={busy||thinking}/>}
         <Field label={t('حجم الشركة','Company size')}><select value={filters.size} onChange={e=>change({size:e.target.value as Form['size']})}><option value="all">{t('كل الأحجام','Any size')}</option><option value="1-10">{t('1–10 موظفين','1–10 employees')}</option><option value="11-50">{t('11–50 موظفًا','11–50 employees')}</option><option value="51-200">{t('51–200 موظف','51–200 employees')}</option></select></Field>
       </div>
 
@@ -231,23 +231,23 @@ export function SearchView({data,reload,notify}:ViewProps){
           {thinking?<p>{t('نفهم الوصف ونحدّث ملخص البحث…','Reading your description and updating the draft…')}</p>:aiNote?<><strong>{aiState==='prepare'?t('تم تجهيز البحث','Draft prepared'):aiState==='clarify'?t('توضيح واحد ونكمل','One detail to clarify'):aiState==='error'?t('تعذّر تجهيز الوصف','Could not prepare the draft'):t('عن البحث','About your search')}</strong><p>{aiNote}</p></>:<p>{t('البلد والعدد المختاران ظاهرَان في الملخص. لن يبدأ البحث حتى تراجعه وتضغط «ابدأ البحث».','Your country and count are shown in the summary. Searching starts only after you review and confirm it.')}</p>}
         </div>
         {!!choices.length&&<div className="chips">{choices.map(x=><button type="button" key={x} className="chip" disabled={thinking||busy} onClick={()=>void prepare(x)}>{x}</button>)}</div>}
-        {conversation.length>0&&<div className="search-context"><small>{t('آخر وصف: ','Last description: ')}{conversation.filter(m=>m.role==='user').at(-1)?.content}</small><button type="button" className="text-button" disabled={thinking||busy} onClick={()=>{setConversation([]);setAiNote('');setAiState('idle');setChoices([]);setDescribe('');apply({sector:'',city:'',title:''});setEditing(false);}}>{t('وصف جديد','New description')}</button></div>}
+        {conversation.length>0&&<div className="search-context"><small>{t('آخر وصف: ','Last description: ')}{conversation.filter(m=>m.role==='user').at(-1)?.content}</small><button type="button" className="text-button" disabled={thinking||busy} onClick={()=>{setConversation([]);setAiNote('');setAiState('idle');setChoices([]);setDescribe('');apply({sector:'',city:'',title:[]});setEditing(false);}}>{t('وصف جديد','New description')}</button></div>}
         {aiState==='error'&&<button type="button" className="text-button" onClick={()=>chooseMethod('manual')}>{t('أكمل بتعديل التفاصيل يدويًا','Continue by editing the details')}</button>}
       </section>}
       <form onSubmit={submit} className="panel search-review" aria-labelledby="review-title">
         <div className="search-step"><span>02</span>{t('راجع وابدأ','Review and start')}</div>
         <div className="search-review-title"><h2 id="review-title">{t('ملخص البحث','Your search')}</h2>{ready&&<Badge tone="green">{t('مسودة','Draft')}</Badge>}</div>
-        <h3 className="search-audience">{ready?names.label(filters.sector):method==='manual'?t('اختر المجال لبدء البحث','Choose a niche to begin'):t('بانتظار وصف عملائك','Describe your clients to begin')}</h3>
+        <h3 className="search-audience">{ready||titleWait?names.label(filters.sector):method==='manual'?t('اختر المجال لبدء البحث','Choose a niche to begin'):t('بانتظار وصف عملائك','Describe your clients to begin')}</h3>
         <dl className="search-summary">
           <div><dt>{t('المكان','Location')}</dt><dd><button type="button" onClick={editDetails}>{[displayCity,filters.countries.map(names.country).join('، ')].filter(Boolean).join(' · ')}<span>{t('تعديل','Edit')}</span></button></dd></div>
-          <div><dt>{t('جهة الاتصال','Contact type')}</dt><dd><button type="button" onClick={editDetails}>{companies?t('بريد الشركات','Company emails'):filters.title?names.label(filters.title):t('أشخاص داخل الشركات','People in companies')}<span>{t('تعديل','Edit')}</span></button></dd></div>
+          <div><dt>{t('جهة الاتصال','Contact type')}</dt><dd><button type="button" onClick={editDetails}>{companies?t('بريد الشركات','Company emails'):filters.title.length?filters.title.map(names.label).join(lang==='en'?', ':'، '):t('أشخاص داخل الشركات','People in companies')}<span>{t('تعديل','Edit')}</span></button></dd></div>
           {filters.size!=='all'&&<div><dt>{t('حجم الشركة','Company size')}</dt><dd>{filters.size} {t('موظفين','employees')}</dd></div>}
         </dl>
         <Field label={t('عدد الإيميلات المطلوبة','Emails to find')}><input type="number" min="1" max={Math.max(1,maxCount)} value={filters.count||''} onChange={e=>change({count:Number(e.target.value)})} required/></Field>
         {method==='ai'&&(<button type="button" className="text-button" aria-expanded={editing} aria-controls="search-details" onClick={()=>setEditing(!editing)}>{editing?t('إخفاء التفاصيل','Hide details'):t('تعديل المجال والتفاصيل','Edit niche and details')}<ArrowDown size={15}/></button>)}
         {method==='ai'&&editing&&manualControls}
         {!data.provider?.configured?<Notice error>{t('البحث غير متاح حاليًا. تواصل مع مالك المنصة.','Search is unavailable right now. Contact the platform owner.')}</Notice>
-          :ready&&<div className={'match-count'+(currentMatch?.error||few||pending?' warn':'')} role="status"><UsersThree size={18}/><span>{status}</span></div>}
+          :(ready||titleWait)&&<div className={'match-count'+(currentMatch?.error||few||pending?' warn':'')} role="status"><UsersThree size={18}/><span>{status}</span></div>}
         {ready&&typed&&currentMatch?.industryLabels?.length&&<p className="search-footnote">{t('تصنيف مزوّد البيانات قد يكون أوسع من وصفك. راجعه قبل البدء.','The data provider’s category may be broader than your description. Review it before starting.')}</p>}
         {error&&<Notice error>{error}</Notice>}
         {maxCount<1?<Notice error>{t('لا يوجد رصيد متاح. تواصل مع مالك المنصة لإضافة رصيد.','No credits available. Contact the platform owner to add credits.')}</Notice>:!validCount&&<Notice error>{t('العدد المتاح حاليًا من 1 إلى '+maxCount+' بريد.','You can request 1–'+maxCount+' emails right now.')} {filters.count>maxCount&&<button type="button" className="text-button" onClick={()=>change({count:maxCount})}>{t('استخدم '+maxCount,'Use '+maxCount)}</button>}</Notice>}

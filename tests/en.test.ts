@@ -36,17 +36,17 @@ test('messages built from parts and numbers come out whole in English', () => {
 
 test('the assistant\'s search is checked against the platform\'s lists before the page uses it', () => {
   assert.deepEqual(cleanSearch({ mode: 'people', field: 'الصحة والطب', specialty: 'عيادات الأسنان', countries: ['ae', 'XX', 'QM'], city: 'Dubai', title: 'مدير العيادة أو المدير الطبي', size: '11-50', count: 400 }),
-    { mode: 'people', field: 'الصحة والطب', specialty: 'عيادات الأسنان', other: '', countries: ['AE'], city: 'Dubai', title: 'مدير العيادة أو المدير الطبي', size: '11-50', count: 50 });
+    { mode: 'people', field: 'الصحة والطب', specialty: 'عيادات الأسنان', other: '', countries: ['AE'], city: 'Dubai', title: ['مدير العيادة أو المدير الطبي'], size: '11-50', count: 50 });
   const fixed = cleanSearch({ field: 'Health', specialty: 'المدارس', countries: ['SA', 'AE'], city: 'Riyadh', size: 'huge', mode: 'x' })!;
   assert.deepEqual([fixed.field, fixed.specialty, fixed.city, fixed.size, fixed.mode, fixed.count], ['التعليم والتدريب', 'المدارس', '', 'all', 'people', 10], 'a specialty finds its field; a city needs one country; bad values fall back');
   assert.equal(cleanSearch({ field: 'غير موجود', other: 'محلات الساعات', countries: ['KW'] })!.other, 'محلات الساعات', 'no field fits: the member\'s own words');
   assert.equal(cleanSearch({ field: '', other: '' }), undefined, 'nothing to search for');
-  assert.equal(cleanSearch({ mode: 'companies', field: 'العقارات والبناء', title: 'مدير التسويق' })!.title, '', 'a company has no job title');
+  assert.deepEqual(cleanSearch({ mode: 'companies', field: 'العقارات والبناء', title: 'مدير التسويق' })!.title, [], 'a company has no job title');
 });
 
 test('a suggestion arriving in a link is checked in the browser: wrong types never crash the page, the count fits the balance', () => {
   for (const raw of [null, 5, 'x', { other: 5, countries: 'SA' }, { countries: [1, 'sa', 'AE'], size: 'huge', count: 'many', mode: 'admin' }]) assert.doesNotThrow(() => assistForm(raw, 10));
   assert.deepEqual(assistForm({ countries: [1, 'sa', 'AE'], size: 'huge', count: 40, mode: 'admin', title: 'مدير مستودع', city: 'Dubai' }, 3),
-    { mode: 'people', sector: undefined, countries: ['AE'], city: 'Dubai', title: 'مدير مستودع', size: 'all', count: 3 });
+    { mode: 'people', sector: undefined, countries: ['AE'], city: 'Dubai', title: ['مدير مستودع'], size: 'all', count: 3 });
   assert.equal(assistForm({ specialty: 'عيادات الأسنان', field: 'الصحة والطب' }, 10).sector, 'عيادات الأسنان');
 });

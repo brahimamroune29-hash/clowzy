@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { isCountry } from './places';
+import { MAX_TITLES } from './contracts';
 
 // Request and storage validation: server-side only, so the validation library stays out of the browser bundle.
 const text = (max: number) => z.string().trim().max(max);
@@ -9,7 +10,10 @@ export const searchSchema = z.object({
   sector: text(60).min(2), // a listed sector, or the member's own words
   countries: z.array(z.string().refine(isCountry)).min(1).max(10),
   city: text(60).default(''),
-  title: text(60).default(''), // a listed title, English as typed, or Arabic words for the AI
+  // The member's chosen job titles, up to three (each a listed title, English as typed, or Arabic words for the AI); their provider
+  // forms are Resolved.titles. The key stays «title» because stored searches, saved audiences and links before 2026-10-09 hold
+  // one title as a string: it reads as a list of one.
+  title: z.preprocess(v => typeof v === 'string' ? [v] : v ?? [], z.array(text(60)).transform(list => [...new Set(list.filter(Boolean))]).pipe(z.array(z.string()).max(MAX_TITLES))),
   size: z.enum(['all', '1-10', '11-50', '51-200']).default('all'),
   count: z.number().int().min(1).max(50),
   widen: z.boolean().default(true), // short of the count: the whole country, then the region's other countries (live-search.ts placesOf)
