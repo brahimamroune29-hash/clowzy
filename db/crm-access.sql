@@ -1,7 +1,7 @@
 -- For fresh installations: run after creating the clowzy_app role.
 -- These tables are private, not exposed through Supabase Data API. Trusted server role only.
 do $$ declare tab text; begin
-  foreach tab in array array['lead_catalog','catalog_suppressions','crm_exclusions','saved_audiences','crm_lists','crm_meta','crm_memberships','crm_notifications','crm_deletions','crm_deliveries','crm_worker_leases'] loop
+  foreach tab in array array['lead_catalog','catalog_suppressions','crm_exclusions','saved_audiences','crm_lists','crm_meta','crm_memberships','crm_notifications','crm_deletions','crm_deliveries','crm_worker_leases','provider_misses','site_reads'] loop
     execute format('alter table clowzy.%I enable row level security',tab);
     execute format('revoke all on clowzy.%I from public',tab);
     if exists(select 1 from pg_roles where rolname='anon') then execute format('revoke all on clowzy.%I from anon',tab); end if;

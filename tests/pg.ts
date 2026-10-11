@@ -18,6 +18,7 @@ export async function testDb(withRoles = false, upgrade = false) {
   if(upgrade) {
     await pg.exec(readFileSync(join(process.cwd(),'supabase/migrations/20261002095426_crm_catalog.sql'),'utf8'));
     await pg.exec(readFileSync(join(process.cwd(),'supabase/migrations/20261002175425_launch_hardening.sql'),'utf8'));
+    for (const m of ['20261011120000_search_stop_and_timing', '20261011150000_shared_lookups']) await pg.exec(readFileSync(join(process.cwd(), 'supabase/migrations/' + m + '.sql'), 'utf8'));
   }
   await pg.exec('set search_path to clowzy'); // production: the app role's default (ALTER ROLE ... SET search_path)
   const wrap = (s: PGlite | Transaction): Driver => ({

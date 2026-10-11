@@ -175,6 +175,8 @@ const inCountries = (lead: Lead, codes: string[]) => {
 export const leadName = (lead: Lead) => [lead.firstname, lead.lastname].filter(Boolean).join(' ').trim() || (lead.kind === 'company' || lead.email ? lead.lastCompanyName?.trim() || '' : '');
 const nameKey = (name: string, company: string) => (name + '|' + company).trim().toLowerCase();
 export const personKey = (lead: Lead) => createHash('sha256').update(lead.kind === 'company' ? (lead.published ? 'published-email-v2:' : 'domain-search:') + siteOf(lead) + (lead.published && !lead.publicationPending && lead.email ? ':'+lead.email.toLowerCase() : '') : lead.profileUrl?.trim().toLowerCase() || nameKey(leadName(lead), lead.lastCompanyName || '')).digest('hex');
+// A «no email» answer is shared for this person or company at this domain (provider_misses): another domain is another lookup.
+export const missKey = (lead: Lead) => createHash('sha256').update(personKey(lead) + '|' + domainOf(lead)).digest('hex');
 export const submissionTask = (l: Lead) => l.kind === 'company' && !l.published ? 'domain-search' : l.email || l.published ? 'email-verification' : 'email-search';
 export function safeWebsite(value: string | null | undefined) {
   try { const u = new URL(/^https?:\/\//i.test(value || '') ? value! : 'https://' + value); return value && ['https:', 'http:'].includes(u.protocol) ? u.href : ''; } catch { return ''; }
@@ -273,13 +275,24 @@ export class IcypeasClient {
   }
   // Up to ten website reads at a time (in parallel, 8 s in all) fit one server request; the caller persists the remaining queue
   // before another call. Three a round made the salons fallback 6 rounds of ~42 s (2026-10-05); ten since 2026-10-08 (live-search FILL).
-  async published(leads: Lead[]): Promise<Lead[]> {
-    return (await Promise.all(leads.map(async lead => {
+  // known: sites any search read within 30 days (store.siteReads), not read again. read: the sites read in full now, to share; a read
+  // cut by its time limit is not shared, so a slow site is read again next time.
+  async published(leads: Lead[], known: Map<string, string[]>): Promise<{ leads: Lead[]; read: Map<string, string[]> }> {
+    const read = new Map<string, string[]>();
+    const out = await Promise.all(leads.map(async lead => {
       if (!lead.publicationPending) return lead;
-      const signal = AbortSignal.timeout(8000);
-      const emails = await companyEmails(lead.lastCompanyWebsite || '', this.siteReader, signal, true, 3, lead.lastCompanyName || '').catch(() => []);
+      let emails = known.get(siteOf(lead));
+      if (!emails) {
+        // A site none of whose pages answered (down, refused, 5xx: the reader returns '') is not «no address»: not shared.
+        const signal = AbortSignal.timeout(8000);
+        let answered = false;
+        const get = (url: string, s?: AbortSignal, sameHost?: boolean) => this.siteReader(url, s, sameHost).then(html => { answered ||= !!html; return html; });
+        emails = await companyEmails(lead.lastCompanyWebsite || '', get, signal, true, 3, lead.lastCompanyName || '').catch(() => []);
+        if (answered && !signal.aborted) read.set(siteOf(lead), emails);
+      }
       return { ...lead, email:emails[0]||'', alternateEmails:emails.slice(1), publicationPending: false };
-    }))).filter(lead => !!lead.email);
+    }));
+    return { leads: out.filter(lead => !!lead.email), read };
   }
   // Discovery costs 1 provider credit per found person/domain. Published contact addresses use verification, never guessing.
   async submit(leads: Lead[], name: string): Promise<string> {
@@ -297,7 +310,7 @@ export class IcypeasClient {
   // One read (a batch has at most BATCH rows). Read-only; safe to repeat. Candidates come from finished rows only and
   // include emails Icypeas rates ultra_sure / very_sure (<1% expected bounce) or probable (<5%; charged anyway, so delivered
   // and labelled rather than wasted), sure ones first. Malformed rows are skipped, not fatal.
-  async results(file: string, leads: Lead[]): Promise<{ done: boolean; candidates: Candidate[]; unpaid: Lead[]; missing: Lead[]; coverage?:CoverageCounts }> {
+  async results(file: string, leads: Lead[]): Promise<{ done: boolean; candidates: Candidate[]; unpaid: Lead[]; missing: Lead[]; misses: Lead[]; coverage?:CoverageCounts }> {
     const raw = await this.request('bulk-single-searchs/read', { mode: 'bulk', file, limit: BATCH });
     const rows = Array.isArray(raw.items) ? raw.items : [];
     const items = rows.map(i => itemSchema.safeParse(i)).flatMap(r => r.success ? [r.data] : []);
@@ -329,6 +342,10 @@ export class IcypeasClient {
       .flatMap<Lead>(lead=>!lead.published?[{...lead,email:'',published:true,publicationPending:true}]
         :lead.alternateEmails?.length?[{...lead,email:lead.alternateEmails[0],alternateEmails:lead.alternateEmails.slice(1),publicationPending:false}]:[]) : [];
     candidates.sort((a, b) => Number(a.email_status === 'PROBABLE') - Number(b.email_status === 'PROBABLE'));
+    // Searched, charged, and still no usable email: shared for 30 days so no other member pays for the same lookup.
+    // ponytail: a published address is left out (its site may list others, tried in turn: missing, above), so each member still pays
+    // to verify a site's addresses; share them too, skipping to the next alternate on a miss, if that spend shows.
+    const misses = [...new Set(finished.filter(i => /^DEBITED/.test(i.status)).map(leadOf))].filter((lead): lead is Lead => !!lead && !lead.suppressed && !lead.published && !delivered.has(lead));
     const coverage:CoverageCounts={attempted:leads.length,accepted:delivered.size,notFound:0,ownershipRejected:0,verificationRejected:0,unpaid:unpaid.length,unreturned:0,native:0,published:0};
     for(const lead of leads){
       if(delivered.has(lead)){coverage[lead.published?'published':'native']++;continue;}
@@ -340,6 +357,6 @@ export class IcypeasClient {
       if(!addresses.some(e=>z.email().safeParse(e.email).success&&(!freeMail.test(e.email.split('@')[1])||lead.published)&&(!lead.email||e.email.toLowerCase()===lead.email.toLowerCase())&&(lead.kind!=='company'||(bestEmail([e.email])&&(lead.published||emailsIn(e.email,siteOf(lead)).length>0)))))coverage.ownershipRejected++;
       else coverage.verificationRejected++;
     }
-    return { done: finished.length + malformed >= leads.length, candidates, unpaid, missing,coverage }; // a malformed row counts as finished without email
+    return { done: finished.length + malformed >= leads.length, candidates, unpaid, missing, misses, coverage }; // a malformed row counts as finished without email
   }
 }

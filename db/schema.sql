@@ -95,6 +95,14 @@ create table clowzy.lead_catalog (
   payload jsonb not null, verified_at text not null
 );
 create index catalog_match on clowzy.lead_catalog(kind,country_code,industry,verified_at desc);
+-- Shared «no email» answers (owner 2026-10-11): a person or company the provider found nothing for at that domain is not paid for
+-- again by any member for 30 days. A hash only (icypeas.ts missKey): no name, email or domain in clear.
+create table clowzy.provider_misses (key text primary key, checked_at bigint not null);
+create index provider_misses_age on clowzy.provider_misses(checked_at);
+-- Shared website reads (owner 2026-10-11): the addresses a company's site publishes (or none), 30 days, for every search. Delivery
+-- still refuses suppressed addresses (store.ts deliverBatch).
+create table clowzy.site_reads (site text primary key, emails jsonb not null, read_at bigint not null);
+create index site_reads_age on clowzy.site_reads(read_at);
 create table clowzy.catalog_suppressions (email text primary key, created_at text not null);
 create table clowzy.crm_exclusions (
   user_id text not null references clowzy.users(id), value text not null, created_at text not null, primary key(user_id,value)
@@ -146,13 +154,14 @@ begin
   ), cleaned_runs as (
     update clowzy.provider_runs r set people=c.payload from cleaned c where c.kind='run' and r.search_id=c.id
   ) update clowzy.provider_cursors r set leftovers=c.payload from cleaned c where c.kind='cursor' and r.query_key=c.id and r.user_id=c.uid;
+  update clowzy.site_reads set emails=emails-address where emails @> jsonb_build_array(address); -- the shared website cache too
   delete from clowzy.lead_catalog where email=address;
   delete from clowzy.contacts where email=address;
 end $$;
 revoke all on function clowzy.suppress_contact(text,text) from public;
 -- These tables are private, not exposed through Supabase Data API. Trusted server role only.
 do $$ declare tab text; begin
-  foreach tab in array array['lead_catalog','catalog_suppressions','crm_exclusions','saved_audiences','crm_lists','crm_meta','crm_memberships','crm_notifications','crm_deletions','crm_deliveries','crm_worker_leases'] loop
+  foreach tab in array array['lead_catalog','catalog_suppressions','crm_exclusions','saved_audiences','crm_lists','crm_meta','crm_memberships','crm_notifications','crm_deletions','crm_deliveries','crm_worker_leases','provider_misses','site_reads'] loop
     execute format('alter table clowzy.%I enable row level security',tab);
     execute format('revoke all on clowzy.%I from public',tab);
     if exists(select 1 from pg_roles where rolname='anon') then execute format('revoke all on clowzy.%I from anon',tab); end if;

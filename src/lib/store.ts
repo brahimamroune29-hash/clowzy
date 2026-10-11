@@ -4,7 +4,7 @@ import { registrationEmail, resolvedSchema, weekBoundariesSchema } from './schem
 import { TERMS_VERSION, type AdminUser, type AuditEvent, type Candidate, type Contact, type ExportEvent, type Invitation, type Ledger, type Resolved, type Search, type Snapshot, type User } from './contracts';
 import { Db, pgDriver } from './db';
 import { weekBoundaries } from './overview';
-import { crmEnabled } from './catalog';
+import { catalogDays, crmEnabled } from './catalog';
 import { recordCoverage } from './coverage';
 import { companyKeys } from './icypeas';
 
@@ -41,6 +41,8 @@ export const dailyPeople = () => { const n = Math.floor(Number(process.env.DAILY
 // Least past requests in a niche+country before marketRate judges it: a verdict on one or two searches is noise.
 const MARKET_MIN_HISTORY = 40;
 export const dailyLimit = 'بلغت حد البحث اليومي لحسابك. يمكنك البحث مجددًا بعد 24 ساعة من أول بحث اليوم، أو تواصل مع مالك المنصة.';
+// A «no email» answer or a website read is trusted as long as a found email (catalog.ts, CATALOG_FRESH_DAYS).
+const sharedSince = () => Date.now() - catalogDays() * 86400000;
 const userFields = 'id,name,email,role,active,balance,created_at,terms_accepted_at';
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
 const count = (row: { n: number } | undefined) => row?.n ?? 0;
@@ -326,6 +328,35 @@ export class Store {
     if (await this.db.get(`SELECT 1 FROM contacts WHERE user_id=? AND ((lower(name)=lower(?::text) AND lower(company)=lower(?::text))
       OR (?<>'' AND kind='company' AND split_part(regexp_replace(lower(website),'^(https{0,1}://){0,1}(www[0-9]*\\.){0,1}|[/#].*$','','g'),chr(63),1)=?))`, userId, name.trim(), company.trim(), companyDomain, companyDomain)) return false;
     return await this.db.run('INSERT INTO provider_seen(user_id,person_key) VALUES(?,?) ON CONFLICT DO NOTHING', userId, key) === 1;
+  }
+  // Shared «no email» answers (owner 2026-10-11): keys (icypeas.ts missKey) answered within 30 days, for any member. Keys travel as
+  // one JSON text, the same in production (postgres.js) and in tests (PGlite).
+  async recentMisses(keys: string[]) {
+    if (!keys.length) return new Set<string>();
+    const rows = await this.db.all<{ key: string }>('SELECT key FROM provider_misses WHERE key IN (SELECT jsonb_array_elements_text(?::jsonb)) AND checked_at>?', JSON.stringify(keys), sharedSince());
+    return new Set(rows.map(r => r.key));
+  }
+  async rememberMisses(keys: string[]) {
+    if (!keys.length) return;
+    await this.db.run('DELETE FROM provider_misses WHERE checked_at<?', sharedSince()); // the table holds 30 days only
+    await this.db.run(`INSERT INTO provider_misses(key,checked_at) SELECT jsonb_array_elements_text(?::jsonb), ?
+      ON CONFLICT(key) DO UPDATE SET checked_at=excluded.checked_at`, JSON.stringify([...new Set(keys)].sort()), Date.now()); // one lock order for concurrent deliveries
+  }
+  // Shared website reads (owner 2026-10-11): what a company's site publishes, read by any search within 30 days.
+  async siteReads(sites: string[]) {
+    if (!sites.length) return new Map<string, string[]>();
+    const rows = await this.db.all<{ site: string; emails: string[] }>('SELECT site,emails FROM site_reads WHERE site IN (SELECT jsonb_array_elements_text(?::jsonb)) AND read_at>?', JSON.stringify(sites), sharedSince());
+    return new Map(rows.map(r => [r.site, r.emails]));
+  }
+  async rememberSiteReads(read: Map<string, string[]>) {
+    if (!read.size) return;
+    await this.db.run('DELETE FROM site_reads WHERE read_at<?', sharedSince());
+    // A suppressed address is never stored (suppress_contact also removes it from rows already there).
+    const all = [...read.values()].flat().map(e => e.toLowerCase());
+    const suppressed = new Set((await this.db.all<{ email: string }>('SELECT email FROM catalog_suppressions WHERE email IN (SELECT jsonb_array_elements_text(?::jsonb))', JSON.stringify(all))).map(r => r.email));
+    await this.db.run(`INSERT INTO site_reads(site,emails,read_at) SELECT key, value, ? FROM jsonb_each(?::jsonb)
+      ON CONFLICT(site) DO UPDATE SET emails=excluded.emails, read_at=excluded.read_at`, Date.now(),
+      JSON.stringify(Object.fromEntries([...read].sort(([a], [b]) => a.localeCompare(b)).map(([site, emails]) => [site, emails.filter(e => !suppressed.has(e.toLowerCase()))]))));
   }
   async seen(userId: string, key: string) { return !!await this.db.get('SELECT 1 FROM provider_seen WHERE user_id=? AND person_key=?', userId, key); }
   unmarkSeen(userId: string, keys: string[]) {

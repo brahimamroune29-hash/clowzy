@@ -6,7 +6,7 @@ import {recordCoverage} from './coverage';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { AppError, dailyPeople, dailyLimit, Store } from './store';
 import { countryLabel, farther, nearby } from './places';
-import { BATCH, companyKeys, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadKeys, leadName, personKey, publishedEnabled, queryOf, siteOf, stageCount, submissionTask, submitCap, webStage } from './icypeas';
+import { BATCH, companyKeys, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadKeys, leadName, missKey, personKey, publishedEnabled, queryOf, siteOf, stageCount, submissionTask, submitCap, webStage } from './icypeas';
 
 type Run = { search_id: string; phase: string; people: string; file: string | null; scanned: number; fetched: number; submitted: number; submitted_at: number | null; message: string; updated_at: number; read_errors: number; mode: 'companies' | null; people_checked: number; scope: number; stop_requested: number | null };
 // Where a search looks, in order: the member's place, then (widen) the whole country when a city was set, then the region's
@@ -280,6 +280,8 @@ export class LiveSearch {
         }
         // Claimed at once (an overlapping search by the same member cannot pick the same person), and recorded with the run
         // and the cursor in the same transaction, so an interruption never leaves a person claimed but unrecorded.
+        // No email there for any member within 30 days: not paid for again. Read outside the claim (a failure only skips nothing).
+        const missed = await this.store.recentMisses(pool.map(missKey)).catch(() => new Set<string>());
         await this.store.transaction(async () => {
           while (pool.length && !full()) {
             if (batch.length && submissionTask(pool[0]) !== submissionTask(batch[0])) {
@@ -291,6 +293,11 @@ export class LiveSearch {
               else { aside.push(pool.shift()!); continue; }
             }
             let lead = pool.shift()!;
+            if (missed.has(missKey(lead))) { // nothing there for anyone within 30 days; a company still has its website (as below)
+              if (lead.kind !== 'company' || lead.published || !publishedEnabled()) continue;
+              lead = { ...lead, email: '', published: true, publicationPending: true };
+              if (batch.length && submissionTask(lead) !== submissionTask(batch[0])) { aside.push(lead); continue; }
+            }
             const keys = leadKeys(lead);
             if (keys.some(k => taken.has(k))) { held.push(lead); continue; }
             if (lead.kind !== 'company' && !siteOf(lead) && !exhausted()) { later.push(lead); continue; }
@@ -310,7 +317,10 @@ export class LiveSearch {
       if (batch[0].published) {
         if(this.elapsed()>8000&&batch.some(l=>l.publicationPending))return this.pause(userId,id,batch,input);
         const pending=new Set(batch.filter(l=>l.publicationPending).map(siteOf));
-        const prepared=await this.client.published(batch);
+        // Websites any search read within 30 days are not read again; a shared read that fails only means reading the site now.
+        const known=await this.store.siteReads([...pending]).catch(()=>new Map<string,string[]>());
+        const {leads:prepared,read}=await this.client.published(batch,known);
+        await this.store.rememberSiteReads(read).catch(e=>console.warn('Website reads not shared:',e instanceof Error?e.message:'unknown'));
         await this.store.transaction(async()=>{
           batch=[];
           for(const lead of prepared)if(!pending.has(siteOf(lead))||await this.store.claimPerson(userId,personKey(lead),leadName(lead),lead.lastCompanyName||'',siteOf(lead)))batch.push(lead);
@@ -453,6 +463,7 @@ export class LiveSearch {
       });
       if (delivered === null) return this.view(userId, id);
       await this.timing(id, { deliverMs });
+      await this.store.rememberMisses(result.misses.map(missKey)).catch(e => console.warn('No-email answers not shared:', e instanceof Error ? e.message : 'unknown'));
       if (result.unpaid.length) { // the provider ran out of credit mid-batch: no further batch until it is topped up
         console.warn('Icypeas: insufficient credits for', result.unpaid.length, 'rows; top it up.');
         await this.store.alert(userId, id, 'رصيد مزوّد البيانات نفد أثناء البحث؛ اشحن الرصيد.');
