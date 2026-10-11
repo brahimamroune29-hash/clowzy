@@ -1,5 +1,5 @@
 import type { SearchInput } from './schemas';
-import { countryFromText } from './places';
+import { countryFromText, nearby } from './places';
 import { niches, type NicheName, searchWords } from './niches';
 
 // What the member picks from: a main field, then one of its specialties or the whole field. The server maps each label to
@@ -215,13 +215,17 @@ export function assistForm(raw: unknown, max: number) {
 
 // Up to three chosen titles from a list, or the one title of an older page, link or stored search.
 export const titlesOf = (v: unknown) => [...new Set((Array.isArray(v) ? v : [v]).map(t => typeof t === 'string' ? t.trim().slice(0, 60) : '').filter(Boolean))].slice(0, MAX_TITLES);
-// A member explicitly chooses a broader draft. It requests only the deficit and never starts or confirms a paid search.
+// A member explicitly chooses a broader draft. It requests only the deficit and never starts or confirms a paid search. Since
+// 2026-10-11 it is the only way past the member's place (owner): the whole country (a city was searched), the member's region (the
+// Gulf states for the Gulf), or another country the member picks (countries left empty).
 export function completionDraft(search: Search | undefined, scope: string | null) {
-  if (!search || search.status !== 'partial' || search.delivered >= search.requested || !['country', 'gulf'].includes(scope || '')) return;
+  if (scope === 'gulf') scope = 'region'; // a link from before 2026-10-11
+  if (!search || search.status !== 'partial' || search.delivered >= search.requested || !['country', 'region', 'other'].includes(scope || '')) return;
   try {
     const raw = withCountries(JSON.parse(search.filters)) as Record<string, unknown>, draft = assistForm({ ...raw, other: raw.sector }, 50);
     if (!draft.sector || !draft.countries || (scope === 'country' && !draft.city)) return;
-    if (scope === 'gulf' && (!draft.countries.every(c => (gulf as readonly string[]).includes(c)) || gulf.every(c => draft.countries!.includes(c)))) return;
-    return { ...draft, countries: scope === 'gulf' ? [...gulf] : draft.countries, city: '', count: Math.min(50, search.requested - search.delivered) };
+    const region = draft.countries.every(c => (gulf as readonly string[]).includes(c)) ? [...gulf] : [...draft.countries, ...nearby(draft.countries)];
+    if (scope === 'region' && (region.length > 10 || region.every(c => draft.countries!.includes(c)))) return; // a search takes 10 countries (schemas.ts); or nothing to add
+    return { ...draft, countries: scope === 'region' ? region : scope === 'other' ? [] : draft.countries, city: '', count: Math.min(50, search.requested - search.delivered) };
   } catch { return; }
 }

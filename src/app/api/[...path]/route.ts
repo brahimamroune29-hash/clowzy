@@ -151,7 +151,9 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
     if(path.startsWith('crm/')) return json(await crmAction(store,user.id,path.slice(4),b));
     if(path==='admin/crm/delete') return json(await approveDeletion(store,user.id,b));
     if (path === 'search') {
-      const input = searchSchema.parse(withCountries(b)); // a page opened before multi-country still searches
+      // A page opened before multi-country still searches. Owner 2026-10-11: a search never leaves the member's place on its own; short
+      // of its count it ends partial and the member picks a wider place (contracts.ts completionDraft). An older page may still send widen.
+      const input = { ...searchSchema.parse(withCountries(b)), widen: false };
       await store.hit('search:' + user.id, 20);
       if (!providerInfo().configured) throw new AppError('مزوّد البيانات غير مهيأ على الخادم. تواصل مع مالك المنصة.',503);
       const old = await store.db.get<{ filters: string }>('SELECT filters FROM searches WHERE user_id=? AND request_id=?', user.id, input.requestId);

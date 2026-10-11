@@ -9,7 +9,8 @@ import { item, lead, live, testStore } from './pg';
 
 // Client 2026-10-05: «إذا ما لقي إيميلات، يوسع… ولا مرة بدي يكون ناقص». Owner: widen the place only (city, then the whole country,
 // then the region's other countries), on by default with a box to turn it off, and the companies' own emails come last.
-const ask = (o: Record<string, unknown>) => audienceOf(JSON.stringify({ sector: 'التقنية والبرمجيات', countries: ['LB'], city: '', title: '', size: 'all', count: 2, confirmed: true, requestId: randomUUID(), ...o }));
+// Searches started before 2026-10-11 (widen: true stored); a new one never widens on its own (route.ts, tests/early-switch.test.ts).
+const ask = (o: Record<string, unknown>) => audienceOf(JSON.stringify({ sector: 'التقنية والبرمجيات', countries: ['LB'], city: '', title: '', size: 'all', count: 2, widen: true, confirmed: true, requestId: randomUUID(), ...o }));
 const at = (id: string, address: string) => ({ ...lead(id), address });
 // One page per place (people by profile location, companies by headquarters); every person found, no company has an email.
 function provider(people: Record<string, unknown[]>, found = (row: string[]) => !!row) {

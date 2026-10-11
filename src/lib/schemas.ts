@@ -16,7 +16,8 @@ export const searchSchema = z.object({
   title: z.preprocess(v => typeof v === 'string' ? [v] : v ?? [], z.array(text(60)).transform(list => [...new Set(list.filter(Boolean))]).pipe(z.array(z.string()).max(MAX_TITLES))),
   size: z.enum(['all', '1-10', '11-50', '51-200']).default('all'),
   count: z.number().int().min(1).max(50),
-  widen: z.boolean().default(true), // short of the count: the whole country, then the region's other countries (live-search.ts placesOf)
+  // Searches started before 2026-10-11 may widen (live-search.ts placesOf); route.ts stores every new one with widen: false (owner).
+  widen: z.boolean().default(false),
   confirmed: z.literal(true),
   requestId: z.string().uuid(),
 });
@@ -37,5 +38,6 @@ export const weekBoundariesSchema = z.array(z.iso.datetime()).length(8).refine(d
 
 export const assistRequestSchema = z.object({
   messages: z.array(z.object({role:z.enum(['user','assistant']),content:text(1200).min(1)})).min(1).max(8),
-  context: searchSchema.omit({confirmed:true,requestId:true}).extend({sector:text(60)}).optional(),
+  // The form as it stands: «another country» (contracts.ts completionDraft) leaves the country list empty until the member picks one.
+  context: searchSchema.omit({confirmed:true,requestId:true}).extend({sector:text(60),countries:z.array(z.string().refine(isCountry)).max(10)}).optional(),
 });

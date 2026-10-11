@@ -12,6 +12,9 @@ type Run = { search_id: string; phase: string; people: string; file: string | nu
 // Where a search looks, in order: the member's place, then (widen) the whole country when a city was set, then the region's
 // other countries one by one (client 2026-10-05: «يوسّع… ولا مرة بدي يكون ناقص»; owner: the place only, the same region, on by default),
 // then the other regions, nearest first (tier 1, 2, 3; owner 2026-10-07: every niche falls short somewhere).
+// ponytail: since 2026-10-11 every new search is stored with widen: false (route.ts), so only searches started before then can widen.
+// Once none of those is open, delete together: the places past the first here, regionOf, widenedTo, the region moves in end(), the
+// widen field (schemas.ts) and its override (route.ts), the «from widening» tag (member-views.tsx) and tests/widen.test.ts.
 const placesOf = (input: Resolved) => [{ countries: input.countries, city: input.city, tier: 0 }, ...!input.widen ? []
   : [...input.city ? [{ countries: input.countries, city: '', tier: 0 }] : [], ...nearby(input.countries).map(cc => ({ countries: [cc], city: '', tier: 0 })),
     ...farther(input.countries).map((countries, i) => ({ countries, city: '', tier: i + 1 }))]];
@@ -46,6 +49,9 @@ const PAGES_PER_CALL = 3, COLLECT_MS = 20000, SUBMIT_MS = 25000;
 // ponytail: a rate measured low can over-find by up to a 100-person batch; those extra finds cost provider credits and are not
 // delivered (owner's choice, 2026-10-05). Cap the batch by the provider balance if that spend starts to matter.
 const PRIOR_FIND_RATE = 0.3;
+// Owner 2026-10-11 (Q2): past its first 100 people, a people search finding under 3% goes to the companies' own emails in the same place
+// now, not after every page of people (salons, Saudi Arabia: 0.6% over 1,016 people was 74% of a 21-minute search).
+const EARLY_SWITCH_AFTER = 100, EARLY_SWITCH_BELOW = 0.03;
 // ponytail: people without a website wait in the member's list (at most this many per filter set) until no page is left; the rest
 // come back when the list starts over.
 const LATER_KEPT = 100;
@@ -122,7 +128,8 @@ export class LiveSearch {
     // One company can have domain discovery followed by publication verification: attempts are not unique companies.
     return wide + (companies ? `نفّذنا ${checked} محاولة للعثور على بريد الشركات المطابقة والتحقق منه، فوصلك ${search.delivered} من ${search.requested}. `
       : `بحثنا عن بريد ${checked} من الأشخاص المطابقين، ${found ? `ووجدنا بريدًا موثّقًا لـ ${found} منهم${dup}` : 'ولم نجد بريدًا موثّقًا لأيّ منهم'}. `)
-      + (!cursor.stage && !cursor.token && cursor.leftovers === '[]' ? (webStage(input, stageCount(input) - 1) ? 'انتهت جولات البحث المتاحة لهذا الطلب. ' : 'جرّبنا كل المطابقين المتاحين. ') + widen : `أعد البحث بالمعايير نفسها لتجربة ${companies ? 'شركات أخرى' : 'أشخاص آخرين'}، أو وسّعها لنتائج أكثر.`);
+      + (!cursor.stage && !cursor.token && cursor.leftovers === '[]' ? (webStage(input, stageCount(input) - 1) ? 'انتهت جولات البحث المتاحة لهذا الطلب. ' : 'جرّبنا كل المطابقين المتاحين. ') + widen : run.mode && checked >= EARLY_SWITCH_AFTER && found < checked * EARLY_SWITCH_BELOW ? widen // the people left after an early switch: under 3%, not worth another round
+        : `أعد البحث بالمعايير نفسها لتجربة ${companies ? 'شركات أخرى' : 'أشخاص آخرين'}، أو وسّعها لنتائج أكثر.`);
   }
   // Colleagues held back for a company this search delivered would open the next search with the same filters: they leave the
   // member's lists (the people one and the companies fallback's). Never claimed, so they come back once a list starts over.
@@ -226,6 +233,10 @@ export class LiveSearch {
       const found = contacts.filter(c => !c.catalog && (run.mode ? c.kind === 'company' : input.mode === 'companies' || c.kind !== 'company')).length + (run.mode ? 0 : search.duplicates); // a duplicate was found too
       const tried = run.mode ? run.submitted : run.people_checked + run.submitted; // people: every place so far
       const rate = tried ? Math.max(MIN_FIND_RATE, found / tried) : PRIOR_FIND_RATE;
+      if (!run.mode && input.mode === 'people' && !input.widen && tried >= EARLY_SWITCH_AFTER && found / tried < EARLY_SWITCH_BELOW) { // an older widening search keeps its course
+        await this.release(userId, queryKey, batch); // picked, not sent: back to the member's list
+        return this.end(userId, id, input);
+      }
       const most = Math.min(BATCH, submitCap(search.requested) - run.submitted), want = Math.min(most, Math.ceil((search.requested - search.delivered) / rate));
       // One email per company in a search: a colleague of someone delivered or already in this batch waits in the member's list
       // (held), and is tried in a later batch only if that company still has no email. People whose company has no website rarely
