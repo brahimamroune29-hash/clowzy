@@ -309,9 +309,13 @@ export class Store {
   async notifySearch(searchId: string, message = '') {
     if (crmEnabled()) await this.db.run("INSERT INTO crm_notifications(id,user_id,search_id,message,created_at) SELECT ?,user_id,id,title || ' · ' || CASE WHEN ?::text='' THEN delivered::text || '/' || requested::text ELSE ?::text END,? FROM searches WHERE id=? ON CONFLICT(search_id) DO NOTHING",randomUUID(),message,message,now(),searchId);
   }
+  // Every ending passes here: one the member or the owner asked to stop that ends short is 'stopped' (live-search.ts requestStop),
+  // kept out of the market-rate calibration: not the market's doing.
   finishSearch(searchId: string) {
     return this.transaction(async () => {
-      const changed = await this.db.run("UPDATE searches SET status=CASE WHEN delivered>=requested THEN 'completed' ELSE 'partial' END WHERE id=? AND status='awaiting_provider'", searchId);
+      const changed = await this.db.run(`UPDATE searches SET status=CASE WHEN delivered>=requested THEN 'completed'
+        WHEN EXISTS (SELECT 1 FROM provider_runs WHERE search_id=searches.id AND stop_requested IS NOT NULL) THEN 'stopped' ELSE 'partial' END
+        WHERE id=? AND status='awaiting_provider'`, searchId);
       await this.db.run('DELETE FROM reservations WHERE search_id=?', searchId);
       if (changed) await this.notifySearch(searchId);
     });
@@ -346,6 +350,23 @@ export class Store {
     }
     if (!contacts.length) throw new AppError('لا توجد نتائج لتنزيلها.');
     if (record) await this.db.run('INSERT INTO exports(id,user_id,row_count,created_at) VALUES(?,?,?,?)', randomUUID(), userId, contacts.length, now());
+    return contacts;
+  }
+  // The owner's view of what members extracted (client 2026-10-11): a member's searches, and contacts by member, search, or all.
+  async memberSearches(ownerId: string, userId: string) {
+    await this.admin(ownerId);
+    // ponytail: the newest 200 only; page it if a member ever runs more (the per-member file still covers every result).
+    return this.db.all<Search>('SELECT * FROM searches WHERE user_id=? ORDER BY created_at DESC LIMIT 200', userId);
+  }
+  // record: a download (counted in exports like a member's). ponytail: the whole platform is read at once; page it past tens of thousands.
+  async ownerContacts(ownerId: string, { userId, searchId }: { userId?: string; searchId?: string }, record = false) {
+    await this.admin(ownerId);
+    const contacts = await this.db.all<Contact & { member: string; search_title: string; search_at: string }>(`SELECT c.*, u.name AS member, s.title AS search_title, s.created_at AS search_at
+      FROM contacts c JOIN users u ON u.id=c.user_id JOIN searches s ON s.id=c.search_id
+      WHERE (?::text IS NULL OR c.user_id=?) AND (?::text IS NULL OR c.search_id=?) ORDER BY c.created_at DESC`, userId ?? null, userId ?? null, searchId ?? null, searchId ?? null);
+    if (!record) return contacts;
+    if (!contacts.length) throw new AppError('لا توجد نتائج لتنزيلها.');
+    await this.db.run('INSERT INTO exports(id,user_id,row_count,created_at) VALUES(?,?,?,?)', randomUUID(), ownerId, contacts.length, now());
     return contacts;
   }
   async invite(adminId: string, name: string, email: string | undefined, credits: number) {

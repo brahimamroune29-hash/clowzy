@@ -11,7 +11,7 @@ export function SearchProgress({search,reload}:{search:Search;reload:()=>Promise
   const t=useT();
   const [message,setMessage]=useState(search.message || t('جارٍ جلب الإيميلات والتحقق منها…','Finding and verifying emails…'));
   const [progress,setProgress]=useState({checked:search.checked??0,firms:search.companiesChecked,wide:search.widenedTo,delivered:search.delivered});
-  const [retry,setRetry]=useState(0);
+  const [retry,setRetry]=useState(0), [stopping,setStopping]=useState(false);
   useEffect(()=>{
     let active=true,timer:ReturnType<typeof setTimeout>;
     let began=Date.now(),seen=''; // the 20-minute stop counts from the last real progress, not from the page opening
@@ -37,6 +37,13 @@ export function SearchProgress({search,reload}:{search:Search;reload:()=>Promise
     void poll();
     return()=>{active=false;clearTimeout(timer);};
   },[search.id,search.delivered,reload,retry,t]);
+  // Nothing new is sent after a stop; the emails already at the provider are delivered (and charged), then the search closes.
+  async function stop(){
+    if(!window.confirm(t('إيقاف البحث؟ نسلّم ما وصل من الإيميلات ثم نغلقه، ولا يُخصم إلا ما وصل.','Stop the search? We deliver the emails that arrived, then close it; you pay only for what arrived.')))return;
+    setStopping(true);
+    try{const value=await api<Search>('search/stop',{searchId:search.id});if(value.message)setMessage(value.message);if(value.status!=='awaiting_provider')await reload();}
+    catch(e){setMessage((e as Error).message);setStopping(false);}
+  }
   const {checked,firms,wide,delivered}=progress;
   const asked=JSON.parse(search.filters) as {mode?:string;countries?:string[];city?:string};
   const companies=asked.mode==='companies', fallback=firms!==undefined;
@@ -58,7 +65,7 @@ export function SearchProgress({search,reload}:{search:Search;reload:()=>Promise
       <div role="status">{wide&&<p className="search-live">{t('ما اكتمل العدد، فوسّعنا البحث إلى: '+places(countryLabel,'كل ').join('، ')+'.','Not enough yet, so we widened the search to: '+places(englishName,'all of ').join(', ')+'.')}</p>}
         {fallback&&<p className="search-live">{t('لم نجد بريدًا كافيًا للأشخاص، فنبحث الآن عن بريد الشركات نفسها.','Not enough personal emails found, so we are now looking for the companies’ own emails.')}</p>}
         {checked>0&&<p className="search-live">{looked+t(' · وصلك '+delivered+' من '+search.requested,' · received '+delivered+' of '+search.requested)}</p>}<p className="search-message">{message}</p></div>
-      <div className="searching-foot"><Button variant="ghost" onClick={()=>setRetry(n=>n+1)}>{t('متابعة','Refresh')}</Button><small>{t('يُخصم الكريدت فقط عند حفظ بريد جديد.','Credits are charged only when a new email is saved.')}</small></div>
+      <div className="searching-foot"><Button variant="ghost" onClick={()=>setRetry(n=>n+1)}>{t('متابعة','Refresh')}</Button><Button variant="danger" loading={stopping} onClick={stop}>{stopping?t('جارٍ الإيقاف…','Stopping…'):t('إيقاف البحث','Stop search')}</Button><small>{t('يُخصم الكريدت فقط عند حفظ بريد جديد.','Credits are charged only when a new email is saved.')}</small></div>
     </div>
   </section>;
 }

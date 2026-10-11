@@ -40,7 +40,7 @@ export default function Platform(){
     return()=>{active=false;};
   },[requestPath,failed]);
   useEffect(()=>{if(!toast)return;const timer=setTimeout(()=>setToast(null),5000);return()=>clearTimeout(timer);},[toast]);
-  const notify=(message:string,error=false)=>setToast({message,error});
+  const notify=useCallback((message:string,error=false)=>setToast({message,error}),[]); // stable: views that load on mount depend on it
   async function onLogin(){await refresh();router.replace('/dashboard');}
   async function logout(){requestVersion.current++;await api('auth/logout',{});setData(null);setFailure('');router.replace('/');}
   async function logoutFromMenu(){try{await logout();}catch(e){notify((e as Error).message,true);}}

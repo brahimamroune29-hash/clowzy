@@ -16,7 +16,8 @@ process.env.DATABASE_URL = 'postgres://unused'; // getStore() returns the test s
 process.env.ICYPEAS_API_KEY = 'journey-secret';
 process.env.OPENROUTER_API_KEY = 'journey-ai-secret';
 const holder = globalThis as unknown as { waslStore?: Store };
-let clock = Date.parse('2026-10-01T08:00:00Z');
+// The first test's day (clock + one day) is 08:00 after the current terms, so a member who accepts them today is current.
+let clock = Date.parse(TERMS_VERSION) + 8 * 3600000 - 86400000;
 
 type Lead = ReturnType<typeof lead>;
 const lead = (id: string) => ({ firstname: 'Person', lastname: id, profileUrl: 'https://www.linkedin.com/in/' + id, lastJobTitle: 'CEO', address: 'Riyadh, Saudi Arabia', lastCompanyName: 'Co ' + id, lastCompanyWebsite: 'https://co-' + id + '.example', lastCompanyIndustry: 'Software Development', lastCompanySize: 12 });

@@ -56,7 +56,9 @@ create table clowzy.provider_runs (
   fetched integer not null default 0, -- people actually returned by the provider (the daily cap); scanned may be raised to stop paging
   mode text, -- 'companies' once a people search short of its count falls back to the companies' own emails
   people_checked integer not null default 0, -- people sent for email discovery before that fallback
-  scope integer not null default 0 -- the place a widening search has reached (live-search.ts placesOf): 0 is the member's own
+  scope integer not null default 0, -- the place a widening search has reached (live-search.ts placesOf): 0 is the member's own
+  stop_requested bigint, -- when the member (or the owner) asked to stop: nothing new is sent, the batch at the provider is delivered
+  timing jsonb -- milliseconds and counts per stage (pageMs/pages, submitMs/submits, readMs/reads, deliverMs), added as the search runs
 );
 create table clowzy.provider_cursors (
   user_id text not null references clowzy.users(id), query_key text not null, stage integer not null default 0, token text,

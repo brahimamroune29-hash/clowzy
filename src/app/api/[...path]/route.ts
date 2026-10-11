@@ -7,7 +7,7 @@ import { IcypeasClient, IcypeasError, providerInfo } from '@/lib/icypeas';
 import { LiveSearch } from '@/lib/live-search';
 import { searchTick, workerAuthorized } from '@/lib/search-worker';
 import { audienceOf, resolveAudience } from '@/lib/audience';
-import { contactsCsv, crmCsv, exportColumns } from '@/lib/csv';
+import { contactsCsv, crmCsv, exportColumns, ownerCsv } from '@/lib/csv';
 import { accessError, bodyLimit, clientIp, isHttps, lockMessage } from '@/lib/access';
 import { assist } from '@/lib/ai';
 import { englishBody } from '@/lib/en';
@@ -126,6 +126,9 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
     }
     if (req.method === 'GET' && path === 'crm') return json(await crmState(store,user.id));
     if (req.method === 'GET' && path === 'admin/crm') return json(await crmOperations(store,user.id));
+    // The owner's view of members' results (client 2026-10-11); store.admin() inside refuses anyone else.
+    if (req.method === 'GET' && path === 'admin/searches') return json(await store.memberSearches(user.id, z.string().uuid().parse(req.nextUrl.searchParams.get('userId'))));
+    if (req.method === 'GET' && path === 'admin/contacts') return json(await store.ownerContacts(user.id, { searchId: z.string().uuid().parse(req.nextUrl.searchParams.get('searchId')) }));
     if(req.method==='GET'&&path==='admin/coverage')return json(await coverageReport(store,user.id,z.string().uuid().parse(req.nextUrl.searchParams.get('searchId'))));
     if (req.method === 'GET' && path === 'bootstrap') {
       const reserved=await store.reserved(user.id);
@@ -183,6 +186,10 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
       const {searchId}=z.object({searchId:z.string().uuid()}).parse(b);
       return json(await new LiveSearch(store).poll(user.id,searchId));
     }
+    if (path === 'search/stop') { // the member's own search, or any search for the owner (requestStop checks which)
+      const {searchId}=z.object({searchId:z.string().uuid()}).parse(b);
+      return json(await new LiveSearch(store).requestStop(user.id,searchId));
+    }
     if (path === 'provider/verify') {
       await store.admin(user.id);
       return json(await new IcypeasClient().verify());
@@ -200,6 +207,10 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
       if(path==='export/preview') return json({rowCount:contacts.length,preview:csv});
       await store.contactsForExport(user.id,contacts.map(c=>c.id));
       return new NextResponse(csv, {headers:{ 'Content-Type':'text/csv; charset=utf-8', 'Content-Disposition':'attachment; filename="clowzy-contacts.csv"', 'Cache-Control':'no-store' }});
+    }
+    if (path === 'admin/export') { // one member, one search, or (neither) the whole platform
+      const filter = z.object({ userId: z.string().uuid().optional(), searchId: z.string().uuid().optional() }).parse(b);
+      return new NextResponse(ownerCsv(await store.ownerContacts(user.id, filter, true)), {headers:{ 'Content-Type':'text/csv; charset=utf-8', 'Content-Disposition':'attachment; filename="clowzy-contacts.csv"', 'Cache-Control':'no-store' }});
     }
     if (path === 'terms') {
       await store.acceptTerms(user.id);

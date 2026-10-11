@@ -292,6 +292,10 @@ td small{display:block;font-size:12px;color:var(--muted-dark);margin-top:3px}
 .email-text{font-family:ui-sans-serif,system-ui,sans-serif;font-size:13px;display:block;margin-bottom:4px}
 .location-cell{display:flex;align-items:center;gap:4px}
 .row-actions{display:flex;gap:12px;align-items:center}
+/* The owner's view of a member's results (owner-results.tsx): a wider window, and the opened search's contacts set apart. */
+.modal:has(.owner-results){max-width:880px}
+.owner-results{margin-top:20px}
+.owner-contacts th,.owner-contacts td{font-size:13px;color:var(--muted-dark)}
 .pagination{display:flex;align-items:center;justify-content:space-between;padding:12px 20px;border-top:1px solid var(--line);font-size:13px;color:var(--muted-dark)}
 .pagination>div{display:flex;align-items:center;gap:8px}
 .pagination .button{padding:6px 12px;min-height:32px;font-size:13px}

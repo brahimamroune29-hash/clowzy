@@ -3,14 +3,19 @@ export function cell(value: string) {
   const safe = /^[=+\-@\t\r\n]/.test(value) ? "'" + value : value;
   return '"' + safe.replaceAll('"', '""') + '"';
 }
+const table = (rows: string[][]) => '\uFEFF' + rows.map(row => row.map(cell).join(',')).join('\r\n');
+const contactHeaders = ['First Name', 'Last Name', 'Email', 'Company Name', 'Job Title', 'City', 'Country', 'Website', 'Source', 'Email Status'];
+// Source is the platform, never the data provider (owner's decision 2026-09-30), old rows included.
+const contactRow = (c: Contact) => {
+  const [first, ...rest] = c.kind === 'company' ? [''] : c.name.split(' '); // a company's own email has no person name
+  return [first, rest.join(' '), c.email, c.company, c.title, c.city, c.country, c.website, c.email_status === 'demo' ? c.source : 'clowzy', c.email_status === 'demo' ? 'DEMO — not real contact data' : emailTrust(c.email_status)];
+};
 export function contactsCsv(contacts: Contact[]) {
-  const headers = ['First Name', 'Last Name', 'Email', 'Company Name', 'Job Title', 'City', 'Country', 'Website', 'Source', 'Email Status'];
-  // Source is the platform, never the data provider (owner's decision 2026-09-30), old rows included.
-  const rows = contacts.map(c => {
-    const [first, ...rest] = c.kind === 'company' ? [''] : c.name.split(' '); // a company's own email has no person name
-    return [first, rest.join(' '), c.email, c.company, c.title, c.city, c.country, c.website, c.email_status === 'demo' ? c.source : 'clowzy', c.email_status === 'demo' ? 'DEMO — not real contact data' : emailTrust(c.email_status)];
-  });
-  return '\uFEFF' + [headers, ...rows].map(row => row.map(cell).join(',')).join('\r\n');
+  return table([contactHeaders, ...contacts.map(contactRow)]);
+}
+// The owner's file: the member's file with who searched, which search, and when (client 2026-10-11).
+export function ownerCsv(contacts: (Contact & { member: string; search_title: string; search_at: string })[]) {
+  return table([['Member', 'Search', 'Date', ...contactHeaders], ...contacts.map(c => [c.member, c.search_title, c.search_at.slice(0, 10), ...contactRow(c)])]);
 }
 
 export const exportColumns = ['name','email','company','title','city','country','website','kind','stage','tags','notes'] as const;

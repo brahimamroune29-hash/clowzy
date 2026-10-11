@@ -78,9 +78,56 @@ test('each delivered batch records how long it waited on the provider, beside it
     await store.db.run('UPDATE provider_runs SET updated_at=0, submitted_at=?', Date.now() - 12000);
     await s.poll(user.id, first.id);
     assert.equal(reads, 1);
-    const event = await store.db.get<{ detail: string }>("SELECT detail FROM audit WHERE action='search-coverage'");
+    const event = await store.db.get<{ detail: string }>("SELECT detail FROM audit WHERE action='search-coverage' AND detail LIKE '%\"phase\":\"verification\"%'");
     const counts = JSON.parse(event!.detail).counts;
     assert.ok(counts.waitMs >= 12000 && counts.waitMs < 60000, 'waited ' + counts.waitMs);
+  } finally { await store.close(); }
+});
+
+test('each stage of a search adds its time to the run: pages, submits, every read (done or not) and deliveries', async () => {
+  let reads = 0;
+  const transport: typeof fetch = async (url, init) => {
+    const path = String(url).replace('https://app.icypeas.com/api/', ''), body = JSON.parse(String(init?.body));
+    if (path === 'find-people') return Response.json({ success: true, leads: body.query?.profileLocation?.exclude ? [] : [{ ...at('Kudu', 'kudu.example'), address: 'Riyadh, Saudi Arabia' }] });
+    if (path === 'find-companies') return Response.json({ success: true, leads: [] });
+    if (path === 'bulk-search') return Response.json({ success: true, file: 'f1' });
+    if (path === 'bulk-single-searchs/read') return Response.json({ success: true, items: ++reads === 1 ? [] : [item(0, 'owner@kudu.example')] }); // the first read: not done yet
+    throw new Error('Unexpected ' + path);
+  };
+  const store = await testStore(), user = await store.addUser('Alice', 'alice@example.com', 'secure-password', 'member', 5);
+  try {
+    const s = live(store, new IcypeasClient('unit-test-secret', transport)), first = await s.start(user.id, input(1));
+    for (let i = 0; i < 2; i++) { await store.db.run('UPDATE provider_runs SET updated_at=0'); await s.poll(user.id, first.id); }
+    const { timing } = (await store.db.get<{ timing: Record<string, number> }>('SELECT timing FROM provider_runs'))!;
+    for (const key of ['pageMs', 'submitMs', 'readMs', 'deliverMs']) assert.equal(typeof timing[key], 'number', key + ' in ' + JSON.stringify(timing));
+    assert.equal(timing.reads, 2, 'the read that was not done counts too');
+    assert.equal(timing.submits, 1);
+    assert.ok(timing.pages >= 1);
+    assert.equal((await store.db.get<{ n: number }>("SELECT count(*)::int n FROM audit WHERE detail LIKE '%Ms%' AND detail NOT LIKE '%waitMs%'"))!.n, 0, 'no audit row per stage');
+  } finally { await store.close(); }
+});
+
+test('a stage time that cannot be written never stops the search: the paid batch is still read and delivered', async () => {
+  const transport: typeof fetch = async (url, init) => {
+    const path = String(url).replace('https://app.icypeas.com/api/', ''), body = JSON.parse(String(init?.body));
+    if (path === 'find-people') return Response.json({ success: true, leads: body.query?.profileLocation?.exclude ? [] : [{ ...at('Kudu', 'kudu.example'), address: 'Riyadh, Saudi Arabia' }] });
+    if (path === 'find-companies') return Response.json({ success: true, leads: [] });
+    if (path === 'bulk-search') return Response.json({ success: true, file: 'f1' });
+    if (path === 'bulk-single-searchs/read') return Response.json({ success: true, items: [item(0, 'owner@kudu.example')] });
+    throw new Error('Unexpected ' + path);
+  };
+  const store = await testStore(), user = await store.addUser('Alice', 'alice@example.com', 'secure-password', 'member', 5);
+  try {
+    await store.db.run(`create function clowzy.reject_timing() returns trigger language plpgsql as $f$
+      begin raise exception 'timing unavailable'; end $f$`);
+    await store.db.run('create trigger reject_timing before update of timing on clowzy.provider_runs for each row execute function clowzy.reject_timing()');
+    const s = live(store, new IcypeasClient('unit-test-secret', transport)), first = await s.start(user.id, input(1));
+    assert.equal(first.status, 'awaiting_provider', first.message);
+    assert.equal((await store.db.get<{ phase: string }>('SELECT phase FROM provider_runs'))!.phase, 'waiting');
+    await store.db.run('UPDATE provider_runs SET updated_at=0, submitted_at=?', Date.now() - 12000);
+    const done = await s.poll(user.id, first.id);
+    assert.equal(done.delivered, 1);
+    assert.equal(done.status, 'completed');
   } finally { await store.close(); }
 });
 

@@ -23,8 +23,9 @@ export function date(value: string) {
   return new Intl.DateTimeFormat(savedLang(), { day:'numeric',month:'short',hour:'2-digit',minute:'2-digit' }).format(new Date(value));
 }
 export const number = (n:number) => new Intl.NumberFormat('en').format(n);
-export async function downloadContacts(options: {ids?:string[];searchId?:string;profile?:'generic'|'gohighlevel';columns?:string[]} = {}) {
-  const response = await fetch('/api/export', {signal:AbortSignal.timeout(65000),method:'POST',headers:{'Content-Type':'application/json','x-lang':savedLang()},body:JSON.stringify(options)});
+// path 'admin/export': the owner's file of members' results ({userId}, {searchId}, or {} for the whole platform).
+export async function downloadContacts(options: {ids?:string[];searchId?:string;userId?:string;profile?:'generic'|'gohighlevel';columns?:string[]} = {}, path = 'export') {
+  const response = await fetch('/api/' + path, {signal:AbortSignal.timeout(65000),method:'POST',headers:{'Content-Type':'application/json','x-lang':savedLang()},body:JSON.stringify(options)});
   if (!response.ok) throw new Error((await response.json().catch(() => null))?.error || say('تعذّر تنزيل الملف. حاول مجددًا.', 'Could not download the file. Try again.'));
   const blob = await response.blob(), url = URL.createObjectURL(blob), a = document.createElement('a');
   a.href = url; a.download = 'clowzy-contacts.csv'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); // Safari aborts a download revoked at once

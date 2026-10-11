@@ -12,5 +12,7 @@ export async function coverageReport(store:Store,ownerId:string,searchId:string)
   const rows=await store.db.all<{detail:string}>("SELECT detail FROM audit WHERE action='search-coverage' AND detail::jsonb->>'searchId'=? ORDER BY created_at,id",searchId);
   const phases:Record<string,CoverageCounts>={};
   for(const row of rows){const event=JSON.parse(row.detail);const counts=phases[event.phase]||={};for(const [key,value] of Object.entries(event.counts))if(typeof value==='number')counts[key]=(counts[key]||0)+value;}
-  return {searchId,search:search||null,phases,events:rows.length};
+  // timing: the run's milliseconds and counts per stage (live-search.ts timing()), beside the coverage counts.
+  const run=await store.db.get<{timing:Record<string,number>|null}>('SELECT timing FROM provider_runs WHERE search_id=?',searchId);
+  return {searchId,search:search||null,phases,events:rows.length,timing:run?.timing??null};
 }

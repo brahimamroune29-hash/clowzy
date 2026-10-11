@@ -9,8 +9,8 @@ import { LangToggle, useLang, useT } from './lang';
 
 // ponytail: plain-language terms for launch; a lawyer in the target GCC markets should review them before scaling.
 // A change members must accept again: edit the text, raise TERMS_VERSION (contracts.ts) and say what changed here.
-const changed = { ar: 'الجديد: توضيح درجة ثقة المزوّد وكيفية تخزين البيانات ومعالجة طلبات الحذف.',
-  en: 'What’s new: provider confidence, data storage, and deletion requests are explained.' };
+const changed = { ar: 'الجديد: مالك المنصة يطّلع على عمليات بحثك ونتائجها، ويستطيع تنزيلها وإيقاف البحث الجاري.',
+  en: 'What’s new: the platform owner can see your searches and their results, download them, and stop a running search.' };
 const sections: { ar: [string, string]; en: [string, string] }[] = [
   { ar: ['الخدمة', 'منصة لاكتشاف جهات اتصال مهنية وبريد عمل من مزوّدي بيانات تجاريين ومن مواقع الشركات نفسها، لأغراض التواصل التجاري بين الشركات.'],
     en: ['The service', 'A platform to find business contacts and work emails, from commercial data providers and the companies’ own websites, for business-to-business outreach.'] },
@@ -26,6 +26,8 @@ const sections: { ar: [string, string]; en: [string, string] }[] = [
     en: ['Storage and processing', 'Your account, searches, contacts, lists and notes are stored with Supabase; the platform runs on Vercel. Icypeas discovers and verifies business data. Search descriptions and assistant messages pass through OpenRouter and the model provider to understand your request; do not include secrets or sensitive data. Your notes and lists are not shared with other accounts.'] },
   { ar: ['الاحتفاظ وطلبات الخصوصية', 'تبقى جهات الاتصال المحفوظة في حسابك حتى معالجة طلب حذفها. نحذف بيانات دفعة المزوّد المؤقتة عند إغلاق البحث. بعد اعتماد الحذف نزيل جهة الاتصال من المخزون والحسابات والنسخ التشغيلية المعروفة، ونحتفظ بسجل منع إعادة الإدراج وبالسجل المالي. قد تبقى البيانات في النسخ الاحتياطية حتى انتهاء مدة احتفاظها. تواصل مع مالك المنصة الذي أرسل دعوتك لطلبات الوصول أو التصحيح أو الحذف.'],
     en: ['Retention and privacy requests', 'Saved contacts remain in your account until a deletion request is processed. Temporary supplier batches are cleared when a search closes. After deletion approval, the contact is removed from the catalog, accounts and known operational copies; suppression and financial records remain. Backup copies may persist until their retention period ends. Contact the platform owner who invited you for access, correction or deletion requests.'] },
+  { ar: ['اطّلاع مالك المنصة', 'يطّلع مالك المنصة على عمليات بحثك ونتائجها، ويستطيع تنزيلها وإيقاف أي بحث جارٍ، لإدارة المنصة ومتابعة جودتها. لا يرى ملاحظاتك وقوائمك.'],
+    en: ['What the platform owner sees', 'The platform owner can see your searches and their results, download them, and stop a running search, to run the platform and check its quality. Your notes and lists are not shown to them.'] },
   { ar: ['الإيقاف وطلبات الحذف', 'يحق لمالك المنصة تعطيل أي حساب يخالف هذه الشروط أو تصل عنه شكاوى إزعاج. إذا طلب شخص حذف بياناته، أبلغ مالك المنصة لحذفها.'],
     en: ['Suspension and deletion requests', 'The platform owner may disable any account that breaks these terms or draws spam complaints. If a person asks for their data to be deleted, tell the platform owner.'] },
 ];

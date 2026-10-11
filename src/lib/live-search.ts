@@ -8,7 +8,7 @@ import { AppError, dailyPeople, dailyLimit, Store } from './store';
 import { countryLabel, farther, nearby } from './places';
 import { BATCH, companyKeys, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadKeys, leadName, personKey, publishedEnabled, queryOf, siteOf, stageCount, submissionTask, submitCap, webStage } from './icypeas';
 
-type Run = { search_id: string; phase: string; people: string; file: string | null; scanned: number; fetched: number; submitted: number; submitted_at: number | null; message: string; updated_at: number; read_errors: number; mode: 'companies' | null; people_checked: number; scope: number };
+type Run = { search_id: string; phase: string; people: string; file: string | null; scanned: number; fetched: number; submitted: number; submitted_at: number | null; message: string; updated_at: number; read_errors: number; mode: 'companies' | null; people_checked: number; scope: number; stop_requested: number | null };
 // Where a search looks, in order: the member's place, then (widen) the whole country when a city was set, then the region's
 // other countries one by one (client 2026-10-05: «يوسّع… ولا مرة بدي يكون ناقص»; owner: the place only, the same region, on by default),
 // then the other regions, nearest first (tier 1, 2, 3; owner 2026-10-07: every niche falls short somewhere).
@@ -29,6 +29,11 @@ const inputOf = (filters: string, run?: Pick<Run, 'mode' | 'scope'>): Resolved =
 const widenedTo = (input: Resolved, run: Pick<Run, 'mode' | 'scope'>) => placesOf(input).slice(1, (run.mode ? regionOf(input, run.scope).last : run.scope) + 1);
 type Slots = { read: number; bulk: number };
 const BATCH_DEADLINE = 15 * 60000; // a batch that never fully returns is closed with what came back
+// A stopped search waits this long for the batch already at the provider (median 9 s, longest seen 32 s), then closes with what came.
+// Counted from the stop, or from the submit when the batch went out after it. Past it, three failed reads in a row close the batch
+// with what came (one failed read must not throw away emails that are ready).
+const STOP_WAIT = 30000, STOP_READ_ERRORS = 3;
+const STOPPING = 'جارٍ إيقاف البحث: نسلّم ما وصل من الإيميلات ثم نغلقه.', STOPPED = 'أُوقف البحث قبل اكتماله. حُسب فقط ما وصل.';
 const READ_ERRORS = 10; // a batch past its deadline is closed on read errors only after this many in a row
 const STALE = 90000; // no request lives this long (maxDuration 60 s): a run untouched for 90 s was interrupted
 // One request's share of a search (the function is killed at 60 s): at most 3 paid pages and 20 s collecting people, and
@@ -71,6 +76,12 @@ export class LiveSearch {
       ON CONFLICT(kind) DO UPDATE SET available_at=excluded.available_at WHERE provider_slots.available_at<=?`, kind, now + gap, now) === 1;
   }
   private elapsed() { return Date.now() - this.begun; }
+  // Stage times add up on the run: one value per search, no audit row per stage. A measurement: a write that fails is logged and
+  // skipped, never a failed (or paid-and-lost) search. Called outside transactions only: a failed update inside one would abort it.
+  private async timing(id: string, counts: Record<string, number>) {
+    await this.store.db.run(`UPDATE provider_runs SET timing=coalesce(timing,'{}'::jsonb)||(SELECT jsonb_object_agg(k,coalesce((timing->>k)::bigint,0)+v::bigint)
+      FROM jsonb_each_text(?::jsonb) e(k,v)) WHERE search_id=?`, JSON.stringify(counts), id).catch(e => console.warn('Stage timing not recorded:', e instanceof Error ? e.message : 'unknown'));
+  }
   private run(id: string) { return this.store.db.get<Run>('SELECT * FROM provider_runs WHERE search_id=?', id); }
   private async patch(id: string, fields: Partial<Run>) {
     const keys = Object.keys(fields);
@@ -80,7 +91,7 @@ export class LiveSearch {
     const search = await this.store.getSearch(userId, id), run = await this.run(id);
     // checked: people (and companies) sent for email discovery so far, the live progress the results page shows while searching.
     return { ...search, checked: (run?.people_checked ?? 0) + (run?.submitted ?? 0), ...(run?.mode ? { companiesChecked: run.submitted } : {}),
-      ...(run && widenedTo(audienceOf(search.filters), run).length ? { widenedTo: widenedTo(audienceOf(search.filters), run).flatMap(p => p.countries) } : {}), message: run?.message || (search.status === 'awaiting_provider' ? 'جارٍ البحث والتحقق من الإيميلات.' : '') };
+      ...(run && widenedTo(audienceOf(search.filters), run).length ? { widenedTo: widenedTo(audienceOf(search.filters), run).flatMap(p => p.countries) } : {}), message: run?.stop_requested && search.status === 'awaiting_provider' ? STOPPING : run?.message || (search.status === 'awaiting_provider' ? 'جارٍ البحث والتحقق من الإيميلات.' : '') };
   }
   private stop(userId: string, id: string, message: string, uncertain = false) {
     return this.store.transaction(async () => {
@@ -126,11 +137,12 @@ export class LiveSearch {
     });
   }
   private async finish(userId: string, id: string, message = '') {
-    await this.store.finishSearch(id);
+    await this.store.finishSearch(id); // 'stopped' when a stop was asked (store.ts)
     const search = await this.store.getSearch(userId, id);
     // Best effort: the search is already closed and released; a failure only leaves the page's generic text (or the colleagues).
     await this.dropHeld(userId, search).catch(e => console.warn('Held colleagues kept:', e instanceof Error ? e.message : 'unknown'));
-    if (!message && search.delivered < search.requested) message = await this.shortfall(userId, search, (await this.run(id))!)
+    const run = (await this.run(id))!;
+    if (!message && search.delivered < search.requested) message = run.stop_requested ? STOPPED : await this.shortfall(userId, search, run)
       .catch(e => { console.warn('Shortfall message skipped:', e instanceof Error ? e.message : 'unknown'); return ''; });
     await this.patch(id, { phase: 'finished', message });
     return this.view(userId, id);
@@ -142,6 +154,7 @@ export class LiveSearch {
   private async end(userId: string, id: string, input: Resolved, closeOnly = false) {
     if (!closeOnly) {
       const search = await this.store.getSearch(userId, id), run = (await this.run(id))!, short = search.delivered < search.requested;
+      if (run.stop_requested) return this.finish(userId, id); // stopped: no wider place, no companies' fallback
       const region = regionOf(audienceOf(search.filters), run.scope);
       // A place of people gets its own attempts too (a capped first place must not skip the rest); their total is people_checked.
       if (short && run.scope < region.last) {
@@ -199,6 +212,10 @@ export class LiveSearch {
     try {
       const search = await this.store.getSearch(userId, id), run = (await this.run(id))!;
       batch = (JSON.parse(run.people) as Lead[]).filter(l => !l.suppressed); // picked (and claimed) by an earlier request of this search, not sent yet
+      if (run.stop_requested) { // the picked people go back to the member's list; closing the search clears them from the run
+        await this.release(userId, queryKey, batch);
+        return this.finish(userId, id);
+      }
       if (input.mode === 'companies') batch = batch.map(l => ({ ...l, kind: 'company', email: l.published ? l.email : '' }));
       // The rate counts what the provider found: the fallback its own attempts (submitted restarts at 0) and emails (company rows),
       // never emails the saved catalog delivered before any batch (2 catalog emails in 7 people read as a 29% rate).
@@ -251,8 +268,10 @@ export class LiveSearch {
               await this.store.hit('web-day:' + userId, 12, 86400000);
             } catch (e) { if (!(e instanceof AppError)) throw e; wrapped = true; continue; }
           }
+          if ((await this.run(id))?.stop_requested) return this.pause(userId, id, batch, input); // no paid page after a stop: the next advance closes it
           pages++;
-          const page = await this.page(input, token, stage);
+          const pageAt = Date.now(), page = await this.page(input, token, stage);
+          await this.timing(id, { pageMs: Date.now() - pageAt, pages: 1 });
           scanned += page.returned; fetched += page.returned; pool = page.leads; token = page.token;
           if (!token || (!page.returned && !webStage(input, stage))) { // an empty web round can still have another search engine to try
             token = null; stage = (stage + 1) % stageCount(input); wrapped = stage === 0;
@@ -310,28 +329,44 @@ export class LiveSearch {
       }
       if (this.elapsed() > SUBMIT_MS) return this.pause(userId, id, batch, input); // checked once the slot is ours: the submit starts now
       await this.patch(id, { phase: 'submitting', people: JSON.stringify(batch) });
-      if ((await this.store.getSearch(userId, id)).status !== 'awaiting_provider' || (await this.run(id))?.phase !== 'submitting') { await this.release(userId, queryKey, batch); return this.view(userId, id); }
+      // The run is read last: a stop that lands after this read meets a batch already on its way, delivered like any batch at the provider.
+      const open = (await this.store.getSearch(userId, id)).status === 'awaiting_provider', before = await this.run(id);
+      if (!open || before?.phase !== 'submitting' || before.stop_requested) {
+        await this.release(userId, queryKey, batch);
+        return before?.phase === 'submitting' && before.stop_requested ? this.finish(userId, id) : this.view(userId, id);
+      }
       sent = true;
-      const file = await this.client.submit(batch, `clowzy-${id}-${run.people_checked + run.submitted}`); // unique across the fallback's reset
+      const submitAt = Date.now(), file = await this.client.submit(batch, `clowzy-${id}-${run.people_checked + run.submitted}`); // unique across the fallback's reset
       try {
         await this.store.db.run("UPDATE provider_runs SET phase='waiting',file=?,submitted=submitted+?,submitted_at=?,message='',updated_at=? WHERE search_id=?", file, batch.length, Date.now(), Date.now(), id);
       } catch (e) { console.error('Paid Icypeas batch not saved; reconcile by hand:', { search: id, file }); throw e; }
+      await this.timing(id, { submitMs: Date.now() - submitAt, submits: 1 });
       return this.view(userId, id);
     } catch (e) {
       const error = e instanceof IcypeasError ? e : !sent && e instanceof AppError ? new IcypeasError(e.message, e.status) : sent ? new IcypeasError('تعذّر حفظ نتيجة الطلب. لن نعيد الإرسال تلقائيًا.', 502, true)
         : new IcypeasError('تعذّر إكمال البحث الآن. حاول مجددًا بعد قليل.', 503);
       if (!error.uncertain) await this.release(userId, queryKey, batch); // nothing reached the provider: offered again first
       // With emails delivered, or in the companies fallback (the people part ended normally), the search closes with what came.
-      if ((await this.store.getSearch(userId, id)).delivered > 0 || (await this.run(id))?.mode) { await this.store.alert(userId, id, error.message); return this.finish(userId, id, error.message); }
+      const now = await this.run(id);
+      if ((await this.store.getSearch(userId, id)).delivered > 0 || now?.mode || (!error.uncertain && now?.stop_requested)) { await this.store.alert(userId, id, error.message); return this.finish(userId, id, error.message); }
       await this.stop(userId, id, error.message, error.uncertain);
       return this.view(userId, id);
     }
+  }
+  // Client 2026-10-11: the member stops their own search, the owner any search; someone else's reads as missing, not forbidden.
+  // Nothing new is sent after it; a batch at the provider is delivered (owner's choice) and then the search closes 'stopped'.
+  async requestStop(actorId: string, id: string): Promise<Search> {
+    const actor = await this.store.user(actorId), search = await this.store.db.get<{ user_id: string }>('SELECT user_id FROM searches WHERE id=?', id);
+    if (!search || (search.user_id !== actorId && actor.role !== 'admin')) throw new AppError('البحث غير موجود.', 404);
+    await this.store.db.run(`UPDATE provider_runs SET stop_requested=? WHERE search_id=? AND stop_requested IS NULL
+      AND EXISTS (SELECT 1 FROM searches WHERE id=? AND status='awaiting_provider')`, Date.now(), id, id);
+    return this.poll(search.user_id, id);
   }
   async recoverStale(userId: string) {
     // With a background worker, leaving the page does not abandon the authorized target. Resume it;
     // capacity checks will keep a second search from interrupting it. Legacy browser-only mode closes abandoned work.
     const stale = await this.store.db.all<{ search_id: string }>(`SELECT r.search_id FROM provider_runs r JOIN searches s ON s.id=r.search_id WHERE s.user_id=? AND s.status='awaiting_provider'
-      AND ((r.phase='waiting' AND r.submitted_at<?) OR (r.phase<>'waiting' AND r.updated_at<?))`, userId, Date.now() - BATCH_DEADLINE, Date.now() - STALE);
+      AND ((r.phase='waiting' AND r.submitted_at<?) OR (r.phase<>'waiting' AND r.updated_at<?) OR (r.stop_requested IS NOT NULL AND GREATEST(r.stop_requested, coalesce(r.submitted_at, 0))<?))`, userId, Date.now() - BATCH_DEADLINE, Date.now() - STALE, Date.now() - STOP_WAIT); // a stopped one past its wait too: its member may have left
     for (const { search_id } of stale) { if (this.elapsed() > 10000) break; await this.poll(userId, search_id, !crmEnabled()); }
   }
   async start(userId: string, input: Resolved): Promise<Search> {
@@ -358,7 +393,7 @@ export class LiveSearch {
     if (!run || search.status !== 'awaiting_provider') return this.view(userId, id);
     const stale = Date.now() - run.updated_at > STALE, input = inputOf(search.filters, run);
     if (run.phase === 'catalog') {
-      if (Date.now() < (run.submitted_at ?? 0)) return this.view(userId, id);
+      if (!run.stop_requested && Date.now() < (run.submitted_at ?? 0)) return this.view(userId, id);
       const delivered = await this.store.transaction(async () => {
         if (!await this.store.db.run("UPDATE provider_runs SET phase='searching',people='[]',submitted_at=NULL,updated_at=? WHERE search_id=? AND phase='catalog'", Date.now(), id)) return null;
         return this.store.deliverBatch(userId, id, (JSON.parse(run.people) as Candidate[]).map(c => ({ ...c, sector: input.sector })), 'catalog');
@@ -395,16 +430,19 @@ export class LiveSearch {
     const locked = await this.store.db.run('UPDATE provider_runs SET updated_at=? WHERE search_id=? AND updated_at=?', Date.now(), id, run.updated_at);
     if (!locked) return this.view(userId, id);
     const age = Date.now() - (run.submitted_at ?? run.updated_at), people = JSON.parse(run.people) as Lead[];
+    const stopDue = !!run.stop_requested && Date.now() - Math.max(run.stop_requested, run.submitted_at ?? 0) > STOP_WAIT; // past it, what came is delivered
     try {
-      const result = await this.client.results(run.file, people);
-      if (!result.done && age <= BATCH_DEADLINE) { await this.patch(id, { read_errors: 0, message: 'نبحث عن الإيميلات ونتحقق منها. يمكنك العودة لاحقًا من سجل البحث.' }); return this.view(userId, id); }
+      const readAt = Date.now(), result = await this.client.results(run.file, people).finally(() => this.timing(id, { readMs: Date.now() - readAt, reads: 1 }));
+      if (!result.done && age <= BATCH_DEADLINE && !stopDue) { await this.patch(id, { read_errors: 0, message: 'نبحث عن الإيميلات ونتحقق منها. يمكنك العودة لاحقًا من سجل البحث.' }); return this.view(userId, id); }
       // Exactly one request delivers this batch, and only while the search is open: the claim, the delivery and the move
       // to the next phase commit together, so an interrupted delivery leaves the batch 'waiting' for the next poll.
+      let deliverMs = 0;
       const delivered = await this.store.transaction(async () => {
         if (await this.store.db.run(`UPDATE provider_runs SET phase='searching',file=NULL,people='[]',updated_at=? WHERE search_id=? AND phase='waiting' AND file=?
           AND EXISTS (SELECT 1 FROM searches WHERE id=? AND status='awaiting_provider')`, Date.now(), id, run.file, id) !== 1) return null;
         await rememberCandidates(this.store, result.candidates, input.sector);
-        const delivered = await this.store.deliverBatch(userId, id, result.candidates.map(c => ({ ...c, sector: input.sector })));
+        const deliverAt = Date.now(), delivered = await this.store.deliverBatch(userId, id, result.candidates.map(c => ({ ...c, sector: input.sector })));
+        deliverMs = Date.now() - deliverAt;
         if(delivered!==null&&result.coverage)await recordCoverage(this.store,userId,id,'verification',{...result.coverage,waitMs:age}); // how long the provider took
         if (delivered !== null) await this.release(userId, cursorKey(input), result.unpaid); // rows the provider could not pay for were never searched
         if (!closeOnly && !result.unpaid.length && delivered !== null && delivered < search.requested && result.missing.length) {
@@ -414,6 +452,7 @@ export class LiveSearch {
         return delivered;
       });
       if (delivered === null) return this.view(userId, id);
+      await this.timing(id, { deliverMs });
       if (result.unpaid.length) { // the provider ran out of credit mid-batch: no further batch until it is topped up
         console.warn('Icypeas: insufficient credits for', result.unpaid.length, 'rows; top it up.');
         await this.store.alert(userId, id, 'رصيد مزوّد البيانات نفد أثناء البحث؛ اشحن الرصيد.');
@@ -425,7 +464,7 @@ export class LiveSearch {
     } catch (e) {
       // Reads are repeatable and a failed delivery rolled back whole: the next poll retries. Only a batch past its deadline
       // whose reads keep failing (READ_ERRORS in a row) is closed with what was delivered.
-      if (age > BATCH_DEADLINE && run.read_errors + 1 >= READ_ERRORS) { await this.closeExpired(userId, id, run.file, 'تعذّر إكمال قراءة النتائج من مزوّد البيانات. حُسب فقط ما وصل.'); return this.view(userId, id); }
+      if ((stopDue && run.read_errors + 1 >= STOP_READ_ERRORS) || (age > BATCH_DEADLINE && run.read_errors + 1 >= READ_ERRORS)) { await this.closeExpired(userId, id, run.file, 'تعذّر إكمال قراءة النتائج من مزوّد البيانات. حُسب فقط ما وصل.'); return this.view(userId, id); }
       await this.patch(id, { read_errors: run.read_errors + 1, message: e instanceof IcypeasError ? e.message : 'تعذّر تحديث الحالة. سنحاول مجددًا؛ لن نعيد إرسال الطلب.' });
       return this.view(userId, id);
     }
