@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { AppError, getStore } from '@/lib/store';
-import { TERMS_VERSION, termsCurrent, withCountries } from '@/lib/contracts';
+import { MAX_TITLES, TERMS_VERSION, termsCurrent, withCountries } from '@/lib/contracts';
 import { assistRequestSchema, registrationEmail, searchSchema, weekBoundariesSchema } from '@/lib/schemas';
 import { IcypeasClient, IcypeasError, providerInfo } from '@/lib/icypeas';
 import { LiveSearch } from '@/lib/live-search';
 import { searchTick, workerAuthorized } from '@/lib/search-worker';
-import { audienceOf, resolveAudience } from '@/lib/audience';
+import { audienceOf, relatedTitles, resolveAudience } from '@/lib/audience';
 import { contactsCsv, crmCsv, exportColumns, ownerCsv } from '@/lib/csv';
 import { accessError, bodyLimit, clientIp, isHttps, lockMessage } from '@/lib/access';
 import { assist } from '@/lib/ai';
@@ -174,6 +174,14 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
       const audience = await resolveAudience(store,input,undefined,user.id); // «أخرى» is mapped here, so the member sees what will be searched
       const market = await store.marketRate(input.sector, input.countries); // how this niche+country performed before, if known
       return json({...await new IcypeasClient().count(audience),industryLabels:audience.industryLabels,industries:audience.industries,...(market?{marketRate:market.rate}:{})});
+    }
+    if (path === 'search/related-titles') { // asked by the form only while the free count warns of a short search
+      const input = searchSchema.pick({ sector:true, title:true }).parse(b);
+      await store.checkSearchCapacity(user.id, 1); // like search/count: no available balance, no model call
+      // Never an error, the allowance running out included (owner: without the AI the search works as usual).
+      const titles = input.title.length && input.title.length < MAX_TITLES ? await relatedTitles(store, input.sector, input.title, user.id)
+        .catch(e => { console.warn('Related titles skipped:', e instanceof Error ? e.message : 'unknown'); return []; }) : [];
+      return json({ titles });
     }
     if (path === 'assist') {
       const {messages,context}=assistRequestSchema.parse(b);

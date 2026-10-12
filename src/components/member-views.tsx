@@ -92,6 +92,7 @@ export function SearchView({data,reload,notify}:ViewProps){
   const [aiState,setAiState]=useState<'idle'|'prepare'|'clarify'|'answer'|'error'>('idle'),[choices,setChoices]=useState<string[]>([]);
   const formVersion=useRef(0);
   const [match,setMatch]=useState<{total?:number;strict?:number;reachable?:number;marketRate?:number;supplementary?:boolean;industryLabels?:string[];industries?:string[];error?:string;audience:string}|null>(null); // null: counting
+  const [related,setRelated]=useState<{key:string;titles:string[]}|null>(null); // related titles for one sector and choice (relatedKey)
   function change(patch:Partial<Form>){
     formVersion.current++;
     setAiState('idle');setChoices([]);setAiNote('');
@@ -136,6 +137,16 @@ export function SearchView({data,reload,notify}:ViewProps){
   const sectorWait=nichePending||other&&filters.sector!==otherDraft.trim(),pending=sectorWait||titlePending;
   const who=companies?t('الشركات المطابقة','matching companies'):t('الأشخاص المطابقين','matching people');
   const ready=filters.sector.length>=2&&filters.countries.length>0&&!pending;
+  // Owner 2026-10-12 (round 2, Q4 a): only while the count warns of fewer than asked, related listed titles the member may add (three at most).
+  const short=!companies&&(few||deadMarket(currentMatch?.marketRate)||fewReachable(currentMatch?.reachable,filters.count));
+  const relatedKey=ready&&short&&filters.title.length>0&&filters.title.length<MAX_TITLES?JSON.stringify({sector:filters.sector,title:filters.title}):'';
+  useEffect(()=>{
+    if(!relatedKey)return;
+    let active=true;
+    api<{titles:string[]}>('search/related-titles',JSON.parse(relatedKey)).then(r=>{if(active)setRelated({key:relatedKey,titles:r.titles});},()=>{});
+    return()=>{active=false;};
+  },[relatedKey]);
+  const relatedNow=related&&related.key===relatedKey?related.titles:[];
   const titleWait=!sectorWait&&filters.sector.length>=2&&titlePending; // only typed title words hold it: say so, keep the summary
   const validCount=Number.isInteger(filters.count)&&filters.count>=1&&filters.count<=maxCount;
   const unfinishedDescription=method==='ai'&&(!!describe.trim()||aiState==='clarify');
@@ -251,6 +262,7 @@ export function SearchView({data,reload,notify}:ViewProps){
         {method==='ai'&&editing&&manualControls}
         {!data.provider?.configured?<Notice error>{t('البحث غير متاح حاليًا. تواصل مع مالك المنصة.','Search is unavailable right now. Contact the platform owner.')}</Notice>
           :(ready||titleWait)&&<div className={'match-count'+(currentMatch?.error||few||pending?' warn':'')} role="status"><UsersThree size={18}/><span>{status}</span></div>}
+        {!!relatedNow.length&&<div><p className="search-footnote">{t('قد تزيد النتائج بمسميات قريبة:','Related titles may bring more results:')}</p><div className="chips">{relatedNow.map(x=><button type="button" key={x} className="chip" disabled={busy||thinking} onClick={()=>change({title:[...filters.title,x]})}><Plus size={13}/>{names.label(x)}</button>)}</div></div>}
         {ready&&typed&&currentMatch?.industryLabels?.length&&<p className="search-footnote">{t('تصنيف مزوّد البيانات قد يكون أوسع من وصفك. راجعه قبل البدء.','The data provider’s category may be broader than your description. Review it before starting.')}</p>}
         {error&&<Notice error>{error}</Notice>}
         {maxCount<1?<Notice error>{t('لا يوجد رصيد متاح. تواصل مع مالك المنصة لإضافة رصيد.','No credits available. Contact the platform owner to add credits.')}</Notice>:!validCount&&<Notice error>{t('العدد المتاح حاليًا من 1 إلى '+maxCount+' بريد.','You can request 1–'+maxCount+' emails right now.')} {filters.count>maxCount&&<button type="button" className="text-button" onClick={()=>change({count:maxCount})}>{t('استخدم '+maxCount,'Use '+maxCount)}</button>}</Notice>}

@@ -68,7 +68,7 @@ create table clowzy.provider_seen (
   user_id text not null references clowzy.users(id), person_key text not null, primary key (user_id, person_key)
 );
 
--- «أخرى»: one AI mapping per kind ('sector' | 'title') and normalized text, so the same words never pay twice.
+-- «أخرى»: one AI mapping per kind ('sector' | 'title' | 'related') and normalized text, so the same words never pay twice.
 create table clowzy.ai_cache (
   kind text not null, input text not null, output text not null, created_at text not null, primary key (kind, input)
 );

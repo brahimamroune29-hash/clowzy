@@ -34,6 +34,8 @@ function provider(o: Fake = {}) {
     queries.push(body.query);
     if (String(url).startsWith('https://openrouter.ai/')) {
       if (o.ai === 'down') return Response.json({}, { status: 500 });
+      if (String(body.messages[0].content).startsWith('A member searches')) // related titles: an invented one, the chosen one and a repeat among them
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ titles: ['طبيب الأسنان', 'Dental Boss', 'مدير العيادة أو المدير الطبي', 'المالك أو المؤسس', 'طبيب الأسنان'] }) } }] });
       const asked = body.messages[1].content as string;
       if (String(body.messages[0].content).startsWith('You are the assistant')) return Response.json({ choices: [{ message: { content: JSON.stringify({ reply: 'جهّزت لك البحث.', action:'prepare', choices:[],
         search: { mode: 'people', field: 'الصحة والطب', specialty: 'عيادات الأسنان', other: '', countries: ['AE', 'ZZ'], city: 'Dubai', title: 'مدير العيادة أو المدير الطبي', size: 'all', count: 4 } }) } }] });
@@ -100,6 +102,23 @@ async function setup(t: TestContext, credits = 20) {
 }
 const form = (count: number) => ({ sector: 'التقنية والبرمجيات', countries: ['SA'], city: '', title: '', size: 'all', count, confirmed: true, requestId: randomUUID() });
 const me = async (member: Call) => (await member('bootstrap?view=full')).data;
+// Owner 2026-10-12 (round 2, Q4 a): a search the count expects to fall short offers related titles from the list, which the member adds or not.
+test('journey: related titles come from the list only, never the chosen or an invented one, once per request; none when the model is down', async t => {
+  const { member } = await setup(t);
+  const fake = provider(), ask = (title: string[]) => member('search/related-titles', { sector: 'عيادات الأسنان', title });
+  const first = await ask(['مدير العيادة أو المدير الطبي']);
+  assert.equal(first.status, 200, JSON.stringify(first.data));
+  assert.deepEqual(first.data.titles, ['طبيب الأسنان', 'المالك أو المؤسس']);
+  assert.deepEqual((await ask(['مدير العيادة أو المدير الطبي'])).data.titles, first.data.titles);
+  assert.equal(fake.calls.filter(c => c.startsWith('https://openrouter.ai/')).length, 1, 'asked again: the saved answer, no second model call');
+  assert.deepEqual((await ask(['مدير العيادة أو المدير الطبي', 'طبيب الأسنان', 'المالك أو المؤسس'])).data.titles, [], 'three chosen: no room left');
+  assert.equal(fake.calls.filter(c => c.startsWith('https://openrouter.ai/')).length, 1, 'and no model call for it');
+  const keys = (await holder.waslStore!.db.all<{ key: string }>('SELECT DISTINCT key FROM rate_hits')).map(r => r.key.split(':')[0]);
+  assert.ok(keys.includes('related') && !keys.includes('assist'), 'an allowance of its own: the assistant’s and «أخرى»’s is untouched, so a count never fails for it');
+  provider({ ai: 'down' });
+  const down = await ask(['طبيب الأسنان']);
+  assert.deepEqual([down.status, down.data.titles], [200, []], 'the model down: no suggestion and no error');
+});
 test('journey: owner creates a name-only link; signup validation preserves it and chosen email gets the assigned member access',async t=>{
   const {owner}=await setup(t);
   const created=await owner('admin/invite',{name:'عمر',credits:9});assert.equal(created.status,200);
@@ -390,6 +409,8 @@ test('journey: reserved credits and the shared daily AI allowance stop uncached 
   const before = fake.calls.length;
   assert.equal((await member('search/count', {...form(1), sector:'متاجر الورود'})).status, 400);
   assert.equal(fake.calls.length, before, 'reserved money cannot fund new AI calls');
+  assert.equal((await member('search/related-titles', { sector: 'عيادات الأسنان', title: ['مدير العيادة أو المدير الطبي'] })).status, 400);
+  assert.equal(fake.calls.length, before, 'nor related titles');
   await store.finishSearch(started.data.id);
   const stamp = Date.now() - Date.now() % 86400000;
   await store.db.run('INSERT INTO rate_hits(key,window_start,count) VALUES(?,?,150) ON CONFLICT(key,window_start) DO UPDATE SET count=150', 'assist-day:'+uid, stamp);

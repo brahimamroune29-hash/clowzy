@@ -5,7 +5,7 @@ import { INDUSTRIES } from './industries';
 import { INDUSTRY_AR, providerCategory } from './industries-ar';
 import { norm } from './places';
 import { AppError, type Store } from './store';
-import { type AiMapper, openRouter } from './ai';
+import { type AiMapper, openRouter, suggestTitles } from './ai';
 
 // Listed sectors -> exact Icypeas industry names (checked against INDUSTRIES by tests/audience.test.ts).
 const LEGACY_INDUSTRIES: Record<LegacySpecialty, string[]> = {
@@ -85,7 +85,7 @@ const known = new Set(INDUSTRIES);
 const arabic = /[؀-ۿ]/;
 // One AI answer per normalized text, kept in the database (empty answers too): the same words never pay twice, and the
 // query (so the member's cursor) stays the same across count, search and repeat searches.
-async function cached<T>(store: Store, kind: 'sector' | 'title', text: string, ask: () => Promise<T>, userId?: string): Promise<T> {
+async function cached<T>(store: Store, kind: 'sector' | 'title' | 'related', text: string, ask: () => Promise<T>, userId?: string): Promise<T> {
   const key = norm(text), hit = await store.aiCached(kind, key);
   if (hit) return JSON.parse(hit) as T;
   if (userId) await store.aiBudget(userId);
@@ -125,6 +125,18 @@ export async function resolveAudience<T extends AudienceForm>(store: Store, inpu
     }
   }
   return { ...input, industries, industryLabels, titles: [...new Set(forms)] };
+}
+
+// Owner 2026-10-12 (round 2, Q4 a): a search the free count expects to fall short offers related titles, which the member adds or not.
+// Listed titles only (never invented), never one already chosen; one model answer per field and choice, kept like the others. A model call
+// takes from an allowance of its own, never the assistant's and «أخرى»'s (aiBudget): suggestions cannot make a count fail.
+export async function relatedTitles(store: Store, sector: string, chosen: string[], userId: string) {
+  const picked = await cached(store, 'related', JSON.stringify([sector, [...chosen].sort()]), async () => {
+    await store.hit('related:' + userId, 12);
+    await store.hit('related-day:' + userId, 150, 86400000);
+    return suggestTitles(sector, chosen);
+  });
+  return [...new Set(picked)].filter(t => Object.hasOwn(TITLE_VARIANTS, t) && !chosen.includes(t)).slice(0, 3);
 }
 
 // Filters stored with a search -> the audience to continue it with. Searches saved before multi-country
