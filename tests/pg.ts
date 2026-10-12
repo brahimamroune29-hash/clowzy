@@ -43,6 +43,8 @@ export function hookDb(store: Store, onQuery: (text: string) => void | Promise<v
 
 // Shared fixtures for the provider tests (icypeas, lifecycle): a Saudi tech audience, provider leads and result rows.
 // Widening to other places is off here (tests/widen.test.ts covers it), so these tests see one place's provider calls.
+// So is the AI judge before paying (tests/judge.test.ts covers it): with a test key, it would send their pages to the real model.
+process.env.AI_JUDGE_ENABLED = 'false';
 export const input = (count = 2): Resolved => audienceOf(JSON.stringify({ sector: 'التقنية والبرمجيات', countries: ['SA'], city: '', title: '', size: 'all', count, widen: false, confirmed: true, requestId: randomUUID() }));
 export const lead = (id: string) => ({ firstname: 'Person', lastname: id, profileUrl: 'https://www.linkedin.com/in/' + id, lastJobTitle: 'CEO', address: 'Riyadh, Riyadh, Saudi Arabia', lastCompanyName: 'Company ' + id, lastCompanyWebsite: 'https://www.company-' + id + '.example/about', lastCompanyIndustry: 'Software Development', lastCompanySize: 12 });
 export const item = (i: number, email: string | null, certainty = 'ultra_sure', status = email ? 'DEBITED' : 'DEBITED_NOT_FOUND') => ({ _id: 'item' + i, status, userData: { externalId: String(i) }, results: { emails: email ? [{ email, certainty }] : [] } });

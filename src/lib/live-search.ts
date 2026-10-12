@@ -1,6 +1,7 @@
 import { DEFAULT_SIZE, MIN_FIND_RATE, POLL_MS, type Candidate, type Resolved, type Search } from './contracts';
 import { catalogMatches, crmEnabled, rememberCandidates } from './catalog';
 import { audienceOf } from './audience';
+import { judgeLeads } from './ai';
 import { WEB_ROUNDS } from './web-companies';
 import {recordCoverage} from './coverage';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -43,6 +44,9 @@ const STALE = 90000; // no request lives this long (maxDuration 60 s): a run unt
 // no paid submit after 25 s (a submit can take ~31 s: a 10.5 s connect timeout, then one 20 s retry). Past that the search
 // pauses with its picked people saved, and the next poll resumes it.
 const PAGES_PER_CALL = 3, COLLECT_MS = 20000, SUBMIT_MS = 25000;
+// The AI judge (judge below) answers within 8 s and by 50 s into the request: a page fetched late (a slow or retried provider call)
+// goes unjudged rather than past the kill at 60 s, counted as a judge failure.
+const JUDGE_MS = 8000, JUDGE_BY = 50000;
 // Batch sizing: until a batch of this mode has come back, an optimistic 30% find rate (measured ~20-23% on GCC samples,
 // outputs/gulf-email-provider-research-2026-09-26.md) keeps the first paid batch small. After that, the rate this search measured
 // (floored at 5%): restaurants in Saudi Arabia found 10 in 185 (5.4%), and assuming 30% took 13 small batches (2026-10-05).
@@ -87,6 +91,19 @@ export class LiveSearch {
   private async timing(id: string, counts: Record<string, number>) {
     await this.store.db.run(`UPDATE provider_runs SET timing=coalesce(timing,'{}'::jsonb)||(SELECT jsonb_object_agg(k,coalesce((timing->>k)::bigint,0)+v::bigint)
       FROM jsonb_each_text(?::jsonb) e(k,v)) WHERE search_id=?`, JSON.stringify(counts), id).catch(e => console.warn('Stage timing not recorded:', e instanceof Error ? e.message : 'unknown'));
+  }
+  // The AI judge on each new provider page (ai.ts judgeLeads): off without a key or with AI_JUDGE_ENABLED=false; a failure keeps the page.
+  // ponytail: what an unjudged page leaves in the member's list (and picks saved before the deploy) is paid for later unjudged, as before
+  // the judge; tag judged leads and judge the untagged ones read back if judgeErrors shows up in the run timing.
+  private async judge(id: string, input: Resolved, leads: Lead[]) {
+    if (!leads.length || process.env.AI_JUDGE_ENABLED === 'false' || !process.env.OPENROUTER_API_KEY?.trim()) return leads;
+    const at = Date.now(), time = Math.min(JUDGE_MS, JUDGE_BY - this.elapsed());
+    const drop = await (time < 1000 ? Promise.reject(new Error('no time left')) : judgeLeads({ field: input.sector, industries: input.industries, titles: input.mode === 'companies' ? [] : input.titles, countries: input.countries },
+      leads.map(l => ({ title: l.lastJobTitle || undefined, company: l.lastCompanyName || '', industry: l.lastCompanyIndustry || undefined, website: siteOf(l) || undefined })), time))
+      .catch(e => { console.warn('AI judge skipped:', e instanceof Error ? e.message : 'unknown'); return null; });
+    const kept = drop ? leads.filter((_, i) => !drop.includes(i)) : leads;
+    await this.timing(id, { judgeMs: Date.now() - at, judged: drop ? leads.length : 0, dropped: leads.length - kept.length, judgeErrors: drop ? 0 : 1 });
+    return kept;
   }
   private run(id: string) { return this.store.db.get<Run>('SELECT * FROM provider_runs WHERE search_id=?', id); }
   private async patch(id: string, fields: Partial<Run>) {
@@ -283,7 +300,7 @@ export class LiveSearch {
           pages++;
           const pageAt = Date.now(), page = await this.page(input, token, stage);
           await this.timing(id, { pageMs: Date.now() - pageAt, pages: 1 });
-          scanned += page.returned; fetched += page.returned; pool = page.leads; token = page.token;
+          scanned += page.returned; fetched += page.returned; pool = await this.judge(id, input, page.leads); token = page.token;
           if (!token || (!page.returned && !webStage(input, stage))) { // an empty web round can still have another search engine to try
             token = null; stage = (stage + 1) % stageCount(input); wrapped = stage === 0;
             if (wrapped) scanned = Math.max(scanned, fetchCap(search.requested)); // this search has seen everything: no further pages

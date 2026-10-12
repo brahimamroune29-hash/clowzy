@@ -127,7 +127,7 @@ export type User = { id: string; name: string; email: string; role: Role; active
 // the text in terms.tsx: every member who accepted before it sees the terms again before anything else (route.ts).
 // Never later than the deploy: acceptances would count as old until then (a test checks it is in the past).
 // ponytail: a member who accepts the old text between this time and the deploy is not asked again; raise it to the deploy time if that gap matters.
-export const TERMS_VERSION = '2026-10-11T14:38:00.000Z';
+export const TERMS_VERSION = '2026-10-12T11:49:00.000Z';
 export const termsCurrent = (user: Pick<User, 'terms_accepted_at'>) => !!user.terms_accepted_at && user.terms_accepted_at >= TERMS_VERSION;
 // How sure the provider is that the email exists: VERIFIED <1% expected bounce, PROBABLE <5% (Icypeas certainties), which
 // the member reads as «likely» rather than as a bare percentage.
