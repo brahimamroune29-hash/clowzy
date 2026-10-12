@@ -3,7 +3,7 @@ import { useEffect,useRef,useState } from 'react';
 import Link from 'next/link';
 import { useRouter,useSearchParams } from 'next/navigation';
 import { ArrowDown, Check, CheckCircle, Coins, Copy, DownloadSimple, MagnifyingGlass, MapPin, Plus, SlidersHorizontal, Sparkle, UsersThree, ClockCounterClockwise, ArrowSquareOut, X } from '@phosphor-icons/react';
-import { searchMethod, assistForm, completionDraft, type AssistMessage, type AssistReply, type Contact, deadMarket, emailTrust, fewReachable, fieldOf, freeMail, gulf, MAX_TITLES, type Search, type SearchInput, withCountries } from '@/lib/contracts';
+import { searchMethod, assistForm, completionDraft, DEFAULT_SIZE, SIZES, type AssistMessage, type AssistReply, type Contact, deadMarket, emailTrust, fewReachable, fieldOf, freeMail, gulf, MAX_TITLES, type Search, type SearchInput, withCountries } from '@/lib/contracts';
 import { cityNames, countryFromText, countrySuggestions } from '@/lib/places';
 import { api,date,downloadContacts,number } from '@/lib/client';
 import type { ViewProps } from './platform';
@@ -38,10 +38,12 @@ export function Dashboard({data}:ViewProps) {
   </>;
 }
 
-type Form={mode:'people'|'companies';sector:string;countries:string[];city:string;title:string[];size:'all'|'1-10'|'11-50'|'51-200';count:number};
+// Company size is a ceiling (owner 2026-10-11): the same words in the picker and in the summary.
+const sizeLabels:Record<SearchInput['size'],[string,string]>={'10':['حتى 10 موظفين','Up to 10 employees'],'50':['حتى 50 موظفًا','Up to 50 employees'],'200':['حتى 200 موظف','Up to 200 employees'],'500':['حتى 500 موظف','Up to 500 employees'],'1000':['حتى 1000 موظف','Up to 1,000 employees']};
+type Form={mode:'people'|'companies';sector:string;countries:string[];city:string;title:string[];size:SearchInput['size'];count:number};
 // The form as the member edits it, from a saved search ("repeat"), the assistant, or the defaults.
 function formOf(raw?:Partial<SearchInput>):Form{
-  return {mode:raw?.mode==='companies'?'companies':'people',sector:raw?.sector||'',countries:Array.isArray(raw?.countries)?raw.countries:['SA'],city:raw?.city||'',title:raw?.title??[],size:raw?.size||'all',count:raw?.count||10}; // an empty list: «another country», the member picks
+  return {mode:raw?.mode==='companies'?'companies':'people',sector:raw?.sector||'',countries:Array.isArray(raw?.countries)?raw.countries:['SA'],city:raw?.city||'',title:raw?.title??[],size:raw?.size??DEFAULT_SIZE,count:raw?.count||10}; // an empty list: «another country», the member picks
 }
 const fromFilters=(filters?:string)=>{
   try { const raw=filters?withCountries(JSON.parse(filters)):undefined;
@@ -155,7 +157,7 @@ export function SearchView({data,reload,notify}:ViewProps){
   const status=nichePending?t('اختر النشاط من الاقتراحات أو اعتمد نشاطًا مخصصًا.','Choose an activity from the suggestions or apply a custom activity.'):!companies&&titlePending?t('اختر المسمى من الاقتراحات، أو اضغط «استخدم» ليُعتمد كما كتبته.','Choose a title from the suggestions, or press “Use” to keep it as typed.'):pending||filters.sector.length<2?t('اختر النشاط، أو اكتب نشاطك ثم اضغط «اعتماد».','Choose an activity, or type your own and press “Apply”.')
     :!currentMatch?t('نحسب عدد ','Counting ')+who+'…':currentMatch.error?currentMatch.error
     :(typed&&currentMatch.industryLabels?.length?t('سنبحث في: ','We will search in: ')+(lang==='en'?currentMatch.industries??[]:currentMatch.industryLabels).join(lang==='en'?', ':'، ')+'. ':'')
-      +(currentMatch.total===0&&!currentMatch.supplementary?t('لا يوجد ما يطابق هذه المعايير. وسّع البحث: احذف المدينة أو حجم الشركة.','Nothing matches. Widen the search: remove the city or company size.')
+      +(currentMatch.total===0&&!currentMatch.supplementary?t('لا يوجد ما يطابق هذه المعايير. وسّع البحث: احذف المدينة'+(filters.size!==DEFAULT_SIZE?' أو ارفع حد حجم الشركة':'')+'.','Nothing matches. Widen the search: remove the city'+(filters.size!==DEFAULT_SIZE?' or raise the company size limit':'')+'.')
       :t('عدد '+who,companies?'Matching company records':'Matching people records')+': '+number(currentMatch.total!)+'. '+t('هذه سجلات مرشحة، وليست إيميلات متحققة. العدد المطلوب هدف للبحث، والمتاح فعليًا يتحدد بعد التحقق.','These are candidate records, not verified emails. Your requested count is a search target; availability is established after verification.')+(currentMatch.supplementary?' '+t('عند نقص النتائج، نبحث أيضًا في مواقع الشركات المطابقة ضمن حد البحث المتاح.','If results fall short, we also search matching company websites within the search allowance.'):few?' '+t('المصدر الحالي يحتوي سجلات أقل من العدد المطلوب.','The current source has fewer records than your target.')
         :deadMarket(currentMatch.marketRate)?' '+t('تجاربك السابقة في هذا السوق سلّمت نحو '+Math.round(currentMatch.marketRate!*100)+'٪ فقط من العدد المطلوب، فتوقّع نتائج قليلة جدًا وربما لا شيء. جرّب سوقًا له مواقع (مطاعم، عيادات، شركات).','Your past searches in this market delivered only about '+Math.round(currentMatch.marketRate!*100)+'% of what was asked, so expect very few, possibly none. Try a market with websites (restaurants, clinics, companies).')
         :fewReachable(currentMatch.reachable,filters.count)?' '+t('يعمل '+number(currentMatch.reachable!)+' منهم فقط في شركات معروفة لدى مزوّد البيانات، ونجد عادةً بريدًا واحدًا من كل عشرين منهم، فقد يصلك أقل من العدد المطلوب.','Only '+number(currentMatch.reachable!)+' of them work at companies the data provider knows, and we usually find the email of about 1 in 20 of those, so you may receive fewer than you asked for.'):''));
@@ -187,7 +189,7 @@ export function SearchView({data,reload,notify}:ViewProps){
       <div className="form-grid">
         <Field label={t('المدينة','City')} hint={filters.countries.length===1?t('اتركها فارغة للبلد كله.','Leave empty for the whole country.'):t('متاحة عند اختيار دولة واحدة.','Available with one country.')}><input value={filters.city} onChange={e=>change({city:e.target.value})} placeholder={filters.countries.length===1?t('مثلًا: الرياض','e.g. Riyadh'):'—'} disabled={filters.countries.length!==1} maxLength={60}/></Field>
         {!companies&&<TitlePicker value={filters.title} onChange={title=>change({title})} query={titleQuery} onQuery={setTitleQuery} disabled={busy||thinking}/>}
-        <Field label={t('حجم الشركة','Company size')}><select value={filters.size} onChange={e=>change({size:e.target.value as Form['size']})}><option value="all">{t('كل الأحجام','Any size')}</option><option value="1-10">{t('1–10 موظفين','1–10 employees')}</option><option value="11-50">{t('11–50 موظفًا','11–50 employees')}</option><option value="51-200">{t('51–200 موظف','51–200 employees')}</option></select></Field>
+        <Field label={t('حجم الشركة','Company size')}><select value={filters.size} onChange={e=>change({size:e.target.value as Form['size']})}>{SIZES.map(s=><option key={s} value={s}>{t(...sizeLabels[s])}</option>)}</select></Field>
       </div>
 
         </div>
@@ -242,7 +244,7 @@ export function SearchView({data,reload,notify}:ViewProps){
         <dl className="search-summary">
           <div><dt>{t('المكان','Location')}</dt><dd><button type="button" onClick={editDetails}>{[displayCity,filters.countries.map(names.country).join('، ')].filter(Boolean).join(' · ')||t('اختر الدولة','Choose a country')}<span>{t('تعديل','Edit')}</span></button></dd></div>
           <div><dt>{t('جهة الاتصال','Contact type')}</dt><dd><button type="button" onClick={editDetails}>{companies?t('بريد الشركات','Company emails'):filters.title.length?filters.title.map(names.label).join(lang==='en'?', ':'، '):t('أشخاص داخل الشركات','People in companies')}<span>{t('تعديل','Edit')}</span></button></dd></div>
-          {filters.size!=='all'&&<div><dt>{t('حجم الشركة','Company size')}</dt><dd>{filters.size} {t('موظفين','employees')}</dd></div>}
+          <div><dt>{t('حجم الشركة','Company size')}</dt><dd>{t(...sizeLabels[filters.size])}</dd></div>
         </dl>
         <Field label={t('عدد الإيميلات المطلوبة','Emails to find')}><input type="number" min="1" max={Math.max(1,maxCount)} value={filters.count||''} onChange={e=>change({count:Number(e.target.value)})} required/></Field>
         {method==='ai'&&(<button type="button" className="text-button" aria-expanded={editing} aria-controls="search-details" onClick={()=>setEditing(!editing)}>{editing?t('إخفاء التفاصيل','Hide details'):t('تعديل المجال والتفاصيل','Edit niche and details')}<ArrowDown size={15}/></button>)}

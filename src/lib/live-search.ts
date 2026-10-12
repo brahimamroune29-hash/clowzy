@@ -1,12 +1,12 @@
-import { MIN_FIND_RATE, POLL_MS, type Candidate, type Resolved, type Search } from './contracts';
+import { DEFAULT_SIZE, MIN_FIND_RATE, POLL_MS, type Candidate, type Resolved, type Search } from './contracts';
 import { catalogMatches, crmEnabled, rememberCandidates } from './catalog';
 import { audienceOf } from './audience';
 import { WEB_ROUNDS } from './web-companies';
 import {recordCoverage} from './coverage';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { AppError, dailyPeople, dailyLimit, Store } from './store';
-import { countryLabel, farther, nearby } from './places';
-import { BATCH, companyKeys, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadKeys, leadName, missKey, personKey, publishedEnabled, queryOf, siteOf, stageCount, submissionTask, submitCap, webStage } from './icypeas';
+import { ARAB, countryLabel, farther, nearby } from './places';
+import { BATCH, companyKeys, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadKeys, leadName, missKey, personKey, publishedEnabled, queryOf, siteOf, stageCount, submissionTask, submitCap, webStage, withinSize } from './icypeas';
 
 type Run = { search_id: string; phase: string; people: string; file: string | null; scanned: number; fetched: number; submitted: number; submitted_at: number | null; message: string; updated_at: number; read_errors: number; mode: 'companies' | null; people_checked: number; scope: number; stop_requested: number | null };
 // Where a search looks, in order: the member's place, then (widen) the whole country when a city was set, then the region's
@@ -116,7 +116,7 @@ export class LiveSearch {
     const places = widenedTo(input, run), all = places.length && places.length === placesOf(input).length - 1; // every place tried: no city or country to add
     const wide = places.length ? `وسّعنا البحث إلى: ${places.map((p, i) => (i === 0 && input.city ? 'كل ' : '') + p.countries.map(countryLabel).join('، ')).join('، ')}. ` : '';
     // The advice names only the filters this search set (a salons search with none was told to remove three, 2026-10-05).
-    const set = [input.size !== 'all' && 'حجم الشركة', !all && input.city.trim() && 'المدينة', !companies && input.title.length > 0 && 'المسمى الوظيفي'].filter(Boolean);
+    const set = [input.size !== DEFAULT_SIZE && 'حد حجم الشركة', !all && input.city.trim() && 'المدينة', !companies && input.title.length > 0 && 'المسمى الوظيفي'].filter(Boolean);
     const widen = all ? (set.length ? `لنتائج أكثر، وسّع المعايير: احذف ${set.join(' أو ')}.` : 'لنتائج أكثر، اختر نشاطًا أوسع.')
       : set.length ? `لنتائج أكثر، وسّع المعايير: احذف ${set.join(' أو ')} أو أضف دولًا.` : 'لنتائج أكثر، أضف دولًا أو اختر نشاطًا أوسع.';
     if (run.mode && run.submitted) return wide + `بحثنا عن بريد ${run.people_checked} من الأشخاص المطابقين، ثم أجرينا ${run.submitted} عملية بحث عن بريد الشركات نفسها، فوصلك ${search.delivered} من ${search.requested}. `
@@ -218,7 +218,7 @@ export class LiveSearch {
     let batch: Lead[] = [], sent = false; // from the paid submit on, a failure may mean the provider has the batch (and charged for it)
     try {
       const search = await this.store.getSearch(userId, id), run = (await this.run(id))!;
-      batch = (JSON.parse(run.people) as Lead[]).filter(l => !l.suppressed); // picked (and claimed) by an earlier request of this search, not sent yet
+      batch = (JSON.parse(run.people) as Lead[]).filter(l => !l.suppressed && withinSize(input, l)); // a pick from before 2026-10-11 has no ceiling // picked (and claimed) by an earlier request of this search, not sent yet
       if (run.stop_requested) { // the picked people go back to the member's list; closing the search clears them from the run
         await this.release(userId, queryKey, batch);
         return this.finish(userId, id);
@@ -304,6 +304,7 @@ export class LiveSearch {
               else { aside.push(pool.shift()!); continue; }
             }
             let lead = pool.shift()!;
+            if (!withinSize(input, lead)) continue; // left over from before 2026-10-11, when pages had no ceiling
             if (missed.has(missKey(lead))) { // nothing there for anyone within 30 days; a company still has its website (as below)
               if (lead.kind !== 'company' || lead.published || !publishedEnabled()) continue;
               lead = { ...lead, email: '', published: true, publicationPending: true };
@@ -461,8 +462,10 @@ export class LiveSearch {
       const delivered = await this.store.transaction(async () => {
         if (await this.store.db.run(`UPDATE provider_runs SET phase='searching',file=NULL,people='[]',updated_at=? WHERE search_id=? AND phase='waiting' AND file=?
           AND EXISTS (SELECT 1 FROM searches WHERE id=? AND status='awaiting_provider')`, Date.now(), id, run.file, id) !== 1) return null;
-        await rememberCandidates(this.store, result.candidates, input.sector);
-        const deliverAt = Date.now(), delivered = await this.store.deliverBatch(userId, id, result.candidates.map(c => ({ ...c, sector: input.sector })));
+        // A batch sent before 2026-10-11 had no ceiling: what is known to be above it is not delivered (nor charged).
+        const fit = result.candidates.filter(c => !/^\d+$/.test(c.size) || Number(c.size) <= Number(input.size));
+        await rememberCandidates(this.store, fit, input.sector, input.countries.every(c => ARAB.includes(c))); // see peopleQuery
+        const deliverAt = Date.now(), delivered = await this.store.deliverBatch(userId, id, fit.map(c => ({ ...c, sector: input.sector })));
         deliverMs = Date.now() - deliverAt;
         if(delivered!==null&&result.coverage)await recordCoverage(this.store,userId,id,'verification',{...result.coverage,waitMs:age}); // how long the provider took
         if (delivered !== null) await this.release(userId, cursorKey(input), result.unpaid); // rows the provider could not pay for were never searched

@@ -17,20 +17,23 @@ export const cityKey = (s: string) => norm(cityNames[s] || s);
 // Only supplier result fields belong in the shared catalog, never a member's notes, lists or search wording. niche: the narrow
 // activity from our list whose search found them (a salons search's salons), so the next search for it can take them (owner,
 // 2026-10-07); a member's own words under «أخرى» are not kept.
-export async function rememberCandidates(store: Store, candidates: Candidate[], niche = '') {
+// arabHq: their search chose Arab countries only, so every foreign headquarters was left out (icypeas.ts peopleQuery); only those are
+// reused for a search in Arab countries (results stored before 2026-10-12 are not).
+export async function rememberCandidates(store: Store, candidates: Candidate[], niche = '', arabHq = false) {
   if (!crmEnabled()) return;
   return store.transaction(async () => {
   await store.db.run('LOCK TABLE catalog_suppressions IN SHARE MODE');
   for (const c of candidates.slice(0, 100)) {
     const email = c.email.trim().toLowerCase(), country = countryFromText(c.country);
     if (email.length > 254 || !country || !['VERIFIED', 'PROBABLE'].includes(c.email_status) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) continue;
-    const payload: Candidate & { niche?: string } = { kind: c.kind || 'person', name: c.name, email, company: c.company, title: c.title, sector: c.sector,
-      country: c.country, city: c.city, website: c.website, size: c.size, source: 'clowzy', email_status: c.email_status, niche: nicheKeywords(niche).length ? niche : undefined };
+    const payload: Candidate & { niche?: string; hq?: string } = { kind: c.kind || 'person', name: c.name, email, company: c.company, title: c.title, sector: c.sector,
+      country: c.country, city: c.city, website: c.website, size: c.size, source: 'clowzy', email_status: c.email_status, niche: nicheKeywords(niche).length ? niche : undefined, hq: arabHq && c.hqChecked !== false ? 'arab' : undefined };
     await store.db.run(`INSERT INTO lead_catalog(email,kind,industry,country_code,city_key,title_key,headcount,payload,verified_at)
       SELECT ?,?,?,?,?,?,?,?::jsonb,? WHERE NOT EXISTS(SELECT 1 FROM catalog_suppressions WHERE email=?)
       ON CONFLICT(email) DO UPDATE SET kind=excluded.kind,industry=excluded.industry,country_code=excluded.country_code,
         city_key=excluded.city_key,title_key=excluded.title_key,headcount=excluded.headcount,verified_at=excluded.verified_at,
-        payload=excluded.payload||jsonb_strip_nulls(jsonb_build_object('niche',COALESCE(excluded.payload->'niche',lead_catalog.payload->'niche')))`, // a broad search keeps the tag
+        payload=excluded.payload||jsonb_strip_nulls(jsonb_build_object('niche',COALESCE(excluded.payload->'niche',lead_catalog.payload->'niche'),
+          'hq',COALESCE(excluded.payload->'hq',lead_catalog.payload->'hq')))`, // a broad search keeps the tag; a checked headquarters stays checked
       email, payload.kind, norm(c.sector), country, cityKey(c.city), norm(c.title), /^\d+$/.test(c.size) && Number(c.size)<=2147483647 ? Number(c.size) : null,
       JSON.stringify(payload), new Date().toISOString(), email);
   }
@@ -43,8 +46,8 @@ export async function catalogMatches(store: Store, userId: string, input: Resolv
   // ponytail: niche is read from the JSON payload, without an index; fine at thousands of rows, a niche column in catalog_match past that.
   if (!reuseEnabled()) return [];
   const niche = nicheKeywords(input.sector).length ? input.sector : '';
-  const [min, max] = input.size === 'all' ? [0, 2147483647] : input.size.split('-').map(Number);
-  // SQL does the filtering and ownership exclusion; missing attributes never satisfy a narrower filter. An earlier identical
+  // SQL does the filtering and ownership exclusion; missing attributes never satisfy a narrower filter, but an unknown company size passes
+  // the size ceiling (owner 2026-10-11), the identical request's too. Every search takes only results whose headquarters were checked (hq). An earlier identical
   // request (same filters, any count) gives everything it delivered first, its widened places and company emails too (owner,
   // 2026-10-07: «اذا شخص طلب نفس الطلب نجيبلو المعلومات نفسها»). The chosen titles are compared through their provider forms (titles):
   // a search stored before 2026-10-09 holds its one title as a string, today's as a list.
@@ -54,14 +57,15 @@ export async function catalogMatches(store: Store, userId: string, input: Resolv
     SELECT l.payload FROM lead_catalog l LEFT JOIN same ON same.email=l.email
     WHERE l.verified_at>=? AND (same.email IS NOT NULL OR l.kind=? AND l.country_code IN (SELECT jsonb_array_elements_text(?::jsonb))
       AND (?<>'' AND l.payload->>'niche'=? OR ?='' AND l.industry IN (SELECT jsonb_array_elements_text(?::jsonb)))
-      AND (?='' OR l.city_key=?) AND (?=0 OR l.headcount BETWEEN ? AND ?)
+      AND (?='' OR l.city_key=?)
       AND (?=0 OR l.title_key IN (SELECT jsonb_array_elements_text(?::jsonb))))
+      AND (l.headcount IS NULL OR l.headcount<=?) AND l.payload->>'hq'='arab'
       AND NOT EXISTS(SELECT 1 FROM contacts c WHERE c.user_id=? AND c.email=l.email)
       AND NOT EXISTS(SELECT 1 FROM catalog_suppressions s WHERE s.email=l.email)
       AND NOT EXISTS(SELECT 1 FROM crm_exclusions e WHERE e.user_id=? AND (e.value=l.email OR e.value=split_part(l.email,'@',2)))
     ORDER BY same.email IS NULL,l.verified_at DESC,l.email LIMIT ?`, same,
     new Date(Date.now() - catalogDays() * 86400000).toISOString(), input.mode === 'companies' ? 'company' : 'person', JSON.stringify(input.countries), niche, niche, niche, JSON.stringify(input.industries.map(norm)),
-    cityKey(input.city), cityKey(input.city), input.size === 'all' ? 0 : 1, min, max,
-    input.mode === 'companies' || !input.titles.length ? 0 : 1, JSON.stringify(input.titles.map(norm)), userId, userId, Math.min(50, limit)))
+    cityKey(input.city), cityKey(input.city),
+    input.mode === 'companies' || !input.titles.length ? 0 : 1, JSON.stringify(input.titles.map(norm)), Number(input.size), userId, userId, Math.min(50, limit)))
     .map(row => row.payload).filter(c => clinicLike(input, c.company)); // a supplier stored before the dental filter
 }

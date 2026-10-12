@@ -12,7 +12,7 @@ import { catalogMatches, rememberCandidates } from '../src/lib/catalog';
 import { INDUSTRIES } from '../src/lib/industries';
 import { findCategories, INDUSTRY_AR, providerCategories } from '../src/lib/industries-ar';
 
-const context:AssistContext={mode:'companies',sector:'عيادات الأسنان',countries:['SA'],city:'Riyadh',title:[],size:'all',count:50};
+const context:AssistContext={mode:'companies',sector:'عيادات الأسنان',countries:['SA'],city:'Riyadh',title:[],size:'1000',count:50};
 const noAi={sector:async()=>{throw new Error('A listed activity must not use the model');},title:async()=>{throw new Error('No title translation needed');}};
 const form=(sector:string)=>({...context,sector,confirmed:true as const,requestId:randomUUID()});
 
@@ -69,7 +69,7 @@ test('shared industry-only inventory cannot bypass a specific activity filter',a
   t.after(()=>{delete process.env.CRM_ENABLED;delete process.env.CATALOG_REUSE_ENABLED;});
   const store=await testStore();t.after(()=>store.close());
   const user=await store.addUser('Trial','trial@example.test','secure-password','member',5);
-  await rememberCandidates(store,[{kind:'company',name:'General Practice',company:'General Practice',email:'info@general.example',title:'',sector:'Medical Practices',country:'السعودية',city:'Riyadh',website:'https://general.example',size:'12',source:'clowzy',email_status:'VERIFIED'}]);
+  await rememberCandidates(store,[{kind:'company',name:'General Practice',company:'General Practice',email:'info@general.example',title:'',sector:'Medical Practices',country:'السعودية',city:'Riyadh',website:'https://general.example',size:'12',source:'clowzy',email_status:'VERIFIED'}],'',true);
   assert.equal((await catalogMatches(store,user.id,audienceOf(JSON.stringify(form('عيادات التجميل'))),50)).length,0);
   assert.equal((await catalogMatches(store,user.id,audienceOf(JSON.stringify(form('العيادات الخاصة'))),50)).length,1,'a general clinic request still uses matching inventory when sharing is explicitly enabled');
 });
@@ -85,7 +85,7 @@ test('beauty salons: salon words in every category except unrelated ones, then p
   for(const s of [s2,s3]){assert.deepEqual(s['currentCompany.industry'],{include:['Personal Care Services']});assert.deepEqual(s['currentCompany.keyword'],{exclude:words},'disjoint from the salon stages');}
   const companies=companiesQuery({...scope,mode:'companies'},2);
   assert.deepEqual(companies.industry,{include:['Personal Care Services']});assert.deepEqual(companies.keyword,{exclude:words});
-  assert.equal(JSON.parse(cursorKey(scope)).length,4);
+  assert.notEqual(cursorKey(scope),cursorKey({...scope,size:'10'}),'a place in the pages per size ceiling');
   assert.equal(peopleQuery(audienceOf(JSON.stringify(form('عيادات التجميل'))),1)['currentCompany.industry'].include?.length,2,'other niches keep their two stages and categories');
 });
 

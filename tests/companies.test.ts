@@ -54,7 +54,7 @@ function mock(o: { pages?: unknown[][]; files?: unknown[][] } = {}) {
 
 test('companies are searched by headquarters, industry and headcount; the job title plays no part', () => {
   const q = companiesQuery({ ...companies(), titles: ['CEO'] });
-  assert.deepEqual(q, { location: { include: ['AE', 'SA'] }, industry: { include: ['Real Estate', 'Real Estate Agents and Brokers', 'Commercial Real Estate', 'Leasing Residential Real Estate', 'Leasing Non-residential Real Estate'] }, headcount: { '>=': 11, '<=': 50 } });
+  assert.deepEqual(q, { location: { include: ['AE', 'SA'] }, industry: { include: ['Real Estate', 'Real Estate Agents and Brokers', 'Commercial Real Estate', 'Leasing Residential Real Estate', 'Leasing Non-residential Real Estate'] }, headcount: { '<=': 50 } });
   assert.deepEqual(companiesQuery(companies(), 1).location, { include: ['United Arab Emirates', 'الإمارات', 'Saudi Arabia', 'السعودية'], exclude: ['AE', 'SA'] });
   assert.notEqual(cursorKey(companies()), cursorKey({ ...companies(), mode: 'people' }), 'a companies search never continues a people cursor');
 });
@@ -77,8 +77,8 @@ test('dental coverage includes clinics classified as healthcare without widening
   assert.deepEqual(extra.industry.exclude,['Dentists']);assert(extra.keyword?.include?.includes('dental'));
   assert(extra.name?.exclude.includes('lab'));assert(extra.name?.exclude.includes('course'));
   assert.deepEqual(broad.location,companiesQuery(input,1).location);
-  assert.equal(JSON.parse(cursorKey(input)).queries.length,4);
-  assert.equal(JSON.parse(cursorKey(input)).discovery,'domain-search');
+  assert.match(cursorKey(input),/^[0-9a-f]{64}$/,'a fingerprint of the four stages and the domain search');
+  assert.notEqual(cursorKey(input),cursorKey({...input,mode:'people'}),'companies and people keep separate places in the pages');
 });
 
 test('dental company results exclude education, laboratories and suppliers even if provider filters return them',async()=>{
@@ -173,7 +173,7 @@ test('a people search short of its count is completed with the companies\' own v
     const done = await live(store, m.client).poll(user.id, first.id);
     assert.equal(done.delivered, 1); assert.equal(done.status, 'partial');
     assert.equal((await store.snapshot(user.id)).contacts[0].kind, 'company');
-    assert.equal(done.message, 'بحثنا عن بريد 0 من الأشخاص المطابقين، ثم أجرينا 2 عملية بحث عن بريد الشركات نفسها، فوصلك 1 من 2. لنتائج أكثر، وسّع المعايير: احذف حجم الشركة أو المسمى الوظيفي أو أضف دولًا.', 'only the filters this search set');
+    assert.equal(done.message, 'بحثنا عن بريد 0 من الأشخاص المطابقين، ثم أجرينا 2 عملية بحث عن بريد الشركات نفسها، فوصلك 1 من 2. لنتائج أكثر، وسّع المعايير: احذف حد حجم الشركة أو المسمى الوظيفي أو أضف دولًا.', 'only the filters this search set');
     assert.equal(m.count('find-people'), 2, 'never back to the people after the fallback');
     assert.equal((await store.user(user.id)).balance, 9);
   } finally { await store.close(); }

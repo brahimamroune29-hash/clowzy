@@ -78,6 +78,17 @@ export const TITLE_VARIANTS: Record<string, string[]> = {
   'الوسيط العقاري': ['Real Estate Agent', 'Real Estate Broker', 'Property Consultant', 'وسيط عقاري'],
 };
 export const titles = Object.keys(TITLE_VARIANTS);
+// Company size (owner 2026-10-11): a ceiling the member picks, a thousand employees by default and never above. Older searches, saved
+// audiences and links hold the ranges they had; each reads as its upper bound ('all' as the thousand).
+export const SIZES = ['10', '50', '200', '500', '1000'] as const;
+export type Size = typeof SIZES[number];
+export const DEFAULT_SIZE: Size = '1000';
+// Links and the assistant: the nearest ceiling at or above a size ('20' -> '50'), an older range by its upper bound, else the default.
+// The server takes only the listed sizes or an older range (schemas.ts).
+export const sizeOf = (v: unknown): Size => {
+  const last = typeof v === 'string' ? v.split('-').pop()!.trim() : '', n = typeof v === 'number' ? v : last ? Number(last) : NaN; // '' is no size
+  return SIZES.find(s => Number(s) >= n) ?? DEFAULT_SIZE;
+};
 export const MAX_TITLES = 3; // owner 2026-10-09: the client asked for «شغلتين أو ثلاثة»
 // A listed title's provider forms; a typed one searches as written.
 export const titleForms = (title: string) => Object.hasOwn(TITLE_VARIANTS, title) ? TITLE_VARIANTS[title] : [title];
@@ -153,7 +164,8 @@ export type Snapshot = {
   summary?: OverviewStats;
   admin?: { users: AdminUser[]; invitations: Invitation[]; audit: AuditEvent[]; recovery?: boolean; totals: { delivered: number; searches: number; exports: number; used: number; members?: number; activeMembers?: number } };
 };
-export type Candidate = Omit<Contact, 'id' | 'user_id' | 'search_id' | 'created_at'>;
+// hqChecked false: a pick from before 2026-10-12, whose company headquarters was never checked (catalog.ts lends it to no one).
+export type Candidate = Omit<Contact, 'id' | 'user_id' | 'search_id' | 'created_at'> & { hqChecked?: boolean };
 
 // English names of what the member picks from (Arabic is the stored value; English is for display only).
 export const labelsEn: Record<string, string> = {
@@ -198,10 +210,9 @@ export function searchMethod(query: Pick<URLSearchParams,'get'>): 'manual'|'ai'|
   return query.get('ai')?'ai':query.get('from')||query.get('saved')?'manual':null;
 }
 export type AssistReply = { reply: string; action?: 'prepare' | 'clarify' | 'answer'; choices?: string[]; search?: { mode: 'people' | 'companies'; field: string; specialty: string; other: string; countries: string[];
-  city: string; title: string[]; size: 'all' | '1-10' | '11-50' | '51-200'; count: number } };
+  city: string; title: string[]; size: Size; count: number } };
 // The assistant's suggestion -> search form values (a specialty, a whole field, or the member's own words). Checked in the
 // browser too: it may arrive in a link (?ai=), so nothing is trusted; the server checks the search itself.
-const sizes = ['all', '1-10', '11-50', '51-200'] as const;
 export function assistForm(raw: unknown, max: number) {
   const s = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>, text = (v: unknown) => typeof v === 'string' ? v.trim().slice(0, 60) : '';
   const countries = Array.isArray(s.countries) ? s.countries.filter((c): c is string => typeof c === 'string' && /^[A-Z]{2}$/.test(c)).slice(0, 10) : [];
@@ -209,7 +220,7 @@ export function assistForm(raw: unknown, max: number) {
   return {
     mode: s.mode === 'companies' ? 'companies' as const : 'people' as const, sector: text(s.specialty) || text(s.field) || text(s.other) || undefined,
     countries: countries.length ? countries : undefined, city: countries.length === 1 ? text(s.city) : '', title: s.mode === 'companies' ? [] : titlesOf(s.title),
-    size: sizes.find(x => x === s.size) ?? 'all', count: count > 0 ? Math.max(1, Math.min(count, max)) : undefined,
+    size: sizeOf(s.size), count: count > 0 ? Math.max(1, Math.min(count, max)) : undefined,
   };
 }
 

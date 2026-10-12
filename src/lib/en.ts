@@ -103,7 +103,7 @@ const sentences: Record<string, string> = {
   'المساعد غير متاح الآن. حاول بعد قليل.': 'The assistant is unavailable right now. Try again shortly.',
   'وصلت حد المساعد اليومي. حاول غدًا.': 'You have reached today’s assistant limit. Try again tomorrow.',
 };
-const filterNames: Record<string, string> = { 'حجم الشركة': 'the company size', 'المدينة': 'the city', 'المسمى الوظيفي': 'the job title' };
+const filterNames: Record<string, string> = { 'حد حجم الشركة': 'the company size limit', 'حجم الشركة': 'the company size', 'المدينة': 'the city', 'المسمى الوظيفي': 'the job title' };
 const country = (label: string) => englishName(countryFromText(label)) || label;
 const either = (items: string[]) => items.length > 1 ? items.slice(0, -1).join(', ') + ' or ' + items.at(-1) : items[0];
 const patterns: [RegExp, (...m: string[]) => string][] = [

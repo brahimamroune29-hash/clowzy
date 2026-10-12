@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { z } from 'zod';
-import { freeMail, SUBMIT_MULTIPLE, type Candidate, type Resolved } from './contracts';
-import { cityNames, countryLabel, englishName, norm, placeOf } from './places';
+import { DEFAULT_SIZE, freeMail, SUBMIT_MULTIPLE, type Candidate, type Resolved } from './contracts';
+import { cityNames, countryLabel, englishName, NON_ARAB_HQ, norm, placeOf } from './places';
 import { bestEmail, categoryWords, companyEmails, emailsIn, safeGet, type Get } from './site-email';
 import { directoryPath, webCompanies, webEnabled } from './web-companies';
 import { anyIndustry, nicheKeywords, nicheNames, ANY_INDUSTRY_EXCLUDED } from './niches';
@@ -51,7 +51,7 @@ function where(input: Audience) {
   const typed = input.city.trim(), city = Object.hasOwn(cityNames, typed) ? cityNames[typed] : typed, codes = [...new Set(input.countries)].sort();
   if (/[؀-ۿ]/.test(city)) throw new IcypeasError('اكتب المدينة بالإنجليزية أو اختر مدينة رئيسية، أو اتركها فارغة.', 400);
   if (city && codes.length !== 1) throw new IcypeasError('اختر دولة واحدة عند تحديد المدينة.', 400);
-  const [min, max] = input.size === 'all' ? [] : input.size.split('-').map(Number);
+  const max = Number(input.size); // the ceiling (contracts.ts SIZES)
   const strict = codes.map(cc => city ? `${city}, ${cc}` : cc);
   // Arabic-localized profiles read "<province> <city> <country>" (e.g. 'مكة جدة السعودية') and match as ordered phrases, so the
   // broad stage adds "<city> <country>" for each Arabic spelling of the city: never the province alone ('مكة' also matches Jeddah)
@@ -59,7 +59,7 @@ function where(input: Audience) {
   const broad = city
     ? [`${city}, ${englishName(codes[0])}`, ...Object.keys(cityNames).filter(k => cityNames[k].toLowerCase() === city.toLowerCase()).map(k => `${k} ${plain(countryLabel(codes[0]))}`)]
     : codes.flatMap(cc => [englishName(cc), broadArabic[cc] ?? countryLabel(cc)]);
-  return { strict, broad, min, max };
+  return { strict, broad, max };
 }
 // The category and keyword filters of a stage: the niche's keywords in its categories, or for an anyIndustry niche the keywords
 // in every category but ANY_INDUSTRY_EXCLUDED (stages 0-1), then its categories without the keywords (stages 2-3, disjoint for free counts).
@@ -68,20 +68,30 @@ function activity(input: Audience, stage: number): { industry: { include?: strin
   if (anyIndustry(input.sector)) return stage < 2 ? { industry: { exclude: ANY_INDUSTRY_EXCLUDED }, keyword: { include: words } } : { industry: { include: input.industries }, keyword: { exclude: words } };
   return { industry: { include: input.industries }, ...(words.length ? { keyword: { include: words } } : {}) };
 }
+// A company known to be above the size ceiling is dropped; an unknown size passes (owner 2026-10-11). The provider's filter already did
+// this outside the word niches (peopleQuery).
+export const withinSize = (input: Audience, lead: Lead) => lead.lastCompanySize == null || lead.lastCompanySize <= Number(input.size);
 export function peopleQuery(input: Audience, stage = 0) {
-  const { strict, broad, min, max } = where(input), { industry, keyword } = activity(input, stage);
+  const { strict, broad, max } = where(input), { industry, keyword } = activity(input, stage);
   return {
     profileLocation: stage % 2 === 0 ? { include: strict } : { include: broad, exclude: strict },
     'currentCompany.industry': industry,
     ...(keyword ? { 'currentCompany.keyword': keyword } : {}),
     ...(input.titles.length ? { currentJobTitle: { include: input.titles } } : {}),
-    ...(input.size !== 'all' ? { 'currentCompany.headcount': { '>=': min, '<=': max } } : {}),
+    // ponytail: the provider's size filter also drops companies of unknown size. It is used where those are rare (Saudi free counts,
+    // 2026-10-11/12: tech 0.6%, restaurants 1%, the beauty field 0.4%, spas 2%, cafés 0%); the anyIndustry niches (salons, barbers, nails,
+    // makeup: keywords in every category, 92% unknown among salon people) filter after the page instead (withinSize). Count unknown sizes
+    // per field before the search if another market turns out to have many.
+    ...(!anyIndustry(input.sector) ? { 'currentCompany.headcount': { '>=': 1, '<=': max } } : {}),
+    // Owner 2026-10-11: a company known to be headquartered outside the Arab League is left out, unless the member chose its country; an
+    // unknown headquarters passes. Free counts: Saudi tech 23,981 -> 15,580, UAE tech 27,784 -> 10,645, Saudi salons 761 -> 622.
+    'currentCompany.location': { exclude: NON_ARAB_HQ.filter(c => !input.countries.includes(c)) },
   };
 }
 
 // Companies by headquarters (`location`), the same two stages; job titles do not apply to a company.
 export function companiesQuery(input: Audience, stage = 0) {
-  const { strict, broad, min, max } = where(input), { industry, keyword } = activity(input, stage);
+  const { strict, broad, max } = where(input), { industry, keyword } = activity(input, stage);
   return {
     location: stage % 2 === 0 ? { include: strict } : { include: broad, exclude: strict },
     // Many dental clinics are filed under general health care. Search those only with dental evidence and a clinic-like
@@ -91,7 +101,9 @@ export function companiesQuery(input: Audience, stage = 0) {
       keyword: { include: ['dental', 'dentist', 'dentistry', 'أسنان', 'اسنان'] },
       name: { include: ['dental', 'dentist', 'dentistry', 'أسنان', 'اسنان', 'clinic', 'عياد', 'مستوصف', 'مجمع', 'مركز', 'center', 'centre'], exclude: dentalExclusions },
     } : { industry, ...(keyword ? { keyword } : {}), ...(dentalOnly(input) ? { name: { exclude: dentalExclusions } } : {}) }),
-    ...(input.size !== 'all' ? { headcount: { '>=': min, '<=': max } } : {}),
+    // Companies often record a size of 0 (Saudi tech 23%, dental 22%) and rarely exceed 1000 (tech 0.25%), free counts 2026-10-12: at the
+    // default ceiling no filter (withinSize drops those few after the page); a smaller one keeps the zeros and loses only unknown sizes (2-6%).
+    ...(!anyIndustry(input.sector) && input.size !== DEFAULT_SIZE ? { headcount: { '<=': max } } : {}),
   };
 }
 export const queryOf = (input: Audience, stage = 0) => webStage(input, stage)
@@ -101,7 +113,10 @@ export const queryOf = (input: Audience, stage = 0) => webStage(input, stage)
 // A member's place in the results, per audience: covers both stages, so a changed broad query never reuses an old token.
 export const cursorKey = (input: Audience) => {
   const queries = Array.from({ length: stageCount(input) }, (_, stage) => queryOf(input, stage));
-  return JSON.stringify(input.mode === 'companies' ? { discovery: 'domain-search', ...(publishedEnabled() ? { published: 2 } : {}), queries } : queries);
+  const key = input.mode === 'companies' ? { discovery: 'domain-search', ...(publishedEnabled() ? { published: 2 } : {}), queries } : queries;
+  // A fingerprint: the full queries (ten countries, the headquarters list, many titles) outgrow the primary key's size limit. The anyIndustry
+  // niches add their ceiling, which filters after the page and so is not in their queries.
+  return createHash('sha256').update(JSON.stringify(anyIndustry(input.sector) ? { size: input.size, key } : key)).digest('hex');
 };
 
 const text = z.string().nullish();
@@ -111,7 +126,8 @@ const leadSchema = z.object({
   email: text, // companies search only: the email read from the company's site, sent for verification
 });
 const companySchema = z.object({ name: text, description: text, url: text, address: text, website: text, industry: text, numberOfEmployees: z.number().nullish() });
-export type Lead = z.infer<typeof leadSchema> & { kind?: 'company'; suppressed?: boolean; published?: boolean; publicationPending?: boolean; alternateEmails?: string[] };
+// hqChecked: found by a query that left out foreign headquarters (peopleQuery) or that asked for the chosen countries' (companiesQuery).
+export type Lead = z.infer<typeof leadSchema> & { kind?: 'company'; suppressed?: boolean; published?: boolean; publicationPending?: boolean; alternateEmails?: string[]; hqChecked?: boolean };
 const itemSchema = z.object({
   _id: z.string(), status: z.string(),
   userData: z.object({ externalId: z.string().nullish() }).nullish(),
@@ -230,8 +246,10 @@ export class IcypeasClient {
     return { ok: true, credits: Math.floor(account.data.credits), low: account.data.credits < LOW_CREDITS };
   }
   // Free: people matching the search across both stages (stage 1 excludes stage 0), shown before the member pays for anything.
-  // reachable: those working at a company with a page and a headcount, the only ones whose email the provider finds (salons in
-  // Lebanon: 483 people, 192 such, 2026-10-05); with a size filter every counted person is one already.
+  // reachable: those working at a company with a page and a headcount (within the ceiling), the only ones whose email the provider finds
+  // (salons in Lebanon: 483 people, 192 such, 2026-10-05); outside the anyIndustry niches the query already counts only those.
+  // ponytail: in the anyIndustry niches total also counts companies known to be above the ceiling (none above 1,000 among Saudi salons,
+  // 6% above 10); subtract a count of those if the warning needs to be exact.
   async count(input: Audience) {
     const queries = Array.from({ length: dataStages(input) }, (_, stage) => queryOf(input, stage)); // free database counts only; web has no known stock
     const counts = (list: object[]) => Promise.all(list.map(async query => {
@@ -240,7 +258,7 @@ export class IcypeasClient {
       return n.data;
     }));
     const sum = (n: number[]) => n.reduce((a, b) => a + b, 0), totals = await counts(queries), total = sum(totals);
-    const reachable = input.mode === 'companies' ? undefined : input.size === 'all' ? sum(await counts(queries.map(q => ({ ...q, 'currentCompany.headcount': { '>=': 1 } })))) : total;
+    const reachable = input.mode === 'companies' ? undefined : !anyIndustry(input.sector) ? total : sum(await counts(queries.map(q => ({ ...q, 'currentCompany.headcount': { '>=': 1, '<=': Number(input.size) } }))));
     return { total, strict: totals[0], ...(reachable === undefined ? {} : { reachable }), ...(webEnabled(input) ? { supplementary: true } : {}) };
   }
   // One page of PAGE people (0.02 Icypeas credit each). token: continue where the previous page stopped.
@@ -249,7 +267,8 @@ export class IcypeasClient {
     const parsed = z.array(leadSchema).max(200).safeParse(raw.leads ?? []);
     if (!parsed.success) throw new IcypeasError('تغيّرت صيغة نتائج مزوّد البيانات. يلزم مراجعة الربط.');
     const next = z.object({ token: z.string().min(1) }).safeParse(raw.pagination);
-    const leads = parsed.data.filter(lead => leadName(lead) && domainOf(lead) && inCountries(lead, input.countries) && onNiche(input, stage, lead.lastCompanyName) && clinicLike(input, lead.lastCompanyName));
+    const leads: Lead[] = parsed.data.filter(lead => leadName(lead) && domainOf(lead) && inCountries(lead, input.countries) && onNiche(input, stage, lead.lastCompanyName) && clinicLike(input, lead.lastCompanyName) && withinSize(input, lead))
+      .map(lead => ({ ...lead, hqChecked: true }));
     // ponytail: ranks within one page of 25, not a company's whole staff; query decision makers first if owners stay out of reach.
     leads.sort((a, b) => titleTier(a.lastJobTitle || '') - titleTier(b.lastJobTitle || ''));
     return { leads, returned: parsed.data.length, token: next.success ? next.data.token : null };
@@ -269,8 +288,8 @@ export class IcypeasClient {
     if (!parsed.success) throw new IcypeasError('تغيّرت صيغة نتائج مزوّد البيانات. يلزم مراجعة الربط.');
     const next = z.object({ token: z.string().min(1) }).safeParse(raw.pagination);
     const leads: Lead[] = parsed.data.filter(c => !dentalOnly(input) || !supplierDescription.test(c.description || '')).map(c => ({ kind: 'company' as const, firstname: '', lastname: '', profileUrl: c.url, lastJobTitle: '', address: c.address, lastCompanyName: c.name,
-      lastCompanyWebsite: c.website, lastCompanyIndustry: c.industry, lastCompanySize: c.numberOfEmployees, email: '' }))
-      .filter(l => l.lastCompanyName?.trim() && siteOf(l) && inCountries(l, input.countries) && onNiche(input, stage, l.lastCompanyName) && clinicLike(input, l.lastCompanyName));
+      lastCompanyWebsite: c.website, lastCompanyIndustry: c.industry, lastCompanySize: c.numberOfEmployees, email: '', hqChecked: true }))
+      .filter(l => l.lastCompanyName?.trim() && siteOf(l) && inCountries(l, input.countries) && onNiche(input, stage, l.lastCompanyName) && clinicLike(input, l.lastCompanyName) && withinSize(input, l));
     return { leads, returned: parsed.data.length, token: next.success ? next.data.token : null };
   }
   // Up to ten website reads at a time (in parallel, 8 s in all) fit one server request; the caller persists the remaining queue
@@ -332,7 +351,7 @@ export class IcypeasClient {
         kind: lead.kind === 'company' || lead.email ? 'company' : 'person', name: leadName(lead), email: email.email, company: lead.lastCompanyName || '', title: lead.lastJobTitle || '',
         sector: lead.lastCompanyIndustry || '', country: place.code ? countryLabel(place.code) : '', city: place.city,
         website: safeWebsite(lead.lastCompanyWebsite), size: lead.lastCompanySize == null ? '' : String(lead.lastCompanySize),
-        source: 'clowzy', email_status: sure.includes(email.certainty || '') ? 'VERIFIED' : 'PROBABLE',
+        source: 'clowzy', email_status: sure.includes(email.certainty || '') ? 'VERIFIED' : 'PROBABLE', hqChecked: !!lead.hqChecked,
       });
     }
     // Rows the provider could not pay for (its balance ran out after the batch was accepted) were never searched.

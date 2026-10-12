@@ -51,7 +51,7 @@ async function setup() {
 const eligible = (store: Store) => store.db.run('UPDATE provider_runs SET updated_at=0');
 
 test('query: country code first, then name-only people; city narrowed; headcount range; Arabic free text is a 400', () => {
-  const q = peopleQuery({ ...input(), countries: ['AE'], city: 'دبي', size: '11-50' });
+  const q = peopleQuery({ ...input(), countries: ['AE'], city: 'دبي', size: '50' });
   assert.deepEqual(q.profileLocation, { include: ['Dubai, AE'] }, 'where the person lives, not where their employer is');
   // The broad stage also matches Arabic-localized profiles ("<province> <city> <country>") by "<city> <country>" phrases.
   assert.deepEqual(peopleQuery({ ...input(), countries: ['AE'], city: 'دبي' }, 1).profileLocation, { include: ['Dubai, United Arab Emirates', 'دبي الإمارات'], exclude: ['Dubai, AE'] });
@@ -64,7 +64,7 @@ test('query: country code first, then name-only people; city narrowed; headcount
   assert.deepEqual(peopleQuery({ ...input(), city: 'constructor' }, 1).profileLocation.include, ['constructor, Saudi Arabia'], 'object property names are plain text, not a crash');
   assert.deepEqual(peopleQuery(input(), 1).profileLocation, { include: ['Saudi Arabia', 'السعودية'], exclude: ['SA'] }, 'Arabic-localized profiles carry no country code');
   assert.deepEqual(q['currentCompany.industry'], { include: SECTOR_INDUSTRIES['التقنية والبرمجيات'] });
-  assert.deepEqual(q['currentCompany.headcount'], { '>=': 11, '<=': 50 });
+  assert.deepEqual(q['currentCompany.headcount'], { '>=': 1, '<=': 50 }, 'a ceiling (owner 2026-10-11), not a range');
   for (const [cc, name, ar] of [['QA', 'Qatar', 'قطر'], ['KW', 'Kuwait', 'الكويت'], ['BH', 'Bahrain', 'البحرين'], ['OM', 'Oman', 'سلطنة عمان']] as const) {
     assert.deepEqual(peopleQuery({ ...input(), countries: [cc] }).profileLocation, { include: [cc] });
     assert.deepEqual(peopleQuery({ ...input(), countries: [cc] }, 1).profileLocation, { include: [name, ar], exclude: [cc] }, 'never bare عمان: it also matches Amman');
@@ -281,11 +281,11 @@ test('a transient error keeps the member\'s cursor; only a rejected token restar
 
 test('count is free: both stages via the count endpoint only, summed; Arabic free text is a 400 before any call', async () => {
   const m = mockTransport();
-  assert.deepEqual(await m.client.count({ ...input(), city: 'الرياض', titles: ['Marketing Director'] }), { total: 10, strict: 5, reachable: 10 }, 'stage 0 + stage 1 (each mocked at 5), then the same at companies with a headcount');
-  assert.deepEqual(m.calls.map(c => c.path), Array(4).fill('find-people/count'), 'no paid find-people or bulk-search call');
+  assert.deepEqual(await m.client.count({ ...input(), city: 'الرياض', titles: ['Marketing Director'] }), { total: 10, strict: 5, reachable: 10 }, 'stage 0 + stage 1 (each mocked at 5); the size filter already counts only people at companies with a size');
+  assert.deepEqual(m.calls.map(c => c.path), Array(2).fill('find-people/count'), 'no paid find-people or bulk-search call, no second round');
   assert.deepEqual(m.calls.slice(0, 2).map(c => c.body.query?.profileLocation), [{ include: ['Riyadh, SA'] }, { include: ['Riyadh, Saudi Arabia', 'الرياض السعودية'], exclude: ['Riyadh, SA'] }]);
   await assert.rejects(m.client.count({ ...input(), city: 'تبوك' }), (e: unknown) => e instanceof IcypeasError && e.status === 400);
-  assert.equal(m.calls.length, 4, 'the refused city made no call');
+  assert.equal(m.calls.length, 2, 'the refused city made no call');
 });
 
 test('provider out of credits: a clear message, the search fails unpaid, the member keeps the reservation back', async () => {
@@ -404,7 +404,7 @@ test('when the pages run out, the fetched leftovers are still tried up to the at
     files: [notFound(10), [item(0, 'p10@company-p10.example'), ...[1, 2, 3, 4].map(i => item(i, null))]] });
   const { store, user } = await setup(), search = live(store, m.client);
   try {
-    const first = await search.start(user.id, { ...input(3), sector: 'التجارة الإلكترونية', city: 'جدة', size: '1-10' });
+    const first = await search.start(user.id, { ...input(3), sector: 'التجارة الإلكترونية', city: 'جدة', size: '50' }); // its people work at companies of 12
     assert.equal(m.calls.filter(c => c.path === 'bulk-search')[0]?.body.data?.length, 10);
     await eligible(store); await search.poll(user.id, first.id);
     assert.equal(m.count('bulk-search'), 2, 'the 5 leftovers are submitted (cap 30, only 10 sent)');

@@ -147,7 +147,7 @@ test('every delivery keeps one email per company, the saved catalog too, and an 
   t.after(() => { delete process.env.CRM_ENABLED; delete process.env.CATALOG_REUSE_ENABLED; });
   const store = await testStore(), user = await store.addUser('Alice', 'alice@example.com', 'secure-password', 'member', 5);
   try {
-    await rememberCandidates(store, [known('ali@acme.test', 'Acme', 'https://acme.test'), known('omar@acme.test', 'Acme', 'https://acme.test')]);
+    await rememberCandidates(store, [known('ali@acme.test', 'Acme', 'https://acme.test'), known('omar@acme.test', 'Acme', 'https://acme.test')], '', true);
     const none = new IcypeasClient('unit-test-secret', async (url) => { if (String(url).endsWith('bulk-search')) throw new Error('nothing to submit'); return Response.json({ success: true, leads: [] }); });
     const first = await live(store, none).start(user.id, input(2));
     assert.equal(first.delivered, 1, 'two catalog people of Acme: one email'); assert.equal((await store.user(user.id)).balance, 4);
@@ -168,7 +168,7 @@ test('emails from the saved catalog do not count as the provider\'s find rate', 
   const p = provider({ people: pages });
   const { store, user, eligible } = await setup(), search = live(store, p.client);
   try {
-    await rememberCandidates(store, [known('ali@acme.test', 'Acme', 'https://acme.test'), known('sara@beta.test', 'Beta', 'https://beta.test')]);
+    await rememberCandidates(store, [known('ali@acme.test', 'Acme', 'https://acme.test'), known('sara@beta.test', 'Beta', 'https://beta.test')], '', true);
     const first = await search.start(user.id, input(4));
     assert.equal(first.delivered, 2); assert.equal(p.bulks[0].length, 7, '2 left at the 30% prior');
     await eligible(); await search.poll(user.id, first.id);
@@ -216,11 +216,11 @@ test('the end-of-search advice names only the filters the member set', async () 
     assert.match(done.message ?? '', /أضف دولًا أو اختر نشاطًا أوسع/);
   } finally { await store.close(); }
   const p2 = provider({ people: [[person('a', 'CEO', 'a.example')]] });
-  const s2 = await setup(), narrow = { ...input(2), city: 'الرياض', size: '1-10' as const };
+  const s2 = await setup(), narrow = { ...input(2), city: 'الرياض', size: '10' as const };
   try {
     const first = await live(s2.store, p2.client).start(s2.user.id, narrow);
     await s2.eligible(); const done = await live(s2.store, p2.client).poll(s2.user.id, first.id);
-    assert.match(done.message ?? '', /احذف حجم الشركة أو المدينة أو أضف دولًا\./);
+    assert.match(done.message ?? '', /احذف حد حجم الشركة أو المدينة أو أضف دولًا\./);
   } finally { await s2.store.close(); }
 });
 

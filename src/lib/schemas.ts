@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { isCountry } from './places';
-import { MAX_TITLES } from './contracts';
+import { DEFAULT_SIZE, MAX_TITLES, SIZES, sizeOf } from './contracts';
 
 // Request and storage validation: server-side only, so the validation library stays out of the browser bundle.
 const text = (max: number) => z.string().trim().max(max);
@@ -14,7 +14,8 @@ export const searchSchema = z.object({
   // forms are Resolved.titles. The key stays «title» because stored searches, saved audiences and links before 2026-10-09 hold
   // one title as a string: it reads as a list of one.
   title: z.preprocess(v => typeof v === 'string' ? [v] : v ?? [], z.array(text(60)).transform(list => [...new Set(list.filter(Boolean))]).pipe(z.array(z.string()).max(MAX_TITLES))),
-  size: z.enum(['all', '1-10', '11-50', '51-200']).default('all'),
+  // An older range or 'all' (stored searches, saved audiences, links from before 2026-10-11) reads as its ceiling; anything else is refused.
+  size: z.preprocess(v => v === undefined ? DEFAULT_SIZE : typeof v === 'string' && /^(all|\d+-\d+)$/.test(v) ? sizeOf(v) : v, z.enum(SIZES)),
   count: z.number().int().min(1).max(50),
   // Searches started before 2026-10-11 may widen (live-search.ts placesOf); route.ts stores every new one with widen: false (owner).
   widen: z.boolean().default(false),

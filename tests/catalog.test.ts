@@ -15,8 +15,8 @@ test('catalog: fresh factual matches are reused atomically across members, never
   t.after(()=>{delete process.env.CRM_ENABLED;delete process.env.CATALOG_REUSE_ENABLED;});
   const store=await testStore();t.after(()=>store.close());
   const a=await store.addUser('A','a@example.test','secure-password','member',5), b=await store.addUser('B','b@example.test','secure-password','member',5);
-  await rememberCandidates(store,[contact]);
-  const request={...input(1),city:'الرياض',titles:['CEO'],size:'11-50' as const};
+  await rememberCandidates(store,[contact],'',true);
+  const request={...input(1),city:'الرياض',titles:['CEO'],size:'50' as const};
   const never=new IcypeasClient('test',async()=>{throw new Error('provider must not be called');});
   const first=await live(store,never).start(a.id,request);
   assert.equal(first.status,'completed');assert.equal(first.delivered,1);assert.equal((await store.user(a.id)).balance,4);
@@ -33,7 +33,7 @@ test('catalog: expired, suppressed, excluded and demo contacts cannot be reused;
   process.env.CRM_ENABLED='true';process.env.CATALOG_REUSE_ENABLED='true';
   t.after(()=>{delete process.env.CRM_ENABLED;delete process.env.CATALOG_REUSE_ENABLED;});
   const store=await testStore();t.after(()=>store.close());const u=await store.addUser('A','a@example.test','secure-password','member',2);
-  await rememberCandidates(store,[contact,{...contact,email:'demo@acme.test',email_status:'demo'}]);
+  await rememberCandidates(store,[contact,{...contact,email:'demo@acme.test',email_status:'demo'}],'',true);
   assert.equal((await store.db.get<{n:number}>('SELECT count(*) n FROM lead_catalog'))!.n,1);
   delete process.env.CATALOG_REUSE_ENABLED;assert.equal((await catalogMatches(store,u.id,input(),50)).length,0);
   process.env.CATALOG_REUSE_ENABLED='true';
@@ -42,7 +42,7 @@ test('catalog: expired, suppressed, excluded and demo contacts cannot be reused;
   await store.db.run('DELETE FROM crm_exclusions');await store.db.run("UPDATE lead_catalog SET verified_at='2000-01-01T00:00:00.000Z'");
   assert.equal((await catalogMatches(store,u.id,input(),50)).length,0);
   await store.db.run('INSERT INTO catalog_suppressions VALUES(?,?)',contact.email,new Date().toISOString());
-  await rememberCandidates(store,[contact]);assert.equal((await catalogMatches(store,u.id,input(),50)).length,0);
+  await rememberCandidates(store,[contact],'',true);assert.equal((await catalogMatches(store,u.id,input(),50)).length,0);
 });
 
 test('catalog: a narrow activity reuses what the same activity found, after a short wait, charged like a new email', async t => {
@@ -52,10 +52,10 @@ test('catalog: a narrow activity reuses what the same activity found, after a sh
   const b=await store.addUser('B','b@example.test','secure-password','member',5);
   const ask=(sector:string)=>audienceOf(JSON.stringify({sector,countries:['LB'],city:'',title:'',size:'all',count:1,confirmed:true,requestId:crypto.randomUUID()}));
   const salon:Candidate={...contact,email:'hello@jolie.example',company:'Jolie et co',sector:'Personal Care Services',country:'لبنان',city:'Beirut',website:'https://jolie.example'};
-  await rememberCandidates(store,[salon],'صالونات التجميل النسائية');
+  await rememberCandidates(store,[salon],'صالونات التجميل النسائية',true);
   assert.equal((await catalogMatches(store,b.id,ask('صالونات التجميل النسائية'),50)).length,1,'what a salons search found serves the next salons search');
   assert.equal((await catalogMatches(store,b.id,ask('عيادات التجميل'),50)).length,0,'never another narrow activity');
-  await rememberCandidates(store,[{...salon,email:'info@other.example'}],'محلات بيع العطور الفرنسية للعرائس');
+  await rememberCandidates(store,[{...salon,email:'info@other.example'}],'محلات بيع العطور الفرنسية للعرائس',true);
   assert.equal((await store.db.get<{niche:string|null}>("SELECT payload->>'niche' niche FROM lead_catalog WHERE email='info@other.example'"))!.niche,null,'a member\'s own words never reach the shared catalog');
   const never=new IcypeasClient('test',async()=>{throw new Error('provider must not be called');});
   const search=new LiveSearch(store,never,{read:0,bulk:0,catalog:60000},{read:0,bulk:0});
@@ -76,7 +76,7 @@ test('catalog: the same request gets what an earlier identical request delivered
   const found:Candidate[]=[{...contact,email:'omar@damascus.example',company:'Damascus Soft',country:'سوريا',city:'Damascus',website:'https://damascus.example'},
     {...contact,kind:'company',name:'Beirut Web',email:'info@beirutweb.example',company:'Beirut Web',title:'',country:'لبنان',city:'Beirut',website:'https://beirutweb.example'}];
   const first=await store.enqueueSearch(a.id,request);await store.db.run("UPDATE searches SET status='awaiting_provider' WHERE id=?",first.id);
-  await store.deliverBatch(a.id,first.id,found);await rememberCandidates(store,found);
+  await store.deliverBatch(a.id,first.id,found);await rememberCandidates(store,found,'',true);
   assert.deepEqual((await catalogMatches(store,b.id,{...request,count:5,requestId:crypto.randomUUID()},50)).map(c=>c.email).sort(),['info@beirutweb.example','omar@damascus.example'],
     'owner, 2026-10-07: «اذا شخص طلب نفس الطلب نجيبلو المعلومات نفسها»');
   assert.equal((await catalogMatches(store,b.id,{...request,city:'Beirut',requestId:crypto.randomUUID()},50)).length,0,'another request only takes what matches its own place and kind');
@@ -89,9 +89,35 @@ test('catalog: a narrow activity keeps its tag when a broad search finds the ema
   const b=await store.addUser('B','b@example.test','secure-password','member',5);
   const ask=(sector:string,country='LB')=>audienceOf(JSON.stringify({sector,countries:[country],city:'',title:'',size:'all',count:1,confirmed:true,requestId:crypto.randomUUID()}));
   const salon:Candidate={...contact,email:'hello@jolie.example',company:'Jolie et co',sector:'Personal Care Services',country:'لبنان',city:'Beirut',website:'https://jolie.example'};
-  await rememberCandidates(store,[salon],'صالونات التجميل النسائية');await rememberCandidates(store,[salon]);
+  await rememberCandidates(store,[salon],'صالونات التجميل النسائية',true);await rememberCandidates(store,[salon]);
   assert.equal((await catalogMatches(store,b.id,ask('صالونات التجميل النسائية'),50)).length,1);
   const dental=(company:string,email:string):Candidate=>({...contact,email,company,sector:'Dentists',country:'الأردن',city:'Amman',website:'https://'+email.split('@')[1]});
-  await rememberCandidates(store,[dental('Matest Dental Supplies','sales@matest.example'),dental('Smile Dental Clinic','info@smile.example')]);
+  await rememberCandidates(store,[dental('Matest Dental Supplies','sales@matest.example'),dental('Smile Dental Clinic','info@smile.example')],'',true);
   assert.deepEqual((await catalogMatches(store,b.id,ask('عيادات الأسنان','JO'),50)).map(c=>c.company),['Smile Dental Clinic']);
+});
+
+test('catalog: a result found before the foreign headquarters were left out is not reused for a search in Arab countries', async t => {
+  process.env.CRM_ENABLED='true';process.env.CATALOG_REUSE_ENABLED='true';
+  t.after(()=>{delete process.env.CRM_ENABLED;delete process.env.CATALOG_REUSE_ENABLED;});
+  const store=await testStore();t.after(()=>store.close());
+  const a=await store.addUser('A','a@example.test','secure-password','member',5);
+  const request={...input(1),city:'الرياض',titles:['CEO'],size:'50' as const};
+  await rememberCandidates(store,[contact]); // an older search, or one that also chose a country outside the Arab world
+  assert.equal((await catalogMatches(store,a.id,request,50)).length,0);
+  assert.equal((await catalogMatches(store,a.id,{...request,countries:['SA','TR']},50)).length,0,'nor for one that chose Turkey too: its headquarters were never checked');
+  await rememberCandidates(store,[contact],'',true);
+  assert.equal((await catalogMatches(store,a.id,request,50)).length,1);
+  assert.equal((await catalogMatches(store,a.id,{...request,countries:['SA','TR']},50)).length,1,'checked once: fine for any search');
+});
+
+test('catalog: an identical earlier request lends only what still fits the size ceiling', async t => {
+  process.env.CRM_ENABLED='true';process.env.CATALOG_REUSE_ENABLED='true';
+  t.after(()=>{delete process.env.CRM_ENABLED;delete process.env.CATALOG_REUSE_ENABLED;});
+  const store=await testStore();t.after(()=>store.close());
+  const a=await store.addUser('A','a@example.test','secure-password','member',5),b=await store.addUser('B','b@example.test','secure-password','member',5);
+  const request=audienceOf(JSON.stringify({sector:'التقنية والبرمجيات',countries:['SA'],city:'',title:'',size:'50',count:1,confirmed:true,requestId:crypto.randomUUID()}));
+  const first=await store.enqueueSearch(a.id,request);await store.db.run("UPDATE searches SET status='awaiting_provider' WHERE id=?",first.id);
+  await store.deliverBatch(a.id,first.id,[{...contact,size:'48'}]);await rememberCandidates(store,[{...contact,size:'48'}],'',true);
+  await rememberCandidates(store,[{...contact,size:'52'}],'',true); // found again later, now known above 50
+  assert.deepEqual(await catalogMatches(store,b.id,{...request,requestId:crypto.randomUUID()},50),[]);
 });

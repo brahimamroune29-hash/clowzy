@@ -4,13 +4,13 @@ import { assist } from '../src/lib/ai';
 import { assistRequestSchema } from '../src/lib/schemas';
 import type { AssistContext } from '../src/lib/contracts';
 
-const context:AssistContext={mode:'companies',sector:'عيادات الأسنان',countries:['AE'],city:'Dubai',title:[],size:'11-50',count:7};
+const context:AssistContext={mode:'companies',sector:'عيادات الأسنان',countries:['AE'],city:'Dubai',title:[],size:'50',count:7};
 test('clear listed niches and ambiguous transcription work without the model',async t=>{
   t.mock.method(globalThis,'fetch',async()=>{throw new Error('A listed niche should not call a model');});
   for(const content of ['عيادة الاسنان','عيادات الأسنان','عيادات اسنان','Dental clinics']){
     const draft=await assist([{role:'user',content}],'ar',context);
     assert.equal(draft.action,'prepare');
-    assert.deepEqual(draft.search,{mode:'companies',field:'الصحة والطب',specialty:'عيادات الأسنان',other:'',countries:['AE'],city:'Dubai',title:[],size:'11-50',count:7});
+    assert.deepEqual(draft.search,{mode:'companies',field:'الصحة والطب',specialty:'عيادات الأسنان',other:'',countries:['AE'],city:'Dubai',title:[],size:'50',count:7});
     assert.doesNotMatch(draft.reply,/companies|people/);
   }
   const question=await assist([{role:'user',content:'إعادة الأسنان'}],'ar',context);

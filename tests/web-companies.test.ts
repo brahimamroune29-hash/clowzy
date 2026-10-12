@@ -6,7 +6,7 @@ import { audienceOf } from '../src/lib/audience';
 import { randomUUID } from 'node:crypto';
 import { item, live, testStore } from './pg';
 
-const scope = { mode: 'companies' as const, countries: ['SA'], city: 'الرياض', size: 'all' as const, industries: ['Dentists'], titles: [] };
+const scope = { mode: 'companies' as const, countries: ['SA'], city: 'الرياض', size: '1000' as const, industries: ['Dentists'], titles: [] };
 const source = (url = 'https://smile.example/contact', content = 'Smile Clinic in Riyadh, Saudi Arabia. We provide dental treatment and implants.') => ({ type: 'url_citation', url_citation: { url, title: 'Smile Clinic', content } });
 const select = (index = 0, extra = {}) => ({ index, name: 'Smile Clinic', industry: 'Dentists', evidence: 2, ...extra });
 
@@ -79,7 +79,7 @@ test('web discovery is bounded, resumes excluding seen domains, and does not rep
   t.mock.method(globalThis, 'fetch', transport);
   try {
     assert(webEnabled(scope)); assert.equal(stageCount(scope), 5);
-    assert(!webEnabled({ ...scope, size: '11-50' })); assert(!webEnabled({ ...scope, mode: 'people' })); assert(webEnabled({ ...scope, city: '' }));
+    assert(webEnabled({ ...scope, size: '50' }), 'an unknown size passes at every ceiling (owner 2026-10-11)'); assert(!webEnabled({ ...scope, mode: 'people' })); assert(webEnabled({ ...scope, city: '' }));
     const count = await new IcypeasClient('test', transport).count(scope);
     assert.equal(count.total, 16); assert.equal(count.supplementary, true); assert.equal(calls.length, 4, 'free count never invokes paid web discovery');
     calls.length = 0;

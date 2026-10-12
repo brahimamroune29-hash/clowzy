@@ -106,7 +106,7 @@ test('an identical request stored before this change still lends what it deliver
   const request = audienceOf(JSON.stringify({ ...base, countries: ['LB'], count: 2 }));
   const found: Candidate[] = [{ kind: 'person', name: 'Omar', email: 'omar@damascus.example', company: 'Damascus Soft', title: 'CEO', sector: 'Software Development', country: 'سوريا', city: 'Damascus', website: 'https://damascus.example', size: '12', source: 'clowzy', email_status: 'VERIFIED' }];
   const first = await store.enqueueSearch(a.id, request); await store.db.run("UPDATE searches SET status='awaiting_provider' WHERE id=?", first.id);
-  await store.deliverBatch(a.id, first.id, found); await rememberCandidates(store, found);
+  await store.deliverBatch(a.id, first.id, found); await rememberCandidates(store, found, '', true);
   await store.db.run(`UPDATE searches SET filters=replace(filters,'"title":[]','"title":""') WHERE id=?`, first.id);
   assert.deepEqual((await catalogMatches(store, b.id, { ...request, requestId: randomUUID() }, 50)).map(c => c.email), ['omar@damascus.example']);
 });

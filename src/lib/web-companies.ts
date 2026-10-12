@@ -5,9 +5,9 @@ import { cityNames, countryLabel, englishName, norm } from './places';
 import { nicheKeywords } from './niches';
 
 type Scope = Pick<Resolved, 'countries' | 'city' | 'size' | 'industries'> & Partial<Pick<Resolved, 'mode' | 'sector'>>;
-// Public pages do not establish employee counts. Never silently relax that filter or infer an unknown location.
+// Public pages do not establish employee counts, and an unknown size passes every ceiling (owner 2026-10-11). Never infer an unknown location.
 export const webEnabled = (input: Scope) => process.env.WEB_DISCOVERY_ENABLED === 'true' && !!process.env.OPENROUTER_API_KEY
-  && input.mode === 'companies' && input.size === 'all' && input.countries.length === 1;
+  && input.mode === 'companies' && input.countries.length === 1;
 export const WEB_ROUNDS = 6;
 const directory = /(^|\.)(whatclinic\.com|altibbi\.com|tebcan\.com|vezeeta\.com|exa\.ai|inc\.com|tradersunion\.com|tracxn\.com|44rev\.com|zavis\.ai|findglocal\.com|yellowpages\.[a-z.]+|yelp\.com|justdial\.com|tripadvisor\.[a-z.]+|zoominfo\.com|crunchbase\.com|apollo\.io|rocketreach\.co|researchgate\.net|sciencedirect\.com|mdpi\.com|nih\.gov|reddit\.com|facebook\.com|instagram\.com|linkedin\.com|twitter\.com|x\.com|youtube\.com)$/i;
 const citation = z.object({ type: z.literal('url_citation'), url_citation: z.object({ url: z.url(), title: z.string(), content: z.string() }) });

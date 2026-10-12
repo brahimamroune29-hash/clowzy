@@ -49,6 +49,13 @@ export function placeOf(address: string | null | undefined): { code: string; cit
 
 // Where a search short of its count widens, in this order: the other countries of the member's region (owner's choice, 2026-10-05).
 const REGIONS = [['SA', 'AE', 'KW', 'QA', 'BH', 'OM', 'YE'], ['LB', 'SY', 'JO', 'PS', 'IQ'], ['EG', 'SD'], ['MA', 'DZ', 'TN', 'LY', 'MR']];
+// The Arab League (owner 2026-10-11: an Arab company is one headquartered in an Arab country).
+export const ARAB = [...REGIONS.flat(), 'SO', 'DJ', 'KM'];
+// Headquarters a search leaves out (icypeas.ts peopleQuery): every ISO country and territory but the Arab League.
+// ponytail: the provider takes 200 values per filter, so 27 tiny or uninhabited territories are not listed and their companies pass:
+// AQ BV HM TF UM IO GS PN TK NU CX CC NF SJ BL MF PM WF SH FK AX VA MS AS MP EH YT. Offshore centres (KY, VG, BM, JE) stay listed.
+// Split the filter in two queries if one of those ever matters.
+export const NON_ARAB_HQ = 'AD AF AG AI AL AM AO AR AT AU AW AZ BA BB BD BE BF BG BI BJ BM BN BO BQ BR BS BT BW BY BZ CA CD CF CG CH CI CK CL CM CN CO CR CU CV CW CY CZ DE DK DM DO EC EE ER ES ET FI FJ FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GT GU GW GY HK HN HR HT HU ID IE IL IM IN IR IS IT JE JM JP KE KG KH KI KN KP KR KY KZ LA LC LI LK LR LS LT LU LV MC MD ME MG MH MK ML MM MN MO MQ MT MU MV MW MX MY MZ NA NC NE NG NI NL NO NP NR NZ PA PE PF PG PH PK PL PR PT PW PY RE RO RS RU RW SB SC SE SG SI SK SL SM SN SR SS ST SV SX SZ TC TD TG TH TJ TL TM TO TR TT TV TW TZ UA UG US UY UZ VC VE VG VI VN VU WS ZA ZM ZW'.split(' ');
 export const nearby = (codes: string[]) => REGIONS.filter(r => r.some(c => codes.includes(c))).flat().filter(c => !codes.includes(c));
 // Past its own region, a search still short goes on to the other regions, nearest first, each region as one place (owner,
 // 2026-10-07: «حاول نحلها بطريقة ذكية», for every niche). Indexes into REGIONS; a region the member picked is never repeated.

@@ -40,9 +40,12 @@ test('the free count also says how many work at a company with a page; few of th
     const query = JSON.parse(String(init?.body)).query;
     return Response.json({ success: true, total: query['currentCompany.headcount'] ? 10 : 100 });
   });
-  assert.deepEqual(await client.count(input(10)), { total: 200, strict: 100, reachable: 20 });
-  const sized = await client.count({ ...input(10), size: '1-10' });
-  assert.equal(sized.reachable, sized.total, 'a size filter already counts only people at companies with a page');
+  // Outside the word niches the provider's size filter (a thousand by default) already counts only people at companies with a size.
+  assert.deepEqual(await client.count(input(10)), { total: 20, strict: 10, reachable: 20 });
+  const sized = await client.count({ ...input(10), size: '10' });
+  assert.equal(sized.reachable, sized.total);
+  const nails = await client.count(salons()); // a word niche: unknown sizes pass, so the count says how many have a known size
+  assert.equal(nails.reachable, nails.total / 10);
   assert.equal(fewReachable(192, 10), true, 'salons in Lebanon: 192 at companies with a page, about 5% of them findable');
   assert.equal(fewReachable(13900, 10), false); assert.equal(fewReachable(undefined, 10), false);
 });
