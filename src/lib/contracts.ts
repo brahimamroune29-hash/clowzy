@@ -159,6 +159,7 @@ export type OverviewStats = {
 };
 export type Snapshot = {
   features?:{crm:boolean}; wallet?:{total:number;reserved:number;available:number};
+  ownerInside?: boolean; // the owner is inside this member's account (admin/enter): the page shows the way back
   provider?: { configured: boolean; maxCount: number }; // no provider name: members never see it
   user: User; contacts: Contact[]; searches: Search[]; ledger: Ledger[]; exports: ExportEvent[];
   summary?: OverviewStats;

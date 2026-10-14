@@ -41,9 +41,13 @@ async function body(req: NextRequest) {
 function json(data: unknown, status = 200) {
   return NextResponse.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
 }
+const cookie = (maxAge: number) => ({ httpOnly: true, sameSite: 'strict' as const, secure: isHttps(process.env.APP_URL), path: '/', maxAge });
+// wasl_member: the member whose account the owner is inside (admin/enter), on the owner's own session, so the visit ends
+// with that session (a sign-out, a password change elsewhere, expiry). Any sign-in or sign-out drops it too.
 function authenticated(token: string, data: object = { ok: true }) {
   const response = json(data);
-  response.cookies.set('wasl_session', token, { httpOnly: true, sameSite: 'strict', secure: isHttps(process.env.APP_URL), path: '/', maxAge: 7 * 86400 });
+  response.cookies.set('wasl_session', token, cookie(7 * 86400));
+  response.cookies.set('wasl_member', '', cookie(0));
   return response;
 }
 async function answer(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
@@ -112,16 +116,25 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
       if (path === 'auth/logout') {
         if (session) await store.logout(session);
         const response = json({ ok: true });
-        response.cookies.set('wasl_session', '', {httpOnly:true,sameSite:'strict',path:'/',maxAge:0});
+        response.cookies.set('wasl_session', '', cookie(0));
+        response.cookies.set('wasl_member', '', cookie(0));
         return response;
       }
     }
-    const user = await store.session(session);
+    if (req.method === 'POST' && path === 'owner/return') { // out of a member's account: the owner's session was never left
+      const response = json({ ok: true });
+      response.cookies.set('wasl_member', '', cookie(0));
+      return response;
+    }
+    const own = await store.session(session), memberId = req.cookies.get('wasl_member')?.value;
+    // Only the owner acts as a member, and only as an active one (otherwise the owner's own view); the page shows the way back.
+    const user = own.role === 'admin' && memberId ? await store.memberFor(own.id, memberId).catch(() => own) : own;
+    const inside = user === own ? {} : { ownerInside: true };
     await store.hit('api:' + user.id, 120);
     // Members see no data and spend no credits before accepting the current terms (the UI gate alone is not enough):
     // the page gets the account alone, to show the terms.
     if (user.role === 'member' && !termsCurrent(user)) {
-      if (req.method === 'GET' && path === 'bootstrap') return json({ user, contacts: [], searches: [], ledger: [], exports: [] });
+      if (req.method === 'GET' && path === 'bootstrap') return json({ user, contacts: [], searches: [], ledger: [], exports: [], ...inside });
       if (path !== 'terms') throw new AppError('وافق على شروط الاستخدام أولًا.', 403);
     }
     if (req.method === 'GET' && path === 'crm') return json(await crmState(store,user.id));
@@ -134,7 +147,7 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
       const reserved=await store.reserved(user.id);
       const features={crm:crmEnabled()},wallet=(balance:number)=>({total:balance,reserved,available:Math.max(0,balance-reserved)});
       const view=z.enum(['overview','full']).parse(req.nextUrl.searchParams.get('view')||'overview');
-      if(view==='full') { const snapshot=await store.snapshot(user.id);return json({...snapshot,provider:providerInfo(),features,wallet:wallet(snapshot.user.balance)}); }
+      if(view==='full') { const snapshot=await store.snapshot(user.id);return json({...snapshot,provider:providerInfo(),features,wallet:wallet(snapshot.user.balance),...inside}); }
       const raw=req.nextUrl.searchParams.get('days');
       let days: string[] | undefined;
       if(raw!==null) {
@@ -144,7 +157,7 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
         days=weekBoundariesSchema.parse(parsed);
       }
       const snapshot=await store.overview(user.id,days);
-      return json({...snapshot,provider:providerInfo(),features,wallet:wallet(snapshot.user.balance)});
+      return json({...snapshot,provider:providerInfo(),features,wallet:wallet(snapshot.user.balance),...inside});
     }
     if (req.method !== 'POST') throw new AppError('الصفحة المطلوبة غير موجودة.', 404);
     const b = await body(req);
@@ -257,6 +270,13 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
     if (path === 'admin/reset') {
       const data = z.object({userId:z.string().uuid()}).parse(b);
       return json({token:await store.createReset(user.id,data.userId)});
+    }
+    if (path === 'admin/enter') { // into a member's account until owner/return, a sign-in or a sign-out
+      const data = z.object({userId:z.string().uuid()}).parse(b);
+      await store.memberFor(user.id, data.userId);
+      const response = json({ ok: true });
+      response.cookies.set('wasl_member', data.userId, cookie(7 * 86400));
+      return response;
     }
     throw new AppError('العملية المطلوبة غير موجودة.', 404);
   } catch (error) {

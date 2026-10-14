@@ -7,7 +7,7 @@ import {recordCoverage} from './coverage';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { AppError, dailyPeople, dailyLimit, Store } from './store';
 import { ARAB, countryLabel, farther, nearby } from './places';
-import { BATCH, companyKeys, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadKeys, leadName, missKey, personKey, publishedEnabled, queryOf, siteOf, stageCount, submissionTask, submitCap, webStage, withinSize } from './icypeas';
+import { BATCH, companyKeys, cursorKey, fetchCap, IcypeasClient, IcypeasError, type Lead, leadKeys, leadName, mapsStage, missKey, personKey, publishedEnabled, queryOf, siteOf, stageCount, submissionTask, submitCap, webStage, withinSize } from './icypeas';
 
 type Run = { search_id: string; phase: string; people: string; file: string | null; scanned: number; fetched: number; submitted: number; submitted_at: number | null; message: string; updated_at: number; read_errors: number; mode: 'companies' | null; people_checked: number; scope: number; stop_requested: number | null };
 // Where a search looks, in order: the member's place, then (widen) the whole country when a city was set, then the region's
@@ -279,7 +279,7 @@ export class LiveSearch {
           // Ten of the other kind wait: this batch goes now rather than buying pages that rarely bring its kind.
           if (batch.length && aside.length >= SITE_BATCH) { noMore = true; break; }
           if (pages >= PAGES_PER_CALL || this.elapsed() > COLLECT_MS) return this.pause(userId, id, batch, input);
-          if (await this.store.dailyFetched(userId) >= dailyPeople()) { // the member's daily provider work: send who was picked, then stop
+          if (!mapsStage(input, stage) && await this.store.dailyFetched(userId) >= dailyPeople()) { // the member's daily provider work: send who was picked, then stop
             if (later.length) { daily = true; continue; } // no page is left today: the people without a website go now
             if (batch.length) { noMore = true; break; }
             return this.finish(userId, id, 'حُسب فقط ما وصل. ' + dailyLimit);
@@ -300,8 +300,10 @@ export class LiveSearch {
           pages++;
           const pageAt = Date.now(), page = await this.page(input, token, stage);
           await this.timing(id, { pageMs: Date.now() - pageAt, pages: 1 });
-          scanned += page.returned; fetched += page.returned; pool = await this.judge(id, input, page.leads); token = page.token;
-          if (!token || (!page.returned && !webStage(input, stage))) { // an empty web round can still have another search engine to try
+          // Q12: Google's places count toward neither this search's page budget nor the member's daily provider work: the cities run out first.
+          const counted = mapsStage(input, stage) ? 0 : page.returned;
+          scanned += counted; fetched += counted; pool = await this.judge(id, input, page.leads); token = page.token;
+          if (!token || (!page.returned && !webStage(input, stage) && !mapsStage(input, stage))) { // an empty web round can still have another search engine to try, an empty city the next city
             token = null; stage = (stage + 1) % stageCount(input); wrapped = stage === 0;
             if (wrapped) scanned = Math.max(scanned, fetchCap(search.requested)); // this search has seen everything: no further pages
           }

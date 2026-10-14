@@ -428,3 +428,5 @@ td small{display:block;font-size:12px;color:var(--muted-dark);margin-top:3px}
 .crm-save .field { flex:1; }
 .crm-preview { max-height:220px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px; }
 @media(max-width:760px){.crm-filters{grid-template-columns:1fr 1fr}.crm-save{align-items:stretch;flex-direction:column}.crm-item{flex-wrap:wrap}.credit-overview{flex-wrap:wrap}}
+/* The owner inside a member's account (platform.tsx): above the page, with the way back. */
+.owner-inside{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:8px 14px;padding:8px 16px;background:var(--accent-soft);border-bottom:1px solid var(--line-strong);color:var(--accent);font-size:14px}

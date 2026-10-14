@@ -5,6 +5,7 @@ import { DEFAULT_SIZE, freeMail, SUBMIT_MULTIPLE, type Candidate, type Resolved 
 import { cityNames, countryLabel, englishName, NON_ARAB_HQ, norm, placeOf } from './places';
 import { bestEmail, categoryWords, companyEmails, emailsIn, safeGet, type Get } from './site-email';
 import { directoryPath, webCompanies, webEnabled } from './web-companies';
+import { mapsCompanies, mapsEnabled } from './google-places';
 import { anyIndustry, nicheKeywords, nicheNames, ANY_INDUSTRY_EXCLUDED } from './niches';
 import type {CoverageCounts} from './coverage';
 
@@ -36,11 +37,13 @@ export const STAGES = 2;
 export type Audience = Pick<Resolved, 'countries' | 'city' | 'size' | 'industries' | 'titles'> & Partial<Pick<Resolved, 'mode' | 'sector'>>;
 const dentalOnly = (input: Audience) => input.industries.length === 1 && input.industries[0] === 'Dentists';
 const dataStages = (input: Audience) => (input.mode === 'companies' && dentalOnly(input)) || anyIndustry(input.sector) ? 4 : STAGES;
-export const webStage = (input: Audience, stage: number) => webEnabled(input) && stage === dataStages(input);
+// After the provider's stages: Google Maps for a local business (google-places.ts), then the web search.
+export const mapsStage = (input: Audience, stage: number) => mapsEnabled(input) && stage === dataStages(input);
+export const webStage = (input: Audience, stage: number) => webEnabled(input) && stage === dataStages(input) + Number(mapsEnabled(input));
 // The broadened data stages of an anyIndustry niche keep a business only when its name says what it is (nicheNames).
 const onNiche = (input: Audience, stage: number, company?: string | null) => stage < 2 || stage >= dataStages(input) || !anyIndustry(input.sector)
   || nicheNames(input.sector).some(w => norm(company || '').includes(norm(w)));
-export const stageCount = (input: Audience) => dataStages(input) + Number(webEnabled(input));
+export const stageCount = (input: Audience) => dataStages(input) + Number(mapsEnabled(input)) + Number(webEnabled(input));
 const dentalExclusions = ['lab', 'labs', 'laboratory', 'laboratories', 'مختبر', 'معمل', 'supplies', 'supply', 'supplier', 'suppliers', 'equipment', 'study', 'academy', 'education', 'course', 'courses', 'factory', 'تجهيز', 'مستلزمات', 'مصنع', 'دورات'];
 const nonClinic = /\b(labs?|laborator(?:y|ies)|suppl(?:y|ies|iers?)|equipment|study|academy|education|courses?|factory)\b|مختبر|معمل|تجهيز|مستلزمات|مصنع|دورات/i;
 // A dental search keeps clinics only: suppliers, labs and courses are filed under Dentists too (Matest Dental Supplies, 2026-10-07).
@@ -108,6 +111,7 @@ export function companiesQuery(input: Audience, stage = 0) {
 }
 export const queryOf = (input: Audience, stage = 0) => webStage(input, stage)
   ? { web: 3, countries: input.countries, city: input.city, industries: input.industries, ...(input.sector ? { sector:input.sector } : {}) }
+  : mapsStage(input, stage) ? { maps: 1, countries: input.countries, city: input.city, sector: input.sector }
   : input.mode === 'companies' ? companiesQuery(input, stage) : peopleQuery(input, stage);
 
 // A member's place in the results, per audience: covers both stages, so a changed broad query never reuses an old token.
@@ -259,7 +263,7 @@ export class IcypeasClient {
     }));
     const sum = (n: number[]) => n.reduce((a, b) => a + b, 0), totals = await counts(queries), total = sum(totals);
     const reachable = input.mode === 'companies' ? undefined : !anyIndustry(input.sector) ? total : sum(await counts(queries.map(q => ({ ...q, 'currentCompany.headcount': { '>=': 1, '<=': Number(input.size) } }))));
-    return { total, strict: totals[0], ...(reachable === undefined ? {} : { reachable }), ...(webEnabled(input) ? { supplementary: true } : {}) };
+    return { total, strict: totals[0], ...(reachable === undefined ? {} : { reachable }), ...(webEnabled(input) || mapsEnabled(input) ? { supplementary: true } : {}) };
   }
   // One page of PAGE people (0.02 Icypeas credit each). token: continue where the previous page stopped.
   async people(input: Audience, token?: string | null, stage = 0): Promise<{ leads: Lead[]; returned: number; token: string | null }> {
@@ -282,6 +286,13 @@ export class IcypeasClient {
         return { ...page, leads: page.companies.map(c => ({ kind: 'company' as const, lastCompanyName: c.name, lastCompanyWebsite: c.website, address: c.address, lastCompanyIndustry: c.industry, email: '' }))
           .filter(l => siteOf(l) && inCountries(l, input.countries) && clinicLike(input, l.lastCompanyName)) };
       } catch { throw new IcypeasError('تعذّر إكمال البحث المكمّل في المواقع. حُفظت النتائج التي وصلتك؛ حاول لاحقًا.', 503); }
+    }
+    if (mapsStage(input, stage)) {
+      const page = await mapsCompanies(input, token, this.transport);
+      // A place's name only drops labs and suppliers here: the company is named after its own website (google-places.ts).
+      const leads = page.companies.filter(c => clinicLike(input, c.name)).map(c => ({ kind: 'company' as const, lastCompanyWebsite: c.website, address: c.address, lastCompanyIndustry: input.industries[0], email: '' }))
+        .map(l => ({ ...l, lastCompanyName: siteOf(l) })).filter(l => l.lastCompanyName);
+      return { leads, returned: page.returned, token: page.token };
     }
     const raw = await this.request('find-companies', { query: companiesQuery(input, stage), pagination: { size: PAGE, ...(token ? { token } : {}) } });
     const parsed = z.array(companySchema).max(200).safeParse(raw.leads ?? []);

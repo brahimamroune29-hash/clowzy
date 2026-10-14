@@ -51,7 +51,11 @@ export default function Platform(){
   if(loading||loadedPath!==requestPath)return <div className="boot"><Brand/><p>{t('نجهّز مساحة عملك…','Preparing your workspace…')}</p><span className="loading-line"/></div>;
   if((pathname==='/invite'||pathname==='/reset'||pathname==='/owner')&&token)return <Auth onLogin={onLogin} token={token} reset={pathname==='/reset'} owner={pathname==='/owner'}/>;
   if(!data)return <Auth onLogin={onLogin}/>;
-  if(data.user.role==='member'&&!termsCurrent(data.user))return <TermsGate again={!!data.user.terms_accepted_at} onAccepted={refresh} onLogout={logout}/>;
+  // A full page load on both sides of a visit: nothing of one account's state stays on screen for the other.
+  // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- a full load: nothing of one account stays for the other
+  async function leave(){try{await api('owner/return',{});location.assign('/admin');}catch(e){notify((e as Error).message,true);}}
+  const inside=data.ownerInside&&<div className="owner-inside" role="status"><span>{t('أنت داخل حساب ','You are inside the account of ')}<strong>{data.user.name}</strong></span><button className="button secondary" onClick={leave}>{t('رجوع للوحة المالك','Back to the owner dashboard')}</button></div>;
+  if(data.user.role==='member'&&!termsCurrent(data.user))return <>{inside}<TermsGate again={!!data.user.terms_accepted_at} onAccepted={refresh} onLogout={logout}/></>;
   const admin=data.user.role==='admin',viewProps={data,reload:refresh,notify};
   const nav=admin?[{href:'/admin',label:t('نظرة عامة','Overview')},{href:'/admin/members',label:t('المشتركون','Members')},{href:'/admin/activity',label:t('السجل','Activity')}]
     :[{href:'/dashboard',label:t('الرئيسية','Home')},{href:'/search',label:t('بحث جديد','New search')},{href:'/leads',label:t('عملائي','My contacts')},{href:'/history',label:t('سجل البحث','History')}];
@@ -68,6 +72,7 @@ export default function Platform(){
   else if(pathname==='/credits')page=<CreditsView {...viewProps}/>;
   else page=<Dashboard {...viewProps}/>;
   return <div className="app-shell">
+    {inside}
     <header className="topnav">
       <Link href={home} className="topnav-brand" aria-label={t('الرئيسية','Home')}><Brand/></Link>
       <nav className={'topnav-links'+(menu?' open':'')} aria-label={t('التنقل','Navigation')}>{nav.map(n=><Link key={n.href} href={n.href} onClick={()=>setMenu(false)} className={'topnav-link'+(pathname===n.href||n.href===home&&pathname==='/'?' active':'')}>{n.label}</Link>)}

@@ -107,6 +107,14 @@ export class Store {
     return user;
   }
   async logout(token: string) { await this.db.run('DELETE FROM sessions WHERE token_hash=?', hash(token)); }
+  // Client 2026-10-14: the owner inside an active member's account acts as that member, with no limit and no log (owner's
+  // answers Q7-Q9). No session is made for it: the visit lives on the owner's own session (route.ts wasl_member).
+  async memberFor(adminId: string, userId: string) {
+    await this.admin(adminId);
+    const target = await this.db.get<User>('SELECT ' + userFields + ' FROM users WHERE id=?', userId);
+    if (target?.role !== 'member' || !target.active) throw new AppError('المشترك غير موجود.', 404);
+    return target;
+  }
   async snapshot(id: string): Promise<Snapshot> {
     const user = await this.user(id);
     const [contacts, searches, ledger, exports] = await Promise.all([
