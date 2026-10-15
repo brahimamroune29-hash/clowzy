@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { accessError, clientIp, isHttps } from '../src/lib/access';
+import { accessError, clientIp, isHttps, networkOf } from '../src/lib/access';
 
 const app = 'https://clowzy.example';
 const post = { method: 'POST', host: 'clowzy.example', origin: app, contentType: 'application/json', contentLength: '120' };
@@ -32,4 +32,13 @@ test('client IP is the entry appended by our reverse proxy, never a client-suppl
   assert.equal(clientIp('6.6.6.6, 203.0.113.9'), '203.0.113.9');
   assert.equal(clientIp(null), 'unknown');
   assert.equal(clientIp(' , '), 'unknown');
+});
+
+test('sign-in limits count an IPv6 /64 as one network, an IPv4 address as itself', () => {
+  assert.equal(networkOf('2001:db8:aa:bb:1::5'), '2001:db8:aa:bb::/64');
+  assert.equal(networkOf('2001:0DB8:00aa:00bb:ffff:0:0:9'), '2001:db8:aa:bb::/64');
+  assert.equal(networkOf('2001:db8::1'), '2001:db8:0:0::/64');
+  assert.equal(networkOf('::ffff:203.0.113.7'), '203.0.113.7');
+  assert.equal(networkOf('203.0.113.7'), '203.0.113.7');
+  assert.equal(networkOf('unknown'), 'unknown');
 });

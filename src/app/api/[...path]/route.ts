@@ -8,7 +8,7 @@ import { LiveSearch } from '@/lib/live-search';
 import { searchTick, workerAuthorized } from '@/lib/search-worker';
 import { audienceOf, relatedTitles, resolveAudience } from '@/lib/audience';
 import { contactsCsv, crmCsv, exportColumns, ownerCsv } from '@/lib/csv';
-import { accessError, bodyLimit, clientIp, isHttps, lockMessage } from '@/lib/access';
+import { accessError, bodyLimit, clientIp, isHttps, lockMessage, networkOf } from '@/lib/access';
 import { assist } from '@/lib/ai';
 import { englishBody } from '@/lib/en';
 import { crmEnabled } from '@/lib/catalog';
@@ -82,45 +82,55 @@ async function answer(req: NextRequest, { params }: { params: Promise<{ path: st
       return json(await store.invitation(token.data));
     }
     if (req.method === 'POST' && path.startsWith('auth/')) {
-      const ip = clientIp(req.headers.get('x-forwarded-for'));
+      const ip = networkOf(clientIp(req.headers.get('x-forwarded-for')));
       if (ip === 'unknown' && process.env.APP_URL) console.warn('No X-Forwarded-For: every client shares one login limit. Check the reverse proxy.');
-      // Counted in the database: Vercel runs several instances, each with its own memory. Per IP only: a per-email
-      // limit would let anyone lock the owner out. Owner 2026-10-14: 30 to 50 trainees sign in together from one room's network.
-      await store.hit('auth:' + ip, 150);
-      // Every auth request may run scrypt: a platform-wide cap keeps traffic from many addresses from using up the hosting
-      // plan's monthly CPU (which would pause the whole site). ponytail: under attack, sign-in waits too; sessions last 7 days.
-      // 120 a minute lets a room of trainees in at once (was 20, measured 2026-10-14: 20 of 60 got in).
-      await store.hit('auth-all', 120);
-      await store.hit('auth-all-hour', 2000, 3600000);
-      const b = await body(req);
-      if (path === 'auth/login') {
-        const data = z.object({email:z.email(),password:z.string().min(1).max(128)}).parse(b);
-        return authenticated(await store.login(data.email, data.password));
-      }
-      if (path === 'auth/accept') {
-        const data = z.object({token:tokenField,password,email:registrationEmail.optional(),termsVersion:z.literal(TERMS_VERSION).optional()}).parse(b);
-        return authenticated(await store.acceptInvite(data.token, data.password, data.email, data.termsVersion===TERMS_VERSION));
-      }
-      if (path === 'auth/reset') {
-        const data = z.object({token:tokenField,password}).parse(b);
-        return authenticated(await store.resetPassword(data.token, data.password));
-      }
-      if (path === 'auth/owner') {
-        const data = z.object({token:tokenField,email:z.email(),password}).parse(b);
-        return authenticated(await store.claimOwner(data.token, data.email, data.password));
-      }
-      if (path === 'auth/recover') {
-        const data = z.object({email:z.email(),code:z.string().min(1).max(64),password}).parse(b);
-        const { token, code } = await store.recover(data.email, data.code, data.password);
-        return authenticated(token, { ok: true, code });
-      }
-      if (path === 'auth/logout') {
+      if (path === 'auth/logout') { // never held back by the limits below
         if (session) await store.logout(session);
         const response = json({ ok: true });
         response.cookies.set('wasl_session', '', cookie(0));
         response.cookies.set('wasl_member', '', cookie(0));
         return response;
       }
+      // Counted in the database: Vercel runs several instances, each with its own memory. Per network only: a per-email
+      // limit would let anyone lock the owner out. Owner 2026-10-14: 30 to 50 trainees sign in together from one room's network.
+      await store.hit('auth:' + ip, 150);
+      // Failures alone stay counted (security review 2026-10-15: one address failing 121 times a minute locked everyone out).
+      // Each attempt is booked before its password is hashed and given back unless it fails, so a burst sent at once is counted
+      // too. A network's own 30 a minute stop it well below the platform's caps (a lock takes ten networks for a minute, or four
+      // for a whole hour: 30 x 60 < 6000);
+      // those keep failures from many addresses from using up the hosting plan's CPU on scrypt (which would pause the whole
+      // site). ponytail: under an attack from many addresses sign-in waits too, and more than 30 of one network pressing at the
+      // very same instant wait a moment; sessions last 7 days.
+      const release = await store.reserve([['auth-fail:' + ip, 30, 60000], ['auth-fail-all', 300, 60000], ['auth-fail-all-hour', 6000, 3600000]]);
+      const response = await (async () => {
+        const b = await body(req);
+        if (path === 'auth/login') {
+          const data = z.object({email:z.email(),password:z.string().min(1).max(128)}).parse(b);
+          return authenticated(await store.login(data.email, data.password));
+        }
+        if (path === 'auth/accept') {
+          const data = z.object({token:tokenField,password,email:registrationEmail.optional(),termsVersion:z.literal(TERMS_VERSION).optional()}).parse(b);
+          return authenticated(await store.acceptInvite(data.token, data.password, data.email, data.termsVersion===TERMS_VERSION));
+        }
+        if (path === 'auth/reset') {
+          const data = z.object({token:tokenField,password}).parse(b);
+          return authenticated(await store.resetPassword(data.token, data.password));
+        }
+        if (path === 'auth/owner') {
+          const data = z.object({token:tokenField,email:z.email(),password}).parse(b);
+          return authenticated(await store.claimOwner(data.token, data.email, data.password));
+        }
+        if (path === 'auth/recover') {
+          const data = z.object({email:z.email(),code:z.string().min(1).max(64),password}).parse(b);
+          const { token, code } = await store.recover(data.email, data.code, data.password);
+          return authenticated(token, { ok: true, code });
+        }
+      })().catch(async e => {
+        if (!(e instanceof AppError && (e.status === 401 || e.status === 410))) await release(); // a wrong password, code or link stays counted
+        throw e;
+      });
+      await release();
+      if (response) return response;
     }
     if (req.method === 'POST' && path === 'owner/return') { // out of a member's account: the owner's session was never left
       const response = json({ ok: true });

@@ -95,6 +95,8 @@ export class Store {
     // Housekeeping that never waits: rows other transactions hold are skipped, so logins and resets cannot deadlock.
     await this.db.run('DELETE FROM sessions WHERE token_hash IN (SELECT token_hash FROM sessions WHERE expires_at < ? LIMIT 500 FOR UPDATE SKIP LOCKED)', now());
     await this.db.run('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)', hash(token), id, new Date(Date.now() + 7 * 86400000).toISOString());
+    // The 20 newest per account: signing in again and again (one valid password is enough) cannot pile up rows.
+    await this.db.run('DELETE FROM sessions WHERE user_id=? AND token_hash NOT IN (SELECT token_hash FROM sessions WHERE user_id=? ORDER BY expires_at DESC LIMIT 20)', id, id);
     return token;
   }
   // One round trip per API request: the session and its user together.
@@ -199,6 +201,20 @@ export class Store {
     const row = await this.db.get<{ count: number }>(`INSERT INTO rate_hits(key,window_start,count) VALUES(?,?,1)
       ON CONFLICT(key,window_start) DO UPDATE SET count=rate_hits.count+1 RETURNING count`, key, now - now % windowMs);
     if (row!.count > max) throw new AppError(message, 429);
+  }
+  // Counted before the work, so a burst sent at the same instant cannot pass a limit (route.ts sign-in, security review
+  // 2026-10-15). A refusal keeps nothing; release() gives back an attempt that did not fail.
+  async reserve(limits: readonly (readonly [string, number, number])[]) {
+    const now = Date.now(), taken: [string, number][] = [];
+    const release = async () => { for (const [key, start] of taken.splice(0)) await this.db.run('UPDATE rate_hits SET count=count-1 WHERE key=? AND window_start=?', key, start); };
+    for (const [key, max, windowMs] of limits) {
+      const start = now - now % windowMs;
+      const row = await this.db.get<{ count: number }>(`INSERT INTO rate_hits(key,window_start,count) VALUES(?,?,1)
+        ON CONFLICT(key,window_start) DO UPDATE SET count=rate_hits.count+1 RETURNING count`, key, start);
+      taken.push([key, start]);
+      if (row!.count > max) { await release(); throw new AppError('طلبات كثيرة. انتظر دقيقة وحاول مجددًا.', 429); }
+    }
+    return release;
   }
   async aiBudget(userId: string) {
     // One allowance covers assistant messages and uncached custom filters, across all server instances.

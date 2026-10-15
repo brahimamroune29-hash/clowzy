@@ -60,6 +60,19 @@ test('a listed title searches its Arabic and English forms; a typed English titl
   } finally { await store.close(); }
 });
 
+test('a typed title\'s English forms are kept per member: one member\'s steered answer never searches for another', async () => {
+  const store = await testStore();
+  const asked: string[] = [];
+  const ai = (answer: string[]): AiMapper => ({ ...noAi, title: async text => { asked.push(text); return answer; } });
+  try {
+    const a = await store.addUser('A', 'a@example.com', 'secure-password', 'member'), b = await store.addUser('B', 'b@example.com', 'secure-password', 'member');
+    assert.deepEqual((await resolveAudience(store, form({ title: ['مدير مستودع'] }), ai(['Sales Director']), a.id)).titles, ['مدير مستودع', 'Sales Director']);
+    assert.deepEqual((await resolveAudience(store, form({ title: ['مدير مستودع'] }), ai(['Warehouse Manager']), b.id)).titles, ['مدير مستودع', 'Warehouse Manager']);
+    await resolveAudience(store, form({ title: ['مدير مستودع'] }), ai(['Other']), b.id);
+    assert.equal(asked.length, 2, 'each member\'s answer is still kept: the same member never pays twice');
+  } finally { await store.close(); }
+});
+
 test('a typed sector maps to exact industry names only; nonsense or an AI outage is a clear error, never a random search', async () => {
   const store = await testStore();
   const ai = (answer: { name: string; ar: string }[] | Error): AiMapper => ({ ...noAi, sector: async () => { if (answer instanceof Error) throw answer; return answer; } });

@@ -120,7 +120,8 @@ export async function resolveAudience<T extends AudienceForm>(store: Store, inpu
   for (const title of input.mode === 'companies' ? [] : input.title) {
     if (Object.hasOwn(TITLE_VARIANTS, title) || !arabic.test(title)) forms.push(...titleForms(title));
     else { // the Arabic words always search; the AI adds the English forms when it answers
-      const english = await cached(store, 'title', title, () => ai.title(title), userId).catch(e => { if (e instanceof AppError && e.status === 429) throw e; aiDown('title', e); return []; });
+      // Kept per member (security review 2026-10-15): these forms are never shown, so a member who steers the model affects only their own searches.
+      const english = await cached(store, 'title', userId ? userId + ':' + title : title, () => ai.title(title), userId).catch(e => { if (e instanceof AppError && e.status === 429) throw e; aiDown('title', e); return []; });
       forms.push(title, ...english.filter(t => /^[\x20-\x7E]{2,60}$/.test(t)).slice(0, 4));
     }
   }

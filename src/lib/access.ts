@@ -34,7 +34,15 @@ export function accessError(req: Req, appUrl?: string): { status: number; messag
   return null;
 }
 
-// The app listens on 127.0.0.1 behind one reverse proxy, which appends the real client IP last.
+// Vercel sets X-Forwarded-For itself, the real client IP last (a proxy in front, Cloudflare say, would need its own header).
 export function clientIp(forwardedFor: string | null) {
   return forwardedFor?.split(',').map(s => s.trim()).filter(Boolean).at(-1) || 'unknown';
+}
+// What sign-in limits count (security review 2026-10-15): one home connection holds a whole IPv6 /64, so it counts as one network.
+export function networkOf(ip: string) {
+  if (!ip.includes(':')) return ip;
+  const v4 = /(\d+\.\d+\.\d+\.\d+)$/.exec(ip); // IPv4-mapped
+  if (v4) return v4[1];
+  const [head, tail = ''] = ip.toLowerCase().split('::'), h = head ? head.split(':') : [], t = tail ? tail.split(':') : [];
+  return [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill('0'), ...t].slice(0, 4).map(g => g.replace(/^0+(?=.)/, '')).join(':') + '::/64';
 }
